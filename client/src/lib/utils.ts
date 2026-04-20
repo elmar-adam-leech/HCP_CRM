@@ -1,0 +1,87 @@
+import { clsx, type ClassValue } from "clsx"
+import { twMerge } from "tailwind-merge"
+import { format, isToday, isTomorrow } from "date-fns"
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs))
+}
+
+export function formatStatusLabel(status: string): string {
+  return status.split("_").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+}
+
+export function getInitials(name: string): string {
+  return name
+    .split(" ")
+    .map((n) => n[0])
+    .join("")
+    .toUpperCase();
+}
+
+export function formatEntityTitle(type: 'estimate' | 'job', title: string): string {
+  if (!/^\d+$/.test(title)) return title;
+  return type === 'estimate' ? `Estimate #${title}` : `Job #${title}`;
+}
+
+export function hcpUrl(type: 'customer' | 'estimate' | 'job', id: string): string {
+  if (type === 'customer') return `https://pro.housecallpro.com/app/customers/${id}`;
+  if (type === 'estimate') return `https://pro.housecallpro.com/pro/estimates/${id}`;
+  return `https://pro.housecallpro.com/app/jobs/${id}`;
+}
+
+export function formatCurrency(amount: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+  }).format(amount);
+}
+
+export function safeToISO(date: Date | string | undefined | null): string | undefined {
+  if (!date) return undefined;
+  if (date instanceof Date) return isNaN(date.getTime()) ? undefined : date.toISOString();
+  if (typeof date === 'string') {
+    const d = new Date(date);
+    return isNaN(d.getTime()) ? undefined : d.toISOString();
+  }
+  return undefined;
+}
+
+/**
+ * Format a date for spreadsheet-style display (e.g. "3/25/2026").
+ * Returns "—" when value is falsy or not a valid date.
+ */
+export function formatDateSpreadsheet(value: string | Date | null | undefined): string {
+  if (!value) return "—";
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? "—" : d.toLocaleDateString();
+}
+
+/**
+ * Format a date for scheduling-style display ("Today", "Tomorrow", or "Mar 25, 2026").
+ */
+export function formatDateScheduling(date: Date): string {
+  if (isToday(date)) return "Today";
+  if (isTomorrow(date)) return "Tomorrow";
+  return format(date, "MMM dd, yyyy");
+}
+
+/**
+ * Format a date-time string for display (e.g. "3/25/2026, 10:30:00 AM").
+ * Returns "Never" when value is falsy.
+ */
+export function formatDateTime(dateStr: string | null | undefined): string {
+  if (!dateStr) return "Never";
+  return new Date(dateStr).toLocaleString();
+}
+
+export function formatPhoneNumber(phone: string): string {
+  const cleaned = phone.replace(/\D/g, '');
+  if (cleaned.length === 11 && cleaned.startsWith('1')) {
+    const number = cleaned.slice(1);
+    return `(${number.slice(0, 3)}) ${number.slice(3, 6)}-${number.slice(6)}`;
+  }
+  if (cleaned.length === 10) {
+    return `(${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
+  }
+  return phone;
+}

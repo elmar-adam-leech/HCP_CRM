@@ -1,0 +1,60 @@
+name: Schema drift
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'shared/schema/**'
+      - 'server/schema-drift.ts'
+      - 'server/db.ts'
+      - 'server/scripts/check-schema-drift.ts'
+      - 'migrations/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/schema-drift.yml'
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    name: Compare Drizzle schema vs. applied migrations
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: schema_drift
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/schema_drift
+      NODE_ENV: development
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Enable pg_trgm extension
+        run: |
+          PGPASSWORD=postgres psql \
+            -h localhost -U postgres -d schema_drift \
+            -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm'
+
+      - name: Apply migrations and run schema drift check
+        run: npx tsx server/scripts/check-schema-drift.ts

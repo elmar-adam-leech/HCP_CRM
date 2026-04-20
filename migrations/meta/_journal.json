@@ -1,0 +1,181 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1758494966798,
+      "tag": "0000_past_sugar_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1765798900000,
+      "tag": "0001_oauth_states",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1765800000000,
+      "tag": "0002_enable_pg_trgm",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1765900000000,
+      "tag": "0003_booking_redirect_url",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1766000000000,
+      "tag": "0004_allowed_integrations",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1766050000000,
+      "tag": "0005_assignment_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1766100000000,
+      "tag": "0006_lead_capture_inboxes",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1766200000000,
+      "tag": "0007_sender_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1766300000000,
+      "tag": "0008_spam_threshold_audit_log",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1766400000000,
+      "tag": "0009_activities_unique_external_idx",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1766500000000,
+      "tag": "0010_salesperson_display_order",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1766600000000,
+      "tag": "0011_drop_contractor_webhook_api_key",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1766700000000,
+      "tag": "0012_contacts_trgm_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1766800000000,
+      "tag": "0013_schema_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1742464800000,
+      "tag": "0014_jobs_follow_up_date",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1742551200000,
+      "tag": "0015_fix_integration_table_column_names",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1742637600000,
+      "tag": "0016_template_subject",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1742724000000,
+      "tag": "0017_contractor_logo_url",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1742810400000,
+      "tag": "0018_gdpr_ccpa_foundations",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1743170400000,
+      "tag": "0019_drop_calls_table",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1743343200000,
+      "tag": "0020_estimates_unique_external_idx",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1745020800000,
+      "tag": "0021_estimates_status_manually_set",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1745107200000,
+      "tag": "0022_webhook_events_failed_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1745107200001,
+      "tag": "0023_hcp_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1745193600000,
+      "tag": "0024_workflow_trigger_type_hcp_values",
+      "breakpoints": true
+    }
+  ]
+}

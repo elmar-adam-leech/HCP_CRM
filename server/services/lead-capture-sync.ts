@@ -1,0 +1,451 @@
+import { type LeadCaptureInbox, type SenderRule, type FieldMapping, activities, contacts } from '@shared/schema';
+import { gmailService } from '../gmail-service';
+import { parseEmailWithAI, runHeuristicSpamCheck } from './email-ai-parser';
+import { extractFirstUrl, extractUrlByPattern, fetchPageText, extractMarketingUrl, KNOWN_PLATFORMS, SOURCE_ABBREVIATIONS } from './link-fetcher';
+import { storage } from '../storage';
+import { db } from '../db';
+import { eq, and, inArray } from 'drizzle-orm';
+import { logger } from '../utils/logger';
+import { normalizePhoneForStorage } from '../utils/phone-normalizer';
+import { maskEmail } from '../utils/pii-redactor';
+import { ingestLead } from './lead-ingestion';
+import { broadcastToContractor } from '../websocket';
+
+const log = logger('LeadCaptureSync');
+
+function extractEmailAddress(fromHeader: string): string {
+  const match = fromHeader.match(/<([^>]+)>/);
+  return (match ? match[1] : fromHeader).trim().toLowerCase();
+}
+
+function findSenderRule(rules: SenderRule[], fromAddress: string): SenderRule | undefined {
+  const email = extractEmailAddress(fromAddress);
+  return rules.find(r => r.senderEmail.toLowerCase() === email);
+}
+
+interface ExtractedFields {
+  name?: string;
+  phone?: string;
+  email?: string;
+  message?: string;
+  address?: string;
+  source?: string;
+  notes?: string;
+  utmCampaign?: string;
+  utmSource?: string;
+  utmMedium?: string;
+  utmTerm?: string;
+  utmContent?: string;
+  pageUrl?: string;
+}
+
+function stripMarkdownFormatting(text: string): string {
+  return text.replace(/\*\*|__|\*|_/g, '').trim();
+}
+
+function normalizeLabel(label: string): string {
+  return stripMarkdownFormatting(label).toLowerCase().replace(/[:\s]+$/, '').trim();
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+\-?^${}()|[\]\\\/]/g, '\\$&');
+}
+
+function extractFieldsFromMappings(body: string, mappings: FieldMapping[]): ExtractedFields {
+  const result: ExtractedFields = {};
+  const lines = body.split(/\r?\n/);
+
+  for (const mapping of mappings) {
+    const normalizedMappingLabel = normalizeLabel(mapping.label);
+    for (const line of lines) {
+      const normalizedLine = stripMarkdownFormatting(line).toLowerCase().trim();
+      if (normalizedLine.startsWith(normalizedMappingLabel)) {
+        const labelEndPattern = new RegExp(
+          `^[\\s*_]*${escapeRegExp(normalizedMappingLabel)}[\\s*_:]*`,
+          'i'
+        );
+        const value = line.trim().replace(labelEndPattern, '').replace(/^[:\s]+/, '').trim();
+        if (value) {
+          result[mapping.field] = value;
+          break;
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
+  processed: number;
+  skippedSpam: number;
+  skippedDuplicate: number;
+  skippedBlocked: number;
+  errors: number;
+}> {
+  const stats = { processed: 0, skippedSpam: 0, skippedDuplicate: 0, skippedBlocked: 0, errors: 0 };
+  const rawRules = (inbox.senderRules as any[]) || [];
+  const senderRules: SenderRule[] = rawRules.map((r: any) => {
+    const actions = r.actions && r.actions.length > 0
+      ? r.actions
+      : r.action ? [r.action] : ['default'];
+    return { ...r, actions } as SenderRule;
+  });
+
+  const sinceDate = inbox.lastSyncAt
+    ? inbox.lastSyncAt
+    : new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+  const contractor = await storage.getContractor(inbox.contractorId);
+  const contractorDomain = contractor?.domain;
+  const autoLearnReplyAddresses = contractor?.autoLearnReplyAddresses ?? true;
+  const inboxAddressLower = inbox.emailAddress?.toLowerCase() ?? null;
+
+  log.info(`Starting lead capture sync for contractor ${inbox.contractorId}, since ${sinceDate.toISOString()}`);
+
+  const result = await gmailService.fetchNewEmails(inbox.gmailRefreshToken, sinceDate);
+
+  if (result.error || result.tokenExpired) {
+    log.error(`Gmail fetch error for lead capture: ${result.error}`);
+    throw new Error(result.tokenExpired
+      ? 'Gmail token expired. Please reconnect the lead capture inbox.'
+      : result.error || 'Unknown Gmail error');
+  }
+
+  const inboxEmails = (result.emails || []).filter(e => e.labelIds?.includes('INBOX'));
+
+  log.info(`Found ${inboxEmails.length} inbox emails to process`);
+
+  const emailIds = inboxEmails.map(e => e.id).filter(Boolean);
+  const existingIds = new Set<string>();
+  if (emailIds.length > 0) {
+    const existingActivities = await db.select({ externalId: activities.externalId })
+      .from(activities)
+      .where(and(
+        inArray(activities.externalId, emailIds),
+        eq(activities.externalSource, 'lead_capture'),
+        eq(activities.contractorId, inbox.contractorId)
+      ));
+    existingActivities.forEach(a => { if (a.externalId) existingIds.add(a.externalId); });
+  }
+
+  for (const email of inboxEmails) {
+    try {
+      if (existingIds.has(email.id)) {
+        stats.skippedDuplicate++;
+        continue;
+      }
+
+      const rule = findSenderRule(senderRules, email.from);
+      const ruleActions = rule?.actions || ['default'];
+
+      // Header-based reply matching: when no sender rule applies, check whether
+      // this inbound email is a reply to one of our own outbound emails (matched
+      // by RFC822 In-Reply-To / References headers). If so, file it against the
+      // matched contact (and estimate/job) instead of creating a brand-new lead.
+      // Mirrors the per-user Gmail sync behavior in server/sync/gmail.ts.
+      if (!rule) {
+        const headerIds: string[] = [];
+        if (email.inReplyTo) headerIds.push(email.inReplyTo);
+        if (email.references) headerIds.push(...email.references);
+        if (headerIds.length > 0) {
+          const matches = await storage.findActivitiesByRfc822MessageIds(inbox.contractorId, headerIds);
+          const distinctContactIds = Array.from(new Set(
+            matches.map(m => m.contactId).filter((c): c is string => !!c)
+          ));
+          let matchedContactId: string | null = null;
+          let matchedEstimateId: string | null = null;
+          let matchedJobId: string | null = null;
+          if (distinctContactIds.length === 1) {
+            matchedContactId = distinctContactIds[0];
+            const m = matches.find(x => x.contactId === matchedContactId)!;
+            matchedEstimateId = m.estimateId;
+            matchedJobId = m.jobId;
+          } else if (distinctContactIds.length > 1) {
+            const newest = matches.find(m => !!m.contactId)!;
+            matchedContactId = newest.contactId!;
+            matchedEstimateId = newest.estimateId;
+            matchedJobId = newest.jobId;
+            log.warn(
+              `Header-based reply matched ${distinctContactIds.length} distinct contacts ` +
+              `for lead-capture email ${email.id}; using most recent (contact ${matchedContactId})`
+            );
+          }
+
+          if (matchedContactId) {
+            const matchingContact = await storage.getContact(matchedContactId, inbox.contractorId);
+            if (matchingContact) {
+              const fromEmail = email.from;
+              const senderLower = extractEmailAddress(fromEmail);
+
+              if (
+                autoLearnReplyAddresses
+                && senderLower
+                && (!inboxAddressLower || senderLower !== inboxAddressLower)
+              ) {
+                const existing = (matchingContact.emails || []).map(e => e.toLowerCase());
+                if (!existing.includes(senderLower)) {
+                  try {
+                    await db.update(contacts)
+                      .set({ emails: [...(matchingContact.emails || []), senderLower] })
+                      .where(and(
+                        eq(contacts.id, matchingContact.id),
+                        eq(contacts.contractorId, inbox.contractorId),
+                      ));
+                    await storage.createActivity({
+                      type: 'note',
+                      title: 'Reply address auto-learned',
+                      content: `Added ${senderLower} from reply to thread.`,
+                      metadata: { autoLearnedFromRfc822MessageId: email.inReplyTo || (email.references?.[0] ?? null) },
+                      contactId: matchingContact.id,
+                      userId: null,
+                    }, inbox.contractorId);
+                    log.info(`Auto-learned reply address for contact ${matchingContact.id} (lead-capture)`);
+                  } catch (learnErr: any) {
+                    log.error(`Failed to auto-learn reply address for contact ${matchingContact.id}`, {
+                      message: learnErr?.message,
+                    });
+                  }
+                }
+              }
+
+              await storage.createActivity({
+                type: 'email',
+                title: `Email received: ${email.subject}`,
+                content: email.body,
+                metadata: {
+                  subject: email.subject,
+                  to: email.to,
+                  from: email.from,
+                  messageId: email.id,
+                  direction: 'inbound',
+                  rfc822MessageId: email.rfc822MessageId,
+                  matchedViaHeaders: true,
+                },
+                contactId: matchingContact.id,
+                estimateId: matchedEstimateId,
+                jobId: matchedJobId,
+                userId: null,
+                externalId: email.id,
+                externalSource: 'lead_capture',
+              }, inbox.contractorId);
+
+              // Trigger unread-badge invalidation on connected clients (parity with SMS).
+              broadcastToContractor(inbox.contractorId, {
+                type: 'new_message',
+                contactId: matchingContact.id,
+              });
+
+              stats.processed++;
+              log.info(`Filed lead-capture reply ${email.id} against contact ${matchingContact.id} via headers`);
+              continue;
+            }
+          }
+        }
+      }
+
+      if (ruleActions.includes('block')) {
+        log.info(`Blocked email from ${maskEmail(email.from)}: ${email.subject}`);
+        stats.skippedBlocked++;
+        continue;
+      }
+
+      let textForAI = email.body;
+
+      if (ruleActions.includes('follow_link')) {
+        let url: string | null = null;
+        if (rule?.urlPattern) {
+          url = extractUrlByPattern(email.body, rule.urlPattern);
+          if (!url) {
+            log.warn(`No URL matching pattern "${rule.urlPattern}" found, falling back to first URL`);
+            url = extractFirstUrl(email.body);
+          }
+        } else {
+          url = extractFirstUrl(email.body);
+        }
+        if (url) {
+          log.info(`Following link for sender rule: ${url}`);
+          const pageText = await fetchPageText(url);
+          if (pageText) {
+            textForAI = pageText;
+          } else {
+            log.warn(`Failed to fetch linked page, falling back to email body`);
+          }
+        } else {
+          log.warn(`No URL found in email body for follow_link rule, using email body`);
+        }
+      }
+
+      const mappings = rule?.fieldMappings;
+      let mappedFields: ExtractedFields = {};
+      if (mappings && mappings.length > 0) {
+        mappedFields = extractFieldsFromMappings(textForAI, mappings);
+        log.info(`Field mappings extracted ${Object.keys(mappedFields).length} fields for rule ${maskEmail(rule?.senderEmail ?? '')}`);
+      }
+
+      const mappedFieldList = mappings?.map(m => m.field) ?? [];
+      const mappedFieldNames = new Set(mappedFieldList);
+      const allFieldsMapped = mappings && mappings.length > 0 &&
+        mappedFieldList.every(f => mappedFields[f as keyof ExtractedFields]);
+
+      const senderOverride = rule?.spamOverride || 'none';
+
+      if (inbox.spamFilterEnabled && senderOverride === 'always_block') {
+        log.info(`Always-block override for sender ${maskEmail(email.from)}: ${email.subject}`);
+        await storage.createSpamAuditEntry({
+          inboxId: inbox.id,
+          contractorId: inbox.contractorId,
+          senderEmail: extractEmailAddress(email.from),
+          subject: email.subject,
+          body: email.body.substring(0, 50000),
+          spamConfidence: 100,
+          reason: 'Sender rule: always block',
+        });
+        stats.skippedSpam++;
+        continue;
+      }
+
+      const skipSpamCheck = senderOverride === 'always_allow';
+
+      if (inbox.spamFilterEnabled && !skipSpamCheck) {
+        let heuristicName = mappedFields.name || undefined;
+        let heuristicPhone = mappedFields.phone || undefined;
+        let heuristicEmail = mappedFields.email || undefined;
+        let heuristicMessage = mappedFields.message || undefined;
+
+        if (!heuristicName || !heuristicPhone || !heuristicEmail) {
+          const lines = textForAI.split(/\r?\n/);
+          for (const line of lines) {
+            const trimmed = line.trim();
+            const labelMatch = trimmed.match(/^[\s*_]*(name|phone|email|message|service|description)[:\s*_]+(.+)/i);
+            if (labelMatch) {
+              const label = labelMatch[1].toLowerCase();
+              const value = labelMatch[2].replace(/^[:\s]+/, '').trim();
+              if (!value) continue;
+              if (label === 'name' && !heuristicName) heuristicName = value;
+              if (label === 'phone' && !heuristicPhone) heuristicPhone = value;
+              if (label === 'email' && !heuristicEmail) heuristicEmail = value;
+              if ((label === 'message' || label === 'service' || label === 'description') && !heuristicMessage) heuristicMessage = value;
+            }
+          }
+          if (!heuristicEmail) {
+            const emailMatch = textForAI.toLowerCase().match(/[\w.+-]+@[\w-]+\.[\w.-]+/);
+            if (emailMatch) heuristicEmail = emailMatch[0];
+          }
+          if (!heuristicPhone) {
+            const phoneMatch = textForAI.match(/\+?[\d\s\-().]{7,15}/);
+            if (phoneMatch) heuristicPhone = phoneMatch[0].trim();
+          }
+        }
+
+        const heuristic = runHeuristicSpamCheck(heuristicName, heuristicPhone, heuristicEmail, heuristicMessage, textForAI);
+        if (heuristic.isSpam) {
+          log.info(`Heuristic spam filter caught email: ${email.subject} (confidence=${heuristic.confidence}, reason=${heuristic.reason})`);
+          await storage.createSpamAuditEntry({
+            inboxId: inbox.id,
+            contractorId: inbox.contractorId,
+            senderEmail: extractEmailAddress(email.from),
+            subject: email.subject,
+            body: email.body.substring(0, 50000),
+            spamConfidence: heuristic.confidence,
+            reason: heuristic.reason,
+          });
+          stats.skippedSpam++;
+          continue;
+        }
+      }
+
+      const needsAI = !allFieldsMapped || (inbox.spamFilterEnabled && !skipSpamCheck);
+      const aiResult = needsAI
+        ? await parseEmailWithAI(email.subject, textForAI)
+        : { isSpam: false };
+
+      if (inbox.spamFilterEnabled && !skipSpamCheck) {
+        const confidence = aiResult.spamConfidence ?? 0;
+        const threshold = inbox.spamConfidenceThreshold ?? 80;
+        const isSpam = aiResult.isSpam === true || confidence >= threshold;
+        if (isSpam) {
+          log.info(`Skipping spam email: ${email.subject} (isSpam=${aiResult.isSpam}, spamConfidence=${confidence}, threshold=${threshold})`);
+          await storage.createSpamAuditEntry({
+            inboxId: inbox.id,
+            contractorId: inbox.contractorId,
+            senderEmail: extractEmailAddress(email.from),
+            subject: email.subject,
+            body: email.body.substring(0, 50000),
+            spamConfidence: confidence,
+            reason: aiResult.isSpam ? 'AI flagged as spam' : `Confidence ${confidence} >= threshold ${threshold}`,
+          });
+          stats.skippedSpam++;
+          continue;
+        }
+      }
+
+      const skipSenderMatching = ruleActions.includes('each_email_is_new_lead') || ruleActions.includes('follow_link');
+
+      const contactEmail = mappedFields.email || (mappedFieldNames.has('email') ? undefined : aiResult.email) || (skipSenderMatching ? undefined : email.from);
+      const contactName = mappedFields.name || (mappedFieldNames.has('name') ? undefined : aiResult.name) || (contactEmail ? contactEmail.split('@')[0] : 'Unknown');
+      const rawPhone = mappedFields.phone || (mappedFieldNames.has('phone') ? undefined : aiResult.phone);
+      const normalizedPhone = rawPhone ? normalizePhoneForStorage(rawPhone) : '';
+      const serviceDescription = mappedFields.message || (mappedFieldNames.has('message') ? undefined : aiResult.serviceDescription);
+      const contactAddress = mappedFields.address;
+      const contactSource = mappedFields.source;
+      const contactNotes = mappedFields.notes;
+
+      const autoParsed = extractMarketingUrl(email.body, contractorDomain);
+
+      const utmSource = mappedFields.utmSource || (autoParsed?.utmSource);
+      const utmMedium = mappedFields.utmMedium || (autoParsed?.utmMedium);
+      const utmCampaign = mappedFields.utmCampaign || (autoParsed?.utmCampaign);
+      const utmTerm = mappedFields.utmTerm || (autoParsed?.utmTerm);
+      const utmContent = mappedFields.utmContent || (autoParsed?.utmContent);
+      const pageUrl = mappedFields.pageUrl || (autoParsed?.pageUrl);
+
+      let resolvedSource = contactSource || 'email_capture';
+      if (!contactSource && utmSource) {
+        const normalized = SOURCE_ABBREVIATIONS[utmSource.toLowerCase()] || utmSource.toLowerCase();
+        if (KNOWN_PLATFORMS.has(normalized)) {
+          resolvedSource = normalized;
+        }
+      }
+
+      const noteContent = `**Email Subject:** ${email.subject}\n\n${email.body.substring(0, 5000)}`;
+
+      const result = await ingestLead(inbox.contractorId, {
+        name: contactName || 'Unknown',
+        emails: contactEmail ? [contactEmail] : [],
+        phones: normalizedPhone ? [normalizedPhone] : [],
+        address: contactAddress,
+        notes: contactNotes,
+        source: resolvedSource,
+        message: serviceDescription || email.subject,
+        utmCampaign,
+        utmSource,
+        utmMedium,
+        utmTerm,
+        utmContent,
+        pageUrl,
+        activityNote: noteContent,
+        activityExternalId: email.id,
+        skipDuplicateLeadWithinHours: skipSenderMatching ? 0 : 24,
+        skipContactMatching: skipSenderMatching,
+        skipAutoAssign: false,
+      });
+
+      if (result.skippedDuplicateLead) {
+        stats.skippedDuplicate++;
+        continue;
+      }
+
+      stats.processed++;
+      log.info(`Created lead ${result.lead.id} from email: ${email.subject}`);
+    } catch (error) {
+      log.error(`Error processing lead capture email ${email.id}:`, error);
+      stats.errors++;
+    }
+  }
+
+  await storage.updateLeadCaptureInboxSyncTime(inbox.contractorId);
+
+  log.info(`Lead capture sync complete: ${stats.processed} processed, ${stats.skippedSpam} spam, ${stats.skippedDuplicate} duplicates, ${stats.skippedBlocked} blocked, ${stats.errors} errors`);
+  return stats;
+}

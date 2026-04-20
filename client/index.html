@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="title" content="A CRM for Housecall Pro" />
+    <meta name="description" content="A CRM for Housecall Pro" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!--
+      Load Inter asynchronously so it never blocks the initial render.
+      Strategy: rel="preload" as="style" fetches the CSS in the background at
+      high priority. The onload swaps it to rel="stylesheet" once it arrives,
+      so the font becomes active without blocking the first paint.
+      font-display=optional means the browser only swaps if the font is already
+      cached — no late swap, no CLS.
+      The <noscript> fallback loads it synchronously for the rare case where
+      JavaScript is disabled.
+    -->
+    <link
+      rel="preload"
+      as="style"
+      href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=optional"
+      onload="this.onload=null;this.rel='stylesheet'"
+    />
+    <noscript>
+      <link
+        rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=optional"
+      />
+    </noscript>
+    <title>HCP CRM</title>
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#2b6bee" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="HCP CRM" />
+    <link rel="icon" type="image/png" href="/hcp-crm-logo.png" />
+    <link rel="apple-touch-icon" href="/hcp-crm-logo.png" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <!-- This is a replit script which adds a banner on the top of the page when opened in development mode outside the replit environment -->
+    <script type="text/javascript" src="https://replit.com/public/js/replit-dev-banner.js"></script>
+  </body>
+</html>

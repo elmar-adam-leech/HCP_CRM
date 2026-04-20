@@ -1,0 +1,25 @@
+User-agent: *
+
+# Allow public-facing pages
+Allow: /book/
+
+# Block authenticated app routes — these require login and have no SEO value
+Disallow: /leads
+Disallow: /contacts
+Disallow: /follow-ups
+Disallow: /estimates
+Disallow: /jobs
+Disallow: /templates
+Disallow: /messages
+Disallow: /reports
+Disallow: /settings
+Disallow: /users
+Disallow: /workflows
+Disallow: /dialpad-setup
+Disallow: /facebook-setup
+Disallow: /sendgrid-setup
+
+# Block all API endpoints
+Disallow: /api/
+
+Sitemap: https://hcpcrm.com/sitemap.xml
