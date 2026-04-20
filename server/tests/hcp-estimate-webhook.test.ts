@@ -99,6 +99,39 @@ describe('webhook merge with manual override', () => {
     expect(updateEstimate.mock.calls[0][1].status).toBe('in_progress');
   });
 
+  it('estimate.option.approval_status_changed: "pro declined" payload flips to rejected', async () => {
+    getEstimateByHousecallProEstimateId.mockResolvedValue({
+      id: 'e1', status: 'scheduled', statusManuallySet: false,
+    });
+    // Fetched estimate has the same "pro declined" option HCP just told us about.
+    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp1', options: [{ approval_status: 'pro declined' }] } });
+
+    await handleEstimateEvent(
+      CONTRACTOR,
+      'estimate.option.approval_status_changed',
+      { estimate_id: 'hcp1', approval_status: 'pro declined' },
+      undefined,
+    );
+
+    expect(updateEstimate.mock.calls[0][1].status).toBe('rejected');
+  });
+
+  it('estimate.option.approval_status_changed: "pro declined" wins even when local status is manually set', async () => {
+    getEstimateByHousecallProEstimateId.mockResolvedValue({
+      id: 'e1', status: 'in_progress', statusManuallySet: true,
+    });
+    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp1', options: [{ approval_status: 'pro declined' }] } });
+
+    await handleEstimateEvent(
+      CONTRACTOR,
+      'estimate.option.approval_status_changed',
+      { estimate_id: 'hcp1', approval_status: 'pro declined' },
+      undefined,
+    );
+
+    expect(updateEstimate.mock.calls[0][1].status).toBe('rejected');
+  });
+
   it('estimate.option.approval_status_changed: rejected always wins, even with manual flag', async () => {
     getEstimateByHousecallProEstimateId.mockResolvedValue({
       id: 'e1', status: 'in_progress', statusManuallySet: true,

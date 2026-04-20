@@ -1,7 +1,7 @@
 import { logger } from '../utils/logger';
 import { HcpBaseClient, extractHcpList } from './base-client';
 import type { HousecallProEstimate, HousecallProJob, HousecallProResponse, HcpDispatchedEmployee, HcpEstimateRaw, HcpEstimateOption, HousecallProEvent, HcpPageEnvelope } from './types';
-import { HCP_EXCLUDED_ESTIMATE_STATUSES } from '../sync/hcp-mappers';
+import { isHcpExcludedEstimateStatus } from '../sync/hcp-mappers';
 
 const log = logger('HcpService');
 
@@ -111,15 +111,14 @@ export class HcpSchedulingModule extends HcpBaseClient {
         // We fetch all estimates for the date range and filter in-memory here.
         // Do not add an employee_id API param — HCP will silently ignore it.
         const employeeEstimates = allEstimates.filter((est: HcpEstimateRaw) => {
-          const workStatus = (est.work_status || '').toLowerCase();
-          const status = (est.status || '').toLowerCase();
-
-          const shouldExclude = HCP_EXCLUDED_ESTIMATE_STATUSES.some(excluded =>
-            workStatus.includes(excluded) || status.includes(excluded)
-          );
-          
-          if (shouldExclude) {
+          if (isHcpExcludedEstimateStatus(est.work_status) || isHcpExcludedEstimateStatus(est.status)) {
             return false;
+          }
+          // Also exclude when every option indicates a rejection-like state
+          // (covers `pro declined` etc. that don't appear in top-level status).
+          if (Array.isArray(est.options) && est.options.length > 0) {
+            const allDeclined = est.options.every(o => isHcpExcludedEstimateStatus((o as { approval_status?: string }).approval_status));
+            if (allDeclined) return false;
           }
           
           if (est.employee_id === employeeId || est.assigned_employee_id === employeeId) {

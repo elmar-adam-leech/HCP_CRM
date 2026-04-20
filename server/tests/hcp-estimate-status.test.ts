@@ -1,5 +1,62 @@
 import { describe, it, expect } from 'vitest';
-import { mapHcpEstimateStatus, resolveHcpEstimateStatus } from '../sync/hcp-mappers';
+import {
+  mapHcpEstimateStatus,
+  resolveHcpEstimateStatus,
+  isHcpDeclinedOptionStatus,
+  isHcpApprovedOptionStatus,
+  isHcpRejectedEstimateStatus,
+  isHcpExcludedEstimateStatus,
+} from '../sync/hcp-mappers';
+
+describe('isHcpDeclinedOptionStatus', () => {
+  it('handles all observed HCP option approval_status variants', () => {
+    expect(isHcpDeclinedOptionStatus('approved')).toBe(false);
+    expect(isHcpDeclinedOptionStatus('pro approved')).toBe(false);
+    expect(isHcpDeclinedOptionStatus('customer approved')).toBe(false);
+    expect(isHcpDeclinedOptionStatus('awaiting response')).toBe(false);
+    expect(isHcpDeclinedOptionStatus('declined')).toBe(true);
+    expect(isHcpDeclinedOptionStatus('pro declined')).toBe(true);
+    expect(isHcpDeclinedOptionStatus('customer declined')).toBe(true);
+    expect(isHcpDeclinedOptionStatus('expired')).toBe(true);
+    // underscored/legacy forms
+    expect(isHcpDeclinedOptionStatus('pro_declined')).toBe(true);
+    expect(isHcpDeclinedOptionStatus('customer_declined')).toBe(true);
+    // unknown future variant containing the keyword
+    expect(isHcpDeclinedOptionStatus('office declined')).toBe(true);
+    // empty / null
+    expect(isHcpDeclinedOptionStatus(null)).toBe(false);
+    expect(isHcpDeclinedOptionStatus(undefined)).toBe(false);
+    expect(isHcpDeclinedOptionStatus('')).toBe(false);
+  });
+});
+
+describe('isHcpApprovedOptionStatus', () => {
+  it('only returns true for the three approval variants', () => {
+    expect(isHcpApprovedOptionStatus('approved')).toBe(true);
+    expect(isHcpApprovedOptionStatus('pro approved')).toBe(true);
+    expect(isHcpApprovedOptionStatus('customer approved')).toBe(true);
+    expect(isHcpApprovedOptionStatus('PRO_APPROVED')).toBe(true);
+    expect(isHcpApprovedOptionStatus('declined')).toBe(false);
+    expect(isHcpApprovedOptionStatus('awaiting response')).toBe(false);
+  });
+});
+
+describe('isHcpRejectedEstimateStatus / isHcpExcludedEstimateStatus', () => {
+  it('treats canceled/expired/voided as rejected', () => {
+    for (const v of ['canceled','cancelled','rejected','declined','expired','deleted','void','voided','PRO DECLINED']) {
+      expect(isHcpRejectedEstimateStatus(v)).toBe(true);
+    }
+    expect(isHcpRejectedEstimateStatus('approved')).toBe(false);
+    expect(isHcpRejectedEstimateStatus(null)).toBe(false);
+  });
+  it('excludes completed and unscheduled in addition to rejection-like values', () => {
+    expect(isHcpExcludedEstimateStatus('completed')).toBe(true);
+    expect(isHcpExcludedEstimateStatus('unscheduled')).toBe(true);
+    expect(isHcpExcludedEstimateStatus('pro declined')).toBe(true);
+    expect(isHcpExcludedEstimateStatus('approved')).toBe(false);
+    expect(isHcpExcludedEstimateStatus('scheduled')).toBe(false);
+  });
+});
 
 describe('mapHcpEstimateStatus', () => {
   it('maps approved/completed work_status to approved', () => {
@@ -9,6 +66,24 @@ describe('mapHcpEstimateStatus', () => {
 
   it('maps option-level approval to approved regardless of work_status', () => {
     expect(mapHcpEstimateStatus({ work_status: 'scheduled', options: [{ approval_status: 'approved' }] })).toBe('approved');
+    expect(mapHcpEstimateStatus({ work_status: 'scheduled', options: [{ approval_status: 'pro approved' }] })).toBe('approved');
+  });
+
+  it('maps an estimate whose only option is "pro declined" to rejected', () => {
+    expect(mapHcpEstimateStatus({ work_status: 'scheduled', options: [{ approval_status: 'pro declined' }] })).toBe('rejected');
+    expect(mapHcpEstimateStatus({ work_status: 'scheduled', options: [{ approval_status: 'expired' }] })).toBe('rejected');
+    expect(mapHcpEstimateStatus({ work_status: 'scheduled', options: [{ approval_status: 'declined' }, { approval_status: 'pro declined' }] })).toBe('rejected');
+  });
+
+  it('preserves "any approved wins" for mixed-option estimates', () => {
+    expect(mapHcpEstimateStatus({
+      work_status: 'scheduled',
+      options: [{ approval_status: 'approved' }, { approval_status: 'pro declined' }],
+    })).toBe('approved');
+  });
+
+  it('falls through normally when an option is awaiting response', () => {
+    expect(mapHcpEstimateStatus({ work_status: 'scheduled', options: [{ approval_status: 'awaiting response' }] })).toBe('scheduled');
   });
 
   it('maps cancelled/rejected/expired/deleted to rejected', () => {

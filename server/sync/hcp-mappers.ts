@@ -31,20 +31,59 @@ const mapLog = logger('HcpMappers');
  *     the estimate has been accepted and the associated job is actively running.
  */
 /**
- * HCP estimate statuses that should be excluded from scheduling visibility.
- * Exported so scheduling logic can import the canonical list instead of
- * maintaining a duplicate hard-coded array.
+ * Normalize an HCP option approval_status string and decide whether it
+ * indicates a rejection. HCP emits variants like "declined", "pro declined",
+ * "customer declined", "expired" (and historically the underscored forms
+ * "pro_declined", "customer_declined"). This predicate handles all of them
+ * by lowercasing, collapsing whitespace and underscores, and checking for
+ * the substrings "declined", "rejected", "canceled"/"cancelled", or
+ * "expired" / "void".
  */
-export const HCP_EXCLUDED_ESTIMATE_STATUSES = [
-  'canceled', 'cancelled', 'rejected', 'declined',
-  'completed', 'unscheduled', 'pro_canceled', 'customer_declined',
-];
+export function isHcpDeclinedOptionStatus(s: string | null | undefined): boolean {
+  if (!s) return false;
+  const norm = s.toLowerCase().replace(/[_\s]+/g, ' ').trim();
+  if (norm === 'approved' || norm === 'pro approved' || norm === 'customer approved') return false;
+  return /\b(declined|rejected|canceled|cancelled|expired|void(?:ed)?)\b/.test(norm);
+}
+
+/** Same idea for the top-level estimate `status` / `work_status` strings. */
+export function isHcpRejectedEstimateStatus(s: string | null | undefined): boolean {
+  if (!s) return false;
+  const norm = s.toLowerCase().replace(/[_\s]+/g, ' ').trim();
+  return /\b(canceled|cancelled|rejected|declined|expired|deleted|void(?:ed)?)\b/.test(norm);
+}
+
+/** True when an HCP option approval_status indicates explicit approval. */
+export function isHcpApprovedOptionStatus(s: string | null | undefined): boolean {
+  if (!s) return false;
+  const norm = s.toLowerCase().replace(/[_\s]+/g, ' ').trim();
+  return norm === 'approved' || norm === 'pro approved' || norm === 'customer approved';
+}
+
+/**
+ * Predicate replacing the historical `HCP_EXCLUDED_ESTIMATE_STATUSES` array.
+ * Returns true if the HCP `status`/`work_status` string indicates the
+ * estimate should be hidden from scheduling visibility (terminated,
+ * completed, unscheduled, or any rejection-like variant including the
+ * space-separated `"pro declined"` / `"customer declined"` forms).
+ */
+export function isHcpExcludedEstimateStatus(s: string | null | undefined): boolean {
+  if (!s) return false;
+  const norm = s.toLowerCase().replace(/[_\s]+/g, ' ').trim();
+  if (norm === 'completed' || norm === 'unscheduled') return true;
+  return isHcpRejectedEstimateStatus(s) || isHcpDeclinedOptionStatus(s);
+}
 
 export function mapHcpEstimateStatus(hcpEstimate: { status?: string; work_status?: string; options?: Array<{ approval_status?: string }> }): 'approved' | 'rejected' | 'scheduled' | 'sent' | 'in_progress' {
   const ws = (hcpEstimate.work_status || '').toLowerCase();
   const st = (hcpEstimate.status || '').toLowerCase();
-  if (['canceled','cancelled','rejected','declined','expired','deleted','void','voided'].some(v => ws === v || st === v)) return 'rejected';
-  if (Array.isArray(hcpEstimate.options) && hcpEstimate.options.some(o => o.approval_status === 'approved')) return 'approved';
+  if (isHcpRejectedEstimateStatus(ws) || isHcpRejectedEstimateStatus(st)) return 'rejected';
+  const opts = Array.isArray(hcpEstimate.options) ? hcpEstimate.options : [];
+  const hasApproved = opts.some(o => isHcpApprovedOptionStatus(o.approval_status));
+  if (hasApproved) return 'approved';
+  // New rule: if no option is approved but at least one is rejection-like,
+  // treat the parent estimate as rejected.
+  if (opts.length > 0 && opts.some(o => isHcpDeclinedOptionStatus(o.approval_status))) return 'rejected';
   if (['completed','approved','accepted'].some(v => ws === v || st === v)) return 'approved';
   if (ws === 'in_progress') return 'in_progress';
   if (ws === 'scheduled') return 'scheduled';

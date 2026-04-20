@@ -5,7 +5,7 @@ import { eq } from "drizzle-orm";
 import { broadcastToContractor } from "../../../../websocket";
 import { workflowEngine } from "../../../../workflow-engine";
 import { mapHcpEstimateStatus } from "../../../../sync/housecall-pro";
-import { extractHcpAmount, extractHcpEstimateTitle, extractHcpScheduledEmployeeId, resolveHcpEstimateStatus, buildHcpLineItems, resolveSalespersonForHcpEntity } from "../../../../sync/hcp-mappers";
+import { extractHcpAmount, extractHcpEstimateTitle, extractHcpScheduledEmployeeId, resolveHcpEstimateStatus, buildHcpLineItems, resolveSalespersonForHcpEntity, isHcpDeclinedOptionStatus, isHcpApprovedOptionStatus } from "../../../../sync/hcp-mappers";
 import { buildHcpOptions } from "../../../../sync/hcp-estimates";
 import { housecallProService } from "../../../../hcp/index";
 import { toWorkflowEvent } from "../../../../utils/workflow/entity-adapter";
@@ -319,10 +319,10 @@ export async function handleEstimateEvent(
     const estimateId = data.estimate_id || data.id;
     const estimate = estimateId ? await storage.getEstimateByHousecallProEstimateId(estimateId, contractorId) : null;
     if (estimate) {
-      const approvalStatus = data.approval_status || data.status;
+      const approvalStatus = (data.approval_status || data.status || '').toString();
       let newStatus: "approved" | "rejected" | undefined;
-      if (approvalStatus === 'approved') newStatus = 'approved';
-      else if (approvalStatus === 'rejected' || approvalStatus === 'declined') newStatus = 'rejected';
+      if (isHcpApprovedOptionStatus(approvalStatus)) newStatus = 'approved';
+      else if (isHcpDeclinedOptionStatus(approvalStatus)) newStatus = 'rejected';
       const fetchResult = await housecallProService.getEstimate(contractorId, estimateId);
       const fetched = fetchResult.success && fetchResult.data ? fetchResult.data : null;
       const updateData: Record<string, any> = {

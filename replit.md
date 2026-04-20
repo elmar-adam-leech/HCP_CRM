@@ -69,6 +69,7 @@ A `runSchemaDriftCheck()` step runs at the end of `initDb()` and crashes startup
 - **Facebook Graph API**: For Facebook Lead Ads integration and lead ingestion.
 - **Dialpad API**: For telephony integration (calling, SMS, call recording, company numbers).
 - **Housecall Pro API**: For bi-directional sync of contacts, estimates, and jobs, and scheduling.
+    - HCP option `approval_status` emits space-separated variants like `pro declined`, `customer declined`, and `pro approved` (in addition to the legacy underscored forms). Always use the predicates in `server/sync/hcp-mappers.ts` (`isHcpDeclinedOptionStatus`, `isHcpApprovedOptionStatus`, `isHcpRejectedEstimateStatus`, `isHcpExcludedEstimateStatus`) — never hard-code the literal strings.
 - **React Flow**: Frontend library used for the Workflow Automation Builder UI.
 - **AES-256-GCM**: Encryption standard used for sensitive data.
 - **SendGrid**: (Implied by credential storage) For email sending capabilities.
