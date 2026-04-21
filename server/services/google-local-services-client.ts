@@ -200,6 +200,149 @@ export const googleLocalServicesClient = {
   },
 
   /**
+   * Probe the OAuth token endpoint to check whether the supplied
+   * client_id / client_secret are valid, *without* consuming any GLS API
+   * quota and without needing a real refresh token.
+   *
+   * Trick: we POST a deliberately bogus refresh_token to the token endpoint.
+   *   - If the credentials are bad, Google returns 400 `invalid_client`.
+   *   - If the credentials are good, Google returns 400 `invalid_grant`
+   *     (the refresh token itself is rejected — which is what we want).
+   *   - 5xx / network errors are treated as transient (we don't block save).
+   *
+   * Returns:
+   *   { ok: true }                          → client_id / secret are valid
+   *   { ok: false, kind: 'invalid_client' } → client_id or client_secret is wrong
+   *   { ok: true, kind: 'transient' }       → couldn't reach Google; don't block
+   */
+  async verifyOauthClient(
+    creds: GlsCredentials,
+  ): Promise<
+    | { ok: true; transient?: boolean }
+    | { ok: false; reason: string; field: 'clientId' | 'clientSecret' | 'credentials' }
+  > {
+    if (!creds.clientId || !creds.clientSecret) {
+      return { ok: false, reason: 'OAuth client_id and client_secret are required.', field: 'credentials' };
+    }
+    try {
+      await axios.post(GOOGLE_TOKEN_URL, new URLSearchParams({
+        client_id: creds.clientId,
+        client_secret: creds.clientSecret,
+        refresh_token: 'invalid-probe-token',
+        grant_type: 'refresh_token',
+      }), { timeout: 10000 });
+      // Unexpected 200 — treat as ok.
+      return { ok: true };
+    } catch (err) {
+      const ax = err as AxiosError<any>;
+      const status = ax?.response?.status;
+      const data = ax?.response?.data;
+      const errorCode = data?.error;
+      if (status === 400 && errorCode === 'invalid_client') {
+        // Google's invalid_client response doesn't tell us *which* of the
+        // two is wrong, so attribute the error to clientSecret (by far the
+        // more common typo — most users paste a fresh secret each time).
+        return {
+          ok: false,
+          field: 'clientSecret',
+          reason: 'Google rejected the OAuth Client ID or Client Secret. Double-check both values in your Google Cloud OAuth 2.0 client.',
+        };
+      }
+      if (status === 401) {
+        return {
+          ok: false,
+          field: 'clientSecret',
+          reason: 'Google rejected the OAuth Client ID or Client Secret (401 unauthorized).',
+        };
+      }
+      // invalid_grant (expected), or any 5xx / network — credentials are
+      // either good or we just can't tell. Don't block the save.
+      if (status && status >= 500) {
+        log.warn(`[verifyOauthClient] transient ${status} from Google — allowing save`);
+        return { ok: true, transient: true };
+      }
+      if (!status) {
+        log.warn(`[verifyOauthClient] network error reaching Google — allowing save: ${ax?.message}`);
+        return { ok: true, transient: true };
+      }
+      return { ok: true };
+    }
+  },
+
+  /**
+   * Verify the developer token by issuing a tiny `accountReports:search`
+   * request (pageSize: 1, last 1 day). Requires a usable refresh_token whose
+   * issuing client matches `creds.clientId`.
+   *
+   * Returns:
+   *   { ok: true }                              → developer token works
+   *   { ok: false, reason: '...' }              → developer token rejected
+   *   { ok: true, transient: true }             → couldn't tell; don't block
+   */
+  async verifyDeveloperToken(
+    creds: GlsCredentials,
+    refreshToken: string,
+  ): Promise<
+    | { ok: true; transient?: boolean }
+    | { ok: false; reason: string; field: 'developerToken' | 'credentials' }
+  > {
+    if (!creds.developerToken) {
+      return { ok: false, reason: 'Developer token is required.', field: 'developerToken' };
+    }
+    let accessToken: string;
+    try {
+      accessToken = await this.getAccessToken(creds, refreshToken);
+    } catch (err: any) {
+      log.warn(`[verifyDeveloperToken] couldn't refresh access token — skipping check: ${err?.message || err}`);
+      return { ok: true, transient: true };
+    }
+    const today = new Date();
+    const start = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+    const query =
+      `start_date_year:${start.getUTCFullYear()};start_date_month:${start.getUTCMonth() + 1};start_date_day:${start.getUTCDate()};` +
+      `end_date_year:${today.getUTCFullYear()};end_date_month:${today.getUTCMonth() + 1};end_date_day:${today.getUTCDate()}`;
+    try {
+      await axios.get(`${GLS_BASE_URL}/accountReports:search`, {
+        params: { query, pageSize: 1 },
+        headers: buildHeaders(accessToken, creds.developerToken),
+        timeout: 10000,
+      });
+      return { ok: true };
+    } catch (err) {
+      const ax = err as AxiosError<any>;
+      const status = ax?.response?.status;
+      const apiMsg = ax?.response?.data?.error?.message
+        || (typeof ax?.response?.data === 'string' ? ax?.response?.data : undefined)
+        || ax?.message
+        || '';
+      const lower = String(apiMsg).toLowerCase();
+      const looksLikeDevTokenIssue =
+        lower.includes('developer token') ||
+        lower.includes('developer-token') ||
+        lower.includes('developertoken');
+      if (status === 401 || status === 403 || (status === 400 && looksLikeDevTokenIssue)) {
+        return {
+          ok: false,
+          field: looksLikeDevTokenIssue ? 'developerToken' : 'credentials',
+          reason: looksLikeDevTokenIssue
+            ? `Google rejected the developer token: ${apiMsg}`
+            : `Google rejected the credentials (HTTP ${status}): ${apiMsg}`,
+        };
+      }
+      if (!status || status >= 500 || status === 429) {
+        log.warn(`[verifyDeveloperToken] transient (status=${status ?? 'n/a'}) — allowing save`);
+        return { ok: true, transient: true };
+      }
+      // Other 4xx — surface as a save-blocking error so the admin sees it.
+      return {
+        ok: false,
+        field: 'credentials',
+        reason: `Google rejected the request (HTTP ${status}): ${apiMsg}`,
+      };
+    }
+  },
+
+  /**
    * Revoke a refresh token at Google so the user is fully disconnected.
    * Failures are logged but never thrown — disconnect should always succeed locally.
    */

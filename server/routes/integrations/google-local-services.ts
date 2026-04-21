@@ -311,6 +311,24 @@ export function registerGoogleLocalServicesIntegrationRoutes(app: Express): void
 
       const tenantId = req.user.contractorId;
 
+      // -------- Format validation (cheap, no network) --------
+      const formatErr = validateCredentialFormats(body);
+      if (formatErr) {
+        res.status(400).json({ message: formatErr.message, field: formatErr.field });
+        return;
+      }
+
+      // -------- Live pre-save validation against Google --------
+      // Compute what the *effective* credentials would be after this update,
+      // without persisting yet. We run cheap probes against Google to catch
+      // typos / bad MCC up front, instead of surfacing 5 minutes later in the
+      // sync error banner. Transient (5xx / network) errors never block save.
+      const validationErr = await validateAgainstGoogle(tenantId, body);
+      if (validationErr) {
+        res.status(400).json({ message: validationErr.message, field: validationErr.field });
+        return;
+      }
+
       // Capture the OAuth client_id that was in effect *before* this update so
       // we can detect a change and invalidate any stale refresh token.
       const writes: Promise<void>[] = [];
@@ -347,6 +365,137 @@ export function registerGoogleLocalServicesIntegrationRoutes(app: Express): void
         refreshTokenInvalidated,
       });
     }));
+}
+
+/**
+ * Format-only validation for credentials submitted to PUT /credentials.
+ * Returns null when everything looks plausible. Empty strings are clears,
+ * which are always allowed (no format check). Omitted fields are skipped.
+ */
+function validateCredentialFormats(
+  body: { developerToken?: string; clientId?: string; clientSecret?: string },
+): { message: string; field: 'developerToken' | 'clientId' | 'clientSecret' } | null {
+  if (body.clientId && body.clientId.trim() !== '') {
+    const v = body.clientId.trim();
+    // Google OAuth client IDs always end with .apps.googleusercontent.com
+    if (!/\.apps\.googleusercontent\.com$/i.test(v) || v.length < 20) {
+      return {
+        field: 'clientId',
+        message: 'OAuth Client ID does not look like a Google OAuth 2.0 client ID. Expected format: 1234567890-abc.apps.googleusercontent.com',
+      };
+    }
+  }
+  if (body.clientSecret && body.clientSecret.trim() !== '') {
+    const v = body.clientSecret.trim();
+    // Google OAuth client secrets begin with GOCSPX- and are >= ~20 chars.
+    if (v.length < 12) {
+      return {
+        field: 'clientSecret',
+        message: 'OAuth Client Secret looks too short. Copy it again from your Google Cloud OAuth client.',
+      };
+    }
+  }
+  if (body.developerToken && body.developerToken.trim() !== '') {
+    const v = body.developerToken.trim();
+    // Google Ads developer tokens are 22 chars, typically alphanumeric with -/_.
+    if (!/^[A-Za-z0-9_-]{15,40}$/.test(v)) {
+      return {
+        field: 'developerToken',
+        message: 'Google Ads Developer Token format is unexpected (should be ~22 alphanumeric characters from your Google Ads MCC).',
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Live pre-save validation against Google. Returns a user-facing error message
+ * when the credentials are clearly bad and the save should be rejected, or
+ * null otherwise (including transient Google blips, which never block save).
+ *
+ * Strategy:
+ *   1. Compute the *next* effective credentials (what would be active AFTER
+ *      this update is applied). We do not persist yet.
+ *   2. If the OAuth client_id/secret would change, probe the token endpoint
+ *      to verify Google accepts the client_id/secret pair. (No GLS quota.)
+ *   3. If the developer token would change AND we have a usable refresh token
+ *      whose issuing client matches the next client_id, issue a tiny
+ *      accountReports:search to verify the developer token works.
+ */
+type ValidationField = 'developerToken' | 'clientId' | 'clientSecret' | 'credentials';
+
+async function validateAgainstGoogle(
+  tenantId: string,
+  body: { developerToken?: string; clientId?: string; clientSecret?: string },
+): Promise<{ message: string; field: ValidationField } | null> {
+  const current = await resolveGlsCredentials(tenantId);
+
+  // Compute "next" effective credentials. Same precedence rules as
+  // resolveGlsCredentials: tenant pair wins over platform pair when *both*
+  // tenant client_id and secret are present; tenant developer token wins when
+  // present.
+  const platform = {
+    clientId: process.env.GOOGLE_LOCAL_SERVICES_CLIENT_ID || null,
+    clientSecret: process.env.GOOGLE_LOCAL_SERVICES_CLIENT_SECRET || null,
+    developerToken: process.env.GOOGLE_LOCAL_SERVICES_DEVELOPER_TOKEN || null,
+  };
+  const [curTenantClientId, curTenantClientSecret, curTenantDevToken] = await Promise.all([
+    CredentialService.getCredential(tenantId, GLS_SERVICE, TENANT_CRED_KEYS.clientId),
+    CredentialService.getCredential(tenantId, GLS_SERVICE, TENANT_CRED_KEYS.clientSecret),
+    CredentialService.getCredential(tenantId, GLS_SERVICE, TENANT_CRED_KEYS.developerToken),
+  ]);
+  const apply = (cur: string | null, incoming: string | undefined): string | null => {
+    if (incoming === undefined) return cur;
+    return incoming === '' ? null : incoming;
+  };
+  const nextTenantClientId = apply(curTenantClientId, body.clientId);
+  const nextTenantClientSecret = apply(curTenantClientSecret, body.clientSecret);
+  const nextTenantDevToken = apply(curTenantDevToken, body.developerToken);
+  const useTenantOauth = !!nextTenantClientId && !!nextTenantClientSecret;
+  const nextCreds = {
+    clientId: useTenantOauth ? nextTenantClientId : platform.clientId,
+    clientSecret: useTenantOauth ? nextTenantClientSecret : platform.clientSecret,
+    developerToken: nextTenantDevToken || platform.developerToken,
+    source: (nextTenantDevToken ? 'tenant' : 'platform') as 'tenant' | 'platform',
+    oauthSource: (useTenantOauth ? 'tenant' : 'platform') as 'tenant' | 'platform',
+    configured: false,
+  };
+  nextCreds.configured = !!(nextCreds.clientId && nextCreds.clientSecret && nextCreds.developerToken);
+
+  const oauthChanged =
+    nextCreds.clientId !== current.clientId ||
+    nextCreds.clientSecret !== current.clientSecret;
+  const devTokenChanged = nextCreds.developerToken !== current.developerToken;
+
+  // 1) Verify OAuth client whenever it changes (and we have something to test).
+  if (oauthChanged && nextCreds.clientId && nextCreds.clientSecret) {
+    const r = await googleLocalServicesClient.verifyOauthClient(nextCreds);
+    if (!r.ok) return { message: r.reason, field: r.field };
+  }
+
+  // 2) Verify developer token only when we can — needs a refresh token whose
+  //    issuing client matches the next client_id. Otherwise we'd be testing
+  //    against the wrong tenant's token, or have no token at all. In that
+  //    case bad developer tokens will only be caught by the next sync poll —
+  //    log it so the skipped check is visible to operators.
+  if (devTokenChanged && nextCreds.developerToken && nextCreds.clientId) {
+    const [refreshToken, issuingClientId] = await Promise.all([
+      CredentialService.getCredential(tenantId, GLS_SERVICE, 'refresh_token'),
+      CredentialService.getCredential(tenantId, GLS_SERVICE, TENANT_CRED_KEYS.refreshTokenClientId),
+    ]);
+    if (refreshToken && issuingClientId === nextCreds.clientId) {
+      const r = await googleLocalServicesClient.verifyDeveloperToken(nextCreds, refreshToken);
+      if (!r.ok) return { message: r.reason, field: r.field };
+    } else {
+      log.info(
+        `[credentials] Skipping live developer-token check for contractor ${tenantId} ` +
+        `(refreshToken=${!!refreshToken}, clientMatches=${issuingClientId === nextCreds.clientId}). ` +
+        `Token will be exercised on the next sync poll.`,
+      );
+    }
+  }
+
+  return null;
 }
 
 /**

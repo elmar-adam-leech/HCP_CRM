@@ -41,6 +41,25 @@ interface GlsAccount {
   currencyCode?: string;
 }
 
+/**
+ * The shared apiRequest wrapper throws `Error("<status>: <raw-body>")` on
+ * non-2xx responses. The credentials endpoint returns a structured JSON body
+ * `{ message, field }` for validation failures — pull it back out so the form
+ * can highlight the offending field.
+ */
+function parseValidationError(errMessage: string | undefined): { message: string; field?: string } | null {
+  if (!errMessage) return null;
+  const match = errMessage.match(/^\d+:\s*(\{[\s\S]*\})$/);
+  if (!match) return null;
+  try {
+    const body = JSON.parse(match[1]);
+    if (body && typeof body.message === 'string') {
+      return { message: body.message, field: typeof body.field === 'string' ? body.field : undefined };
+    }
+  } catch { /* not JSON — fall through */ }
+  return null;
+}
+
 const GLS_ERROR_MESSAGES: Record<string, string> = {
   token_exchange:
     'The OAuth authorization code could not be exchanged for a token. Make sure the Redirect URI in your Google Cloud OAuth client exactly matches the callback URL shown below.',
@@ -55,6 +74,7 @@ export function GoogleLocalServicesCard() {
   const [devTokenInput, setDevTokenInput] = useState('');
   const [clientIdInput, setClientIdInput] = useState('');
   const [clientSecretInput, setClientSecretInput] = useState('');
+  const [credsError, setCredsError] = useState<{ message: string; field?: string } | null>(null);
 
   const { data: status, isLoading: statusLoading } = useQuery<GlsStatus>({
     queryKey: ['/api/integrations/google-local-services/status'],
@@ -155,6 +175,7 @@ export function GoogleLocalServicesCard() {
       return res.json() as Promise<{ refreshTokenInvalidated: boolean }>;
     },
     onSuccess: (data) => {
+      setCredsError(null);
       toast({
         title: 'Credentials saved',
         description: data.refreshTokenInvalidated
@@ -168,7 +189,17 @@ export function GoogleLocalServicesCard() {
       queryClient.invalidateQueries({ queryKey: ['/api/integrations/google-local-services/credentials'] });
     },
     onError: (err: any) => {
-      toast({ title: 'Save failed', description: err.message || 'Could not save credentials.', variant: 'destructive' });
+      // The shared apiRequest throws `Error("<status>: <body>")` — try to
+      // pull the structured `{message, field}` payload back out so we can
+      // surface the validation failure inline next to the offending field.
+      const parsed = parseValidationError(err?.message);
+      if (parsed) {
+        setCredsError(parsed);
+        toast({ title: 'Credentials rejected by Google', description: parsed.message, variant: 'destructive' });
+      } else {
+        setCredsError({ message: err?.message || 'Could not save credentials.' });
+        toast({ title: 'Save failed', description: err?.message || 'Could not save credentials.', variant: 'destructive' });
+      }
     },
   });
 
@@ -278,6 +309,9 @@ export function GoogleLocalServicesCard() {
                 onChange={e => setDevTokenInput(e.target.value)}
                 data-testid="input-gls-developer-token"
               />
+              {credsError?.field === 'developerToken' && (
+                <p className="text-xs text-destructive" data-testid="error-gls-developer-token">{credsError.message}</p>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="gls-client-id" className="text-xs">
@@ -290,6 +324,9 @@ export function GoogleLocalServicesCard() {
                 onChange={e => setClientIdInput(e.target.value)}
                 data-testid="input-gls-client-id"
               />
+              {credsError?.field === 'clientId' && (
+                <p className="text-xs text-destructive" data-testid="error-gls-client-id">{credsError.message}</p>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="gls-client-secret" className="text-xs">
@@ -303,7 +340,19 @@ export function GoogleLocalServicesCard() {
                 onChange={e => setClientSecretInput(e.target.value)}
                 data-testid="input-gls-client-secret"
               />
+              {credsError?.field === 'clientSecret' && (
+                <p className="text-xs text-destructive" data-testid="error-gls-client-secret">{credsError.message}</p>
+              )}
             </div>
+            {credsError && (credsError.field === 'credentials' || !credsError.field) && (
+              <div
+                className="rounded-md border border-destructive/50 bg-destructive/10 p-2 flex items-start gap-2"
+                data-testid="error-gls-credentials"
+              >
+                <AlertTriangle className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+                <p className="text-xs text-destructive break-words">{credsError.message}</p>
+              </div>
+            )}
             <div className="flex items-center gap-2 flex-wrap">
               <Button
                 size="sm"
@@ -316,6 +365,7 @@ export function GoogleLocalServicesCard() {
                     toast({ title: 'Nothing to save', description: 'Type a value to update one of the fields.', variant: 'destructive' });
                     return;
                   }
+                  setCredsError(null);
                   saveCredsMutation.mutate(body);
                 }}
                 disabled={saveCredsMutation.isPending}
