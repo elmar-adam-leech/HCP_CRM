@@ -93,8 +93,7 @@ export function QuickNoteButton({
         data-testid="button-quick-note"
       >
         <FileText className="h-3 w-3 mr-1 shrink-0" />
-        <span className="hidden sm:inline">Add Note</span>
-        <span className="sm:hidden">Note</span>
+        Note
       </Button>
 
       <Dialog open={isOpen} onOpenChange={setIsOpen}>

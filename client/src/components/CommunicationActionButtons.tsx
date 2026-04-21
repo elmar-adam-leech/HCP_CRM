@@ -51,7 +51,7 @@ export const CommunicationActionButtons = memo(function CommunicationActionButto
   compact = false,
 }: CommunicationActionButtonsProps) {
   const containerClass = compact
-    ? "grid grid-cols-4 gap-2"
+    ? "grid grid-cols-2 sm:grid-cols-4 gap-2"
     : "grid grid-cols-2 sm:flex sm:flex-wrap gap-2";
   const buttonClass = compact ? "w-full" : "w-full sm:w-auto";
   return (
