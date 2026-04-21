@@ -22,6 +22,7 @@
 import { CredentialService } from '../credential-service';
 import { ingestLead } from '../services/lead-ingestion';
 import { googleLocalServicesClient, type GlsDetailedLead } from '../services/google-local-services-client';
+import { resolveGlsCredentials } from '../services/google-local-services-credentials';
 import { logger } from '../utils/logger';
 import { normalizePhoneForStorage } from '../utils/phone-normalizer';
 import { db } from '../db';
@@ -217,6 +218,15 @@ export async function syncGoogleLocalServicesLeads(tenantId: string): Promise<vo
     return;
   }
 
+  const creds = await resolveGlsCredentials(tenantId);
+  if (!creds.configured) {
+    const msg = 'Google Local Services credentials are not configured (missing OAuth client or developer token)';
+    log.warn(`[poll] contractor=${tenantId} ${msg}`);
+    await CredentialService.setCredential(tenantId, GLS_SERVICE, 'last_error', msg);
+    await CredentialService.setCredential(tenantId, GLS_SERVICE, 'last_error_at', new Date().toISOString());
+    return;
+  }
+
   const pollStartedAt = new Date();
   const lastPollMs = lastPollAtStr ? Date.parse(lastPollAtStr) : NaN;
 
@@ -242,6 +252,7 @@ export async function syncGoogleLocalServicesLeads(tenantId: string): Promise<vo
   let detailedLeads: GlsDetailedLead[];
   try {
     detailedLeads = await googleLocalServicesClient.fetchDetailedLeads({
+      creds,
       refreshToken,
       accountId,
       startDate,

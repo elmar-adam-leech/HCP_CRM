@@ -13,13 +13,13 @@
  * Required OAuth scope:
  *   https://www.googleapis.com/auth/adwords
  *
- * Required env vars:
- *   GOOGLE_LOCAL_SERVICES_CLIENT_ID
- *   GOOGLE_LOCAL_SERVICES_CLIENT_SECRET
- *   GOOGLE_LOCAL_SERVICES_DEVELOPER_TOKEN  (issued by the Google Ads API team)
+ * Credentials are passed in by the caller (resolved per tenant via
+ * `resolveGlsCredentials`). Tenants may bring their own OAuth client + Google
+ * Ads developer token; otherwise the platform-level credentials are used.
  */
 import axios, { AxiosError } from 'axios';
 import { logger } from '../utils/logger';
+import type { GlsCredentials } from './google-local-services-credentials';
 
 const log = logger('GoogleLocalServicesClient');
 
@@ -33,7 +33,16 @@ interface CachedToken {
   accessToken: string;
   expiresAt: number;
 }
+// Keyed on `${refreshToken}::${clientId}` so platform vs. tenant OAuth-client
+// access tokens never collide for the same refresh token. (In practice a
+// refresh token only works against the client that issued it, but if a tenant
+// changes their client_id mid-flight we never want to hand back a token that
+// was minted under a different client.)
 const tokenCache = new Map<string, CachedToken>();
+
+function cacheKey(refreshToken: string, clientId: string): string {
+  return `${refreshToken}::${clientId}`;
+}
 
 export interface GlsAccountSummary {
   accountId: string;
@@ -89,20 +98,19 @@ export interface GlsDetailedLead {
   raw: Record<string, unknown>;
 }
 
-function readClientCredentials(): { clientId: string; clientSecret: string } | null {
-  const clientId = process.env.GOOGLE_LOCAL_SERVICES_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_LOCAL_SERVICES_CLIENT_SECRET;
-  if (!clientId || !clientSecret) return null;
-  return { clientId, clientSecret };
+function requireOauth(creds: GlsCredentials): { clientId: string; clientSecret: string } {
+  if (!creds.clientId || !creds.clientSecret) {
+    throw new Error('Google Local Services OAuth client credentials are not configured');
+  }
+  return { clientId: creds.clientId, clientSecret: creds.clientSecret };
 }
 
-function buildHeaders(accessToken: string): Record<string, string> {
+function buildHeaders(accessToken: string, developerToken: string | null): Record<string, string> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
     'Content-Type': 'application/json',
   };
-  const devToken = process.env.GOOGLE_LOCAL_SERVICES_DEVELOPER_TOKEN;
-  if (devToken) headers['developer-token'] = devToken;
+  if (developerToken) headers['developer-token'] = developerToken;
   return headers;
 }
 
@@ -128,25 +136,24 @@ async function withRetry<T>(label: string, fn: () => Promise<T>, maxAttempts = 3
 }
 
 export const googleLocalServicesClient = {
-  isConfigured(): boolean {
-    return !!readClientCredentials();
-  },
-
   /**
    * Exchange an OAuth authorization code for tokens (refresh + access).
    */
-  async exchangeCodeForTokens(code: string, redirectUri: string): Promise<{
+  async exchangeCodeForTokens(
+    creds: GlsCredentials,
+    code: string,
+    redirectUri: string,
+  ): Promise<{
     refreshToken: string;
     accessToken: string;
     expiresInSeconds: number;
   }> {
-    const creds = readClientCredentials();
-    if (!creds) throw new Error('GOOGLE_LOCAL_SERVICES_CLIENT_ID/SECRET not configured');
+    const { clientId, clientSecret } = requireOauth(creds);
 
     const res = await axios.post(GOOGLE_TOKEN_URL, new URLSearchParams({
       code,
-      client_id: creds.clientId,
-      client_secret: creds.clientSecret,
+      client_id: clientId,
+      client_secret: clientSecret,
       redirect_uri: redirectUri,
       grant_type: 'authorization_code',
     }), { timeout: 15000 });
@@ -164,19 +171,20 @@ export const googleLocalServicesClient = {
 
   /**
    * Get a fresh access token for a contractor, refreshing via the stored
-   * refresh token if needed. Cached in-memory for ~50 minutes per refresh
-   * token to avoid hammering Google's token endpoint.
+   * refresh token if needed. Cached in-memory for ~50 minutes per
+   * (refreshToken, clientId) pair to avoid hammering Google's token endpoint
+   * and to keep platform/tenant OAuth-client tokens from colliding.
    */
-  async getAccessToken(refreshToken: string): Promise<string> {
-    const cached = tokenCache.get(refreshToken);
+  async getAccessToken(creds: GlsCredentials, refreshToken: string): Promise<string> {
+    const { clientId, clientSecret } = requireOauth(creds);
+    const key = cacheKey(refreshToken, clientId);
+
+    const cached = tokenCache.get(key);
     if (cached && cached.expiresAt > Date.now() + 60_000) return cached.accessToken;
 
-    const creds = readClientCredentials();
-    if (!creds) throw new Error('GOOGLE_LOCAL_SERVICES_CLIENT_ID/SECRET not configured');
-
     const res = await axios.post(GOOGLE_TOKEN_URL, new URLSearchParams({
-      client_id: creds.clientId,
-      client_secret: creds.clientSecret,
+      client_id: clientId,
+      client_secret: clientSecret,
       refresh_token: refreshToken,
       grant_type: 'refresh_token',
     }), { timeout: 15000 });
@@ -184,7 +192,7 @@ export const googleLocalServicesClient = {
     const accessToken = res.data?.access_token as string | undefined;
     if (!accessToken) throw new Error('Google did not return an access_token from refresh exchange');
 
-    tokenCache.set(refreshToken, {
+    tokenCache.set(key, {
       accessToken,
       expiresAt: Date.now() + ACCESS_TOKEN_TTL_MS,
     });
@@ -195,7 +203,7 @@ export const googleLocalServicesClient = {
    * Revoke a refresh token at Google so the user is fully disconnected.
    * Failures are logged but never thrown — disconnect should always succeed locally.
    */
-  async revokeRefreshToken(refreshToken: string): Promise<void> {
+  async revokeRefreshToken(refreshToken: string, clientId?: string): Promise<void> {
     try {
       await axios.post(
         'https://oauth2.googleapis.com/revoke',
@@ -205,7 +213,14 @@ export const googleLocalServicesClient = {
     } catch (err: any) {
       log.warn(`[revoke] Failed to revoke Google refresh token (non-fatal): ${err?.message || err}`);
     }
-    tokenCache.delete(refreshToken);
+    if (clientId) {
+      tokenCache.delete(cacheKey(refreshToken, clientId));
+    } else {
+      // Drop every cached token for this refresh token regardless of clientId.
+      for (const k of Array.from(tokenCache.keys())) {
+        if (k.startsWith(`${refreshToken}::`)) tokenCache.delete(k);
+      }
+    }
   },
 
   /**
@@ -213,8 +228,8 @@ export const googleLocalServicesClient = {
    * GLS exposes accounts indirectly via accountReports — we collapse the report
    * into a unique list of (accountId, businessName).
    */
-  async listAccounts(refreshToken: string): Promise<GlsAccountSummary[]> {
-    const accessToken = await this.getAccessToken(refreshToken);
+  async listAccounts(creds: GlsCredentials, refreshToken: string): Promise<GlsAccountSummary[]> {
+    const accessToken = await this.getAccessToken(creds, refreshToken);
     // Query last 30 days so even quiet accounts show up in the report.
     const today = new Date();
     const start = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -225,7 +240,7 @@ export const googleLocalServicesClient = {
     const data: any = await withRetry('listAccounts', async () => {
       const res = await axios.get(`${GLS_BASE_URL}/accountReports:search`, {
         params: { query, pageSize: 100 },
-        headers: buildHeaders(accessToken),
+        headers: buildHeaders(accessToken, creds.developerToken),
         timeout: 15000,
       });
       return res.data;
@@ -252,13 +267,14 @@ export const googleLocalServicesClient = {
    * Pagination is handled internally — returns the full list.
    */
   async fetchDetailedLeads(opts: {
+    creds: GlsCredentials;
     refreshToken: string;
     accountId: string;
     startDate: Date;
     endDate: Date;
   }): Promise<GlsDetailedLead[]> {
-    const { refreshToken, accountId, startDate, endDate } = opts;
-    const accessToken = await this.getAccessToken(refreshToken);
+    const { creds, refreshToken, accountId, startDate, endDate } = opts;
+    const accessToken = await this.getAccessToken(creds, refreshToken);
 
     const query =
       `manager_customer_id:${accountId};` +
@@ -274,7 +290,7 @@ export const googleLocalServicesClient = {
       const data: any = await withRetry('fetchDetailedLeads', async () => {
         const res = await axios.get(`${GLS_BASE_URL}/detailedLeadReports:search`, {
           params,
-          headers: buildHeaders(accessToken),
+          headers: buildHeaders(accessToken, creds.developerToken),
           timeout: 20000,
         });
         return res.data;

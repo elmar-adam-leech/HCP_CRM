@@ -21,25 +21,64 @@ not provide real-time webhooks.
 Source key written to `leads.source`: **`google_local_services`**
 Integration name (DB / scheduler / credential service): **`google-local-services`**
 
-## Required env vars
+## Credentials: platform default + per-tenant override
+
+Every GLS API call resolves credentials per tenant via
+`server/services/google-local-services-credentials.ts`. The resolver
+returns `{ clientId, clientSecret, developerToken, source }` where
+`source` reflects which side supplied the developer token (`'tenant'`
+or `'platform'`). The OAuth pair (client_id + client_secret) is
+resolved as a unit — we never mix tenant client_id with platform
+secret.
+
+### Platform-level (env vars)
+
+These are used as the fallback when a tenant has not stored their own.
+**They are optional** while the CRM remains an internal tool used by
+a single contractor (who configures their own per-tenant credentials).
+Provision them when opening the product up to outside contractors.
 
 | Var | Purpose |
 | --- | --- |
-| `GOOGLE_LOCAL_SERVICES_CLIENT_ID`     | OAuth 2.0 client ID from Google Cloud (APIs & Services → Credentials). |
-| `GOOGLE_LOCAL_SERVICES_CLIENT_SECRET` | OAuth 2.0 client secret. |
-| `GOOGLE_LOCAL_SERVICES_DEVELOPER_TOKEN` | Developer token issued by the Google Ads API team (required by the GLS REST API). |
+| `GOOGLE_LOCAL_SERVICES_CLIENT_ID`     | Platform OAuth 2.0 client ID. |
+| `GOOGLE_LOCAL_SERVICES_CLIENT_SECRET` | Platform OAuth 2.0 client secret. |
+| `GOOGLE_LOCAL_SERVICES_DEVELOPER_TOKEN` | Platform Google Ads developer token (issued to the platform's MCC). |
 | `JWT_SECRET` | Reused to sign OAuth state tokens (CSRF). |
+
+### Per-tenant (Settings → Integrations → Google Local Services → Credentials)
+
+Contractors with their own Google Ads MCC can paste:
+
+- **Developer Token** (required to use their MCC) — stored as
+  `tenant_developer_token`.
+- **OAuth Client ID + Client Secret** (optional) — stored as
+  `tenant_client_id` / `tenant_client_secret`. If supplied, the
+  Connect Google Account flow runs against *their* OAuth client; the
+  resulting refresh token is bound to that client and is automatically
+  invalidated if they later change the client_id.
+
+When to use which:
+
+- Internal-only contractor today: set per-tenant credentials, leave
+  the platform env vars unset. The card shows "Using your own
+  credentials".
+- External contractors (future): set the platform env vars; tenants
+  without their own MCC silently use them ("Using platform
+  credentials"); tenants with their own MCC override.
 
 ## OAuth setup checklist
 
-1. In Google Cloud Console create an OAuth 2.0 client of type "Web
-   application".
-2. Add this redirect URI:
+1. In Google Cloud Console (whichever GCP project owns the OAuth
+   client — platform's or the tenant's) create an OAuth 2.0 client of
+   type "Web application".
+2. Add this redirect URI to *that* OAuth client:
    `https://<your-host>/api/integrations/google-local-services/callback`
-3. Apply for a Google Ads API developer token, set the env var above.
-4. Restart the server. The settings card surfaces a clear "Not
-   configured" message if either OAuth client or developer token is
-   missing.
+   The redirect URI is the same for both platform and per-tenant OAuth
+   clients.
+3. Obtain a Google Ads API developer token (issued by the Google Ads
+   API team for that MCC).
+4. Either set the env vars (platform default) or paste the values into
+   the Credentials section of the GLS settings card (per-tenant).
 
 OAuth scope used: `https://www.googleapis.com/auth/adwords`
 

@@ -3,8 +3,9 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { CheckCircle, XCircle, Info, AlertTriangle, Clock, RefreshCw, Copy } from "lucide-react";
+import { CheckCircle, XCircle, Info, AlertTriangle, Clock, RefreshCw, Copy, ChevronDown, ChevronUp, KeyRound } from "lucide-react";
 import { SiGoogle } from "react-icons/si";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -13,6 +14,8 @@ import { IntegrationCardShell } from "./IntegrationCardShell";
 interface GlsStatus {
   configured: boolean;
   developerTokenSet: boolean;
+  credentialsSource: 'tenant' | 'platform';
+  oauthSource: 'tenant' | 'platform';
   connected: boolean;
   accountSelected: boolean;
   enabled: boolean;
@@ -22,6 +25,14 @@ interface GlsStatus {
   lastSuccessAt: string | null;
   lastError: string | null;
   lastErrorAt: string | null;
+}
+
+interface GlsCredentialsInfo {
+  tenantClientIdSet: boolean;
+  tenantClientSecretSet: boolean;
+  tenantDeveloperTokenSet: boolean;
+  platformClientConfigured: boolean;
+  platformDeveloperTokenSet: boolean;
 }
 
 interface GlsAccount {
@@ -40,13 +51,20 @@ export function GoogleLocalServicesCard() {
   const oauthCallbackUrl = `${window.location.origin}/api/integrations/google-local-services/callback`;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selectedAccountId, setSelectedAccountId] = useState<string>('');
+  const [credsOpen, setCredsOpen] = useState(false);
+  const [devTokenInput, setDevTokenInput] = useState('');
+  const [clientIdInput, setClientIdInput] = useState('');
+  const [clientSecretInput, setClientSecretInput] = useState('');
 
   const { data: status, isLoading: statusLoading } = useQuery<GlsStatus>({
     queryKey: ['/api/integrations/google-local-services/status'],
   });
 
+  const { data: credsInfo } = useQuery<GlsCredentialsInfo>({
+    queryKey: ['/api/integrations/google-local-services/credentials'],
+  });
+
   // After OAuth redirect we land here with ?google_local_services=pick_account
-  // Open the account picker automatically once on first render.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const flag = params.get('google_local_services');
@@ -131,7 +149,55 @@ export function GoogleLocalServicesCard() {
     },
   });
 
+  const saveCredsMutation = useMutation({
+    mutationFn: async (body: { developerToken?: string; clientId?: string; clientSecret?: string }) => {
+      const res = await apiRequest('PUT', '/api/integrations/google-local-services/credentials', body);
+      return res.json() as Promise<{ refreshTokenInvalidated: boolean }>;
+    },
+    onSuccess: (data) => {
+      toast({
+        title: 'Credentials saved',
+        description: data.refreshTokenInvalidated
+          ? 'OAuth client changed — please click Connect Google Account again to re-authorize.'
+          : 'Per-tenant credentials updated.',
+      });
+      setDevTokenInput('');
+      setClientIdInput('');
+      setClientSecretInput('');
+      queryClient.invalidateQueries({ queryKey: ['/api/integrations/google-local-services/status'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/integrations/google-local-services/credentials'] });
+    },
+    onError: (err: any) => {
+      toast({ title: 'Save failed', description: err.message || 'Could not save credentials.', variant: 'destructive' });
+    },
+  });
+
+  const clearCredsMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest('PUT', '/api/integrations/google-local-services/credentials', {
+        developerToken: '', clientId: '', clientSecret: '',
+      });
+      return res.json() as Promise<{ refreshTokenInvalidated: boolean }>;
+    },
+    onSuccess: (data) => {
+      toast({
+        title: 'Credentials cleared',
+        description: data.refreshTokenInvalidated
+          ? 'Reverted to platform credentials. Re-connect Google to continue.'
+          : 'Reverted to platform credentials.',
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/integrations/google-local-services/status'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/integrations/google-local-services/credentials'] });
+    },
+    onError: (err: any) => {
+      toast({ title: 'Clear failed', description: err.message || 'Could not clear credentials.', variant: 'destructive' });
+    },
+  });
+
   const fullyConnected = !!status?.connected && !!status?.accountSelected;
+  const usingTenant = status?.credentialsSource === 'tenant' || status?.oauthSource === 'tenant';
+  const tenantHasOverrides = !!(credsInfo?.tenantClientIdSet || credsInfo?.tenantClientSecretSet || credsInfo?.tenantDeveloperTokenSet);
+
   const statusIcon = (() => {
     if (statusLoading) return <></>;
     if (!status?.connected) return <XCircle className="h-5 w-5 text-muted-foreground" />;
@@ -150,25 +216,128 @@ export function GoogleLocalServicesCard() {
       data-testid="card-google-local-services"
     >
       {!status?.configured && (
-        <div className="rounded-md border border-yellow-500/50 bg-yellow-500/10 p-3 flex items-start gap-2">
-          <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-500 mt-0.5 shrink-0" />
+        <div className="rounded-md border bg-muted/40 p-3 flex items-start gap-2" data-testid="gls-not-configured">
+          <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
           <div className="space-y-1">
-            <p className="text-sm font-medium text-yellow-700 dark:text-yellow-400">Not configured</p>
+            <p className="text-sm font-medium">Not configured</p>
             <p className="text-xs text-muted-foreground">
-              Set <code>GOOGLE_LOCAL_SERVICES_CLIENT_ID</code> and <code>GOOGLE_LOCAL_SERVICES_CLIENT_SECRET</code> on the server to enable this integration.
+              Add your Google Ads developer token and OAuth client below to use this integration.
             </p>
           </div>
         </div>
       )}
 
       {status?.configured && !status.developerTokenSet && (
-        <div className="rounded-md border bg-muted/40 p-3 flex items-start gap-2">
-          <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
+        <div className="rounded-md border border-yellow-500/50 bg-yellow-500/10 p-3 flex items-start gap-2">
+          <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-500 mt-0.5 shrink-0" />
           <p className="text-xs text-muted-foreground">
-            <code>GOOGLE_LOCAL_SERVICES_DEVELOPER_TOKEN</code> is not set. The Google Local Services API requires a developer token issued by the Google Ads API team.
+            A Google Ads developer token is required by the GLS API. Add yours below or set <code>GOOGLE_LOCAL_SERVICES_DEVELOPER_TOKEN</code> on the server.
           </p>
         </div>
       )}
+
+      {/* Credentials section */}
+      <div className="rounded-md border bg-muted/30 p-3 space-y-2" data-testid="gls-credentials-section">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <KeyRound className="h-4 w-4 text-muted-foreground shrink-0" />
+            <p className="text-sm font-medium truncate">
+              {usingTenant ? 'Using your own credentials' : 'Using platform credentials'}
+            </p>
+            <Badge variant="secondary" className="shrink-0" data-testid="gls-credentials-source-badge">
+              {usingTenant ? 'Tenant' : 'Platform'}
+            </Badge>
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setCredsOpen(o => !o)}
+            data-testid="button-gls-toggle-credentials"
+          >
+            {credsOpen ? <ChevronUp className="h-4 w-4 mr-1" /> : <ChevronDown className="h-4 w-4 mr-1" />}
+            {credsOpen ? 'Hide' : tenantHasOverrides ? 'Edit' : 'Add your own'}
+          </Button>
+        </div>
+
+        {credsOpen && (
+          <div className="space-y-3 pt-2">
+            <p className="text-xs text-muted-foreground">
+              Bring your own Google Ads MCC. The developer token (from your Google Ads MCC) is required.
+              OAuth Client ID/Secret are optional — leave blank to use the platform's OAuth client.
+              Clearing all three reverts to platform credentials.
+            </p>
+            <div className="space-y-1.5">
+              <Label htmlFor="gls-dev-token" className="text-xs">
+                Developer Token {credsInfo?.tenantDeveloperTokenSet && <Badge variant="secondary" className="ml-1">Set</Badge>}
+              </Label>
+              <Input
+                id="gls-dev-token"
+                type="password"
+                placeholder={credsInfo?.tenantDeveloperTokenSet ? '•••• (already saved — type new value to replace)' : 'Paste your Google Ads developer token'}
+                value={devTokenInput}
+                onChange={e => setDevTokenInput(e.target.value)}
+                data-testid="input-gls-developer-token"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="gls-client-id" className="text-xs">
+                OAuth Client ID (optional) {credsInfo?.tenantClientIdSet && <Badge variant="secondary" className="ml-1">Set</Badge>}
+              </Label>
+              <Input
+                id="gls-client-id"
+                placeholder={credsInfo?.tenantClientIdSet ? '•••• (already saved — type new value to replace)' : 'your-client-id.apps.googleusercontent.com'}
+                value={clientIdInput}
+                onChange={e => setClientIdInput(e.target.value)}
+                data-testid="input-gls-client-id"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="gls-client-secret" className="text-xs">
+                OAuth Client Secret (optional) {credsInfo?.tenantClientSecretSet && <Badge variant="secondary" className="ml-1">Set</Badge>}
+              </Label>
+              <Input
+                id="gls-client-secret"
+                type="password"
+                placeholder={credsInfo?.tenantClientSecretSet ? '•••• (already saved — type new value to replace)' : 'GOCSPX-...'}
+                value={clientSecretInput}
+                onChange={e => setClientSecretInput(e.target.value)}
+                data-testid="input-gls-client-secret"
+              />
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button
+                size="sm"
+                onClick={() => {
+                  const body: { developerToken?: string; clientId?: string; clientSecret?: string } = {};
+                  if (devTokenInput.trim()) body.developerToken = devTokenInput.trim();
+                  if (clientIdInput.trim()) body.clientId = clientIdInput.trim();
+                  if (clientSecretInput.trim()) body.clientSecret = clientSecretInput.trim();
+                  if (Object.keys(body).length === 0) {
+                    toast({ title: 'Nothing to save', description: 'Type a value to update one of the fields.', variant: 'destructive' });
+                    return;
+                  }
+                  saveCredsMutation.mutate(body);
+                }}
+                disabled={saveCredsMutation.isPending}
+                data-testid="button-gls-save-credentials"
+              >
+                {saveCredsMutation.isPending ? 'Saving...' : 'Save Credentials'}
+              </Button>
+              {tenantHasOverrides && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => clearCredsMutation.mutate()}
+                  disabled={clearCredsMutation.isPending}
+                  data-testid="button-gls-clear-credentials"
+                >
+                  {clearCredsMutation.isPending ? 'Clearing...' : 'Clear (use platform)'}
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
 
       <div className="space-y-2">
         {statusLoading ? (
@@ -294,33 +463,31 @@ export function GoogleLocalServicesCard() {
         </div>
       )}
 
-      {!status?.connected && (
-        <div className="rounded-md border bg-muted/40 p-3 space-y-2">
-          <div className="flex items-start gap-2">
-            <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
-            <p className="text-xs text-muted-foreground">
-              Add this <strong>Authorized redirect URI</strong> to your Google Cloud OAuth 2.0 client (APIs &amp; Services &rarr; Credentials):
-            </p>
-          </div>
-          <div className="flex items-center gap-2 min-w-0">
-            <code className="flex-1 text-xs font-mono bg-background border rounded px-2 py-1 break-all min-w-0">
-              {oauthCallbackUrl}
-            </code>
-            <Button
-              size="icon"
-              variant="ghost"
-              className="shrink-0"
-              onClick={() => {
-                navigator.clipboard.writeText(oauthCallbackUrl);
-                toast({ title: 'Copied', description: 'Callback URL copied to clipboard.' });
-              }}
-              data-testid="button-gls-copy-callback-url"
-            >
-              <Copy className="h-3.5 w-3.5" />
-            </Button>
-          </div>
+      <div className="rounded-md border bg-muted/40 p-3 space-y-2">
+        <div className="flex items-start gap-2">
+          <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
+          <p className="text-xs text-muted-foreground">
+            Add this <strong>Authorized redirect URI</strong> to whichever Google Cloud OAuth 2.0 client you're using (platform's or your own):
+          </p>
         </div>
-      )}
+        <div className="flex items-center gap-2 min-w-0">
+          <code className="flex-1 text-xs font-mono bg-background border rounded px-2 py-1 break-all min-w-0">
+            {oauthCallbackUrl}
+          </code>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="shrink-0"
+            onClick={() => {
+              navigator.clipboard.writeText(oauthCallbackUrl);
+              toast({ title: 'Copied', description: 'Callback URL copied to clipboard.' });
+            }}
+            data-testid="button-gls-copy-callback-url"
+          >
+            <Copy className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      </div>
     </IntegrationCardShell>
   );
 }
