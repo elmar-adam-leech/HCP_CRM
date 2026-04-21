@@ -582,6 +582,9 @@ export interface IStorage {
   getSalesProcessWithSteps: typeof salesProcessMethods.getSalesProcessWithSteps;
   upsertSalesProcess: typeof salesProcessMethods.upsertSalesProcess;
   listTaskInstances: typeof salesProcessMethods.listTaskInstances;
+  listTaskInstancesWithLeadSummary: typeof salesProcessMethods.listTaskInstancesWithLeadSummary;
+  countCompletedTasksSince: typeof salesProcessMethods.countCompletedTasksSince;
+  retryFailedTask: typeof salesProcessMethods.retryFailedTask;
   getTaskInstance: typeof salesProcessMethods.getTaskInstance;
   bulkInsertTaskInstances: typeof salesProcessMethods.bulkInsertTaskInstances;
   getOpenLeadsForBackfill: typeof salesProcessMethods.getOpenLeadsForBackfill;

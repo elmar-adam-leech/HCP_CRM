@@ -1,4 +1,5 @@
 import {
+  contacts,
   leads,
   salesProcesses,
   salesProcessSteps,
@@ -7,11 +8,23 @@ import {
   type SalesProcess,
   type SalesProcessStep,
   type SalesProcessTaskInstance,
-  type InsertSalesProcessStep,
   type InsertSalesProcessTaskInstance,
 } from "@shared/schema";
 import { db } from "../db";
 import { and, asc, eq, gte, inArray, isNull, lte, notInArray, sql } from "drizzle-orm";
+
+export interface TaskInstanceWithLead extends SalesProcessTaskInstance {
+  lead: {
+    id: string;
+    contactId: string;
+    status: string;
+    source: string | null;
+    createdAt: Date | null;
+    name: string;
+    email: string | null;
+    phone: string | null;
+  };
+}
 
 async function getOrCreateSalesProcess(contractorId: string): Promise<SalesProcess> {
   const existing = await db.select().from(salesProcesses)
@@ -219,6 +232,90 @@ async function listTaskInstances(
   return db.select().from(salesProcessTaskInstances)
     .where(and(...conds))
     .orderBy(asc(salesProcessTaskInstances.dueAt));
+}
+
+async function listTaskInstancesWithLeadSummary(
+  contractorId: string,
+  options: {
+    from?: Date;
+    to?: Date;
+    leadId?: string;
+    statuses?: Array<'pending' | 'completed' | 'skipped' | 'failed'>;
+  } = {},
+): Promise<TaskInstanceWithLead[]> {
+  const conds = [eq(salesProcessTaskInstances.contractorId, contractorId)];
+  if (options.leadId) conds.push(eq(salesProcessTaskInstances.leadId, options.leadId));
+  if (options.statuses && options.statuses.length > 0) {
+    conds.push(inArray(salesProcessTaskInstances.status, options.statuses));
+  }
+  if (options.from) conds.push(gte(salesProcessTaskInstances.dueAt, options.from));
+  if (options.to) conds.push(lte(salesProcessTaskInstances.dueAt, options.to));
+  const rows = await db
+    .select({
+      task: salesProcessTaskInstances,
+      lead: leads,
+      contact: contacts,
+    })
+    .from(salesProcessTaskInstances)
+    .innerJoin(leads, eq(leads.id, salesProcessTaskInstances.leadId))
+    .leftJoin(contacts, eq(contacts.id, leads.contactId))
+    .where(and(...conds))
+    .orderBy(asc(salesProcessTaskInstances.dueAt));
+  return rows.map((r) => ({
+    ...r.task,
+    lead: {
+      id: r.lead.id,
+      contactId: r.lead.contactId,
+      status: r.lead.status,
+      source: r.lead.source ?? null,
+      createdAt: r.lead.createdAt ?? null,
+      name: r.contact?.name ?? '',
+      email: r.contact?.emails?.[0] ?? null,
+      phone: r.contact?.phones?.[0] ?? null,
+    },
+  }));
+}
+
+async function countCompletedTasksSince(
+  contractorId: string,
+  since: Date,
+): Promise<number> {
+  const r = await db
+    .select({ c: sql<number>`count(*)::int` })
+    .from(salesProcessTaskInstances)
+    .where(and(
+      eq(salesProcessTaskInstances.contractorId, contractorId),
+      eq(salesProcessTaskInstances.status, 'completed'),
+      gte(salesProcessTaskInstances.completedAt, since),
+    ));
+  return r[0]?.c ?? 0;
+}
+
+/**
+ * Move a failed task back to pending so the cron will retry it on the next
+ * tick. Resets attemptCount and clears failureReason. Only operates on
+ * `failed` rows — no-op if the task has been completed/skipped/etc.
+ */
+async function retryFailedTask(
+  id: string,
+  contractorId: string,
+): Promise<SalesProcessTaskInstance | undefined> {
+  const r = await db.update(salesProcessTaskInstances).set({
+    status: 'pending',
+    failureReason: null,
+    attemptCount: 0,
+    completedAt: null,
+    completionReason: null,
+    dueAt: new Date(),
+  }).where(and(
+    eq(salesProcessTaskInstances.id, id),
+    eq(salesProcessTaskInstances.contractorId, contractorId),
+    eq(salesProcessTaskInstances.status, 'failed'),
+  )).returning();
+  if (r[0]) {
+    console.log(`[SalesProcess] sales_process instance_retry_requested tenantId=${r[0].contractorId} leadId=${r[0].leadId} stepId=${r[0].stepId} instanceId=${r[0].id}`);
+  }
+  return r[0];
 }
 
 async function getTaskInstance(id: string, contractorId: string): Promise<SalesProcessTaskInstance | undefined> {
@@ -455,6 +552,9 @@ export const salesProcessMethods = {
   getSalesProcessWithSteps,
   upsertSalesProcess,
   listTaskInstances,
+  listTaskInstancesWithLeadSummary,
+  countCompletedTasksSince,
+  retryFailedTask,
   getTaskInstance,
   bulkInsertTaskInstances,
   getOpenLeadsForBackfill,

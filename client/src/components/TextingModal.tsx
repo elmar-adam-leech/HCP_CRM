@@ -30,6 +30,13 @@ interface TextingModalProps {
   customerId?: string;
   estimateId?: string;
   onSent?: () => void;
+  /**
+   * Optional pre-filled message body. When supplied, the textarea is
+   * seeded on open so the user can edit before sending. Used by the
+   * Sales Process Follow-ups view to pre-populate the step's templated
+   * SMS for provider-backed sending.
+   */
+  initialMessage?: string;
 }
 
 export function TextingModal({
@@ -44,9 +51,10 @@ export function TextingModal({
   customerId,
   estimateId,
   onSent,
+  initialMessage,
 }: TextingModalProps) {
   const [, navigate] = useLocation();
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState(initialMessage ?? "");
   const [selectedTemplate, setSelectedTemplate] = useState<string>("");
   const [selectedFromNumber, setSelectedFromNumber] = useState<string>("");
   const { toast } = useToast();
@@ -72,6 +80,16 @@ export function TextingModal({
       setSelectedFromNumber("");
     }
   }, [isOpen]);
+
+  // Seed the textarea on open from initialMessage. We only seed when the
+  // textarea is currently empty so we don't clobber an in-progress edit
+  // if the parent re-renders.
+  useEffect(() => {
+    if (isOpen && initialMessage && !message) {
+      setMessage(initialMessage);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, initialMessage]);
 
   const handleSendMessage = async () => {
     if (!message.trim()) {

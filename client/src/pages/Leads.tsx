@@ -49,7 +49,10 @@ export default function Leads({ externalSearch = "" }: { externalSearch?: string
   const isMobile = useIsMobile();
   const { viewMode: savedViewMode, setViewMode, filterStatus, setFilterStatus, advancedFilters, setAdvancedFilters, sortBy, setSortBy, sortOrder, setSortOrder } =
     usePagePreferences({ pageKey: "leads", defaultSortBy: "lastActivity" });
-  const viewMode = isMobile ? "cards" : savedViewMode;
+  const viewMode: "cards" | "spreadsheet" | "kanban" =
+    isMobile
+      ? "cards"
+      : (savedViewMode === "sales-process" ? "cards" : savedViewMode);
 
   const {
     emailModal,

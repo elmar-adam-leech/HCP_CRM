@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { MessageSquare, FileText, X } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -31,6 +31,13 @@ interface TextButtonProps {
   followUpDate?: string;
   hasUnread?: boolean;
   onSent?: () => void;
+  /**
+   * Optional pre-filled message body. When set, opening the personal SMS
+   * modal seeds messageBody with this text so the user can edit before
+   * sending. Used by the Sales Process Follow-ups view to pre-fill the
+   * step's templated message.
+   */
+  initialMessage?: string;
 }
 
 export function TextButton({
@@ -52,6 +59,7 @@ export function TextButton({
   followUpDate,
   hasUnread,
   onSent,
+  initialMessage,
 }: TextButtonProps) {
   const { data: currentUser } = useCurrentUser();
   const { sms } = useProviderStatus();
@@ -74,12 +82,23 @@ export function TextButton({
 
   const handleClick = () => {
     if (usePersonal === null) return;
+    if (initialMessage) {
+      setMessageBody(initialMessage);
+    }
     if (usePersonal) {
       setShowPersonalModal(true);
     } else {
       setShowTextingModal(true);
     }
   };
+
+  // Keep messageBody in sync if the consumer changes initialMessage while
+  // the personal modal is open (e.g. selecting a different task row).
+  useEffect(() => {
+    if (showPersonalModal && initialMessage && !messageBody) {
+      setMessageBody(initialMessage);
+    }
+  }, [showPersonalModal, initialMessage, messageBody]);
 
   const handleTemplateSelect = (templateId: string) => {
     if (!templateId || templateId === "__none__") {
@@ -266,6 +285,7 @@ export function TextButton({
         customerId={customerId}
         estimateId={estimateId}
         onSent={onSent}
+        initialMessage={initialMessage}
       />
     </>
   );

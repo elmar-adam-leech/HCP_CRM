@@ -128,19 +128,53 @@ export function registerSalesProcessRoutes(app: Express): void {
     });
   }));
 
-  // GET pending/due tasks for the Follow-ups view.
+  // GET pending/due tasks for the Follow-ups view. When `withLead=1` is
+  // passed (the Follow-ups Sales Process view's only consumer), join in the
+  // lead + contact summary fields so the UI can render rows in a single
+  // round trip.
   app.get("/api/sales-process/tasks", asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const status = req.query.status as 'pending' | 'completed' | 'skipped' | 'failed' | undefined;
     const leadId = typeof req.query.leadId === 'string' ? req.query.leadId : undefined;
     const from = typeof req.query.from === 'string' ? new Date(req.query.from) : undefined;
     const to = typeof req.query.to === 'string' ? new Date(req.query.to) : undefined;
+    const fromDate = from && !isNaN(from.getTime()) ? from : undefined;
+    const toDate = to && !isNaN(to.getTime()) ? to : undefined;
+    const validStatuses = ['pending', 'completed', 'skipped', 'failed'] as const;
+    type Status = typeof validStatuses[number];
+    // `status` accepts a comma-separated list (e.g. "pending,failed"), or a
+    // single value, or omitted (returns all statuses).
+    let statuses: Status[] | undefined;
+    if (typeof req.query.status === 'string' && req.query.status.length > 0) {
+      const parsed = req.query.status
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s): s is Status => (validStatuses as readonly string[]).includes(s));
+      if (parsed.length > 0) statuses = parsed;
+    }
+    if (req.query.withLead === '1' || req.query.withLead === 'true') {
+      const tasks = await storage.listTaskInstancesWithLeadSummary(req.user.contractorId, {
+        leadId,
+        statuses,
+        from: fromDate,
+        to: toDate,
+      });
+      return res.json(tasks);
+    }
     const tasks = await storage.listTaskInstances(req.user.contractorId, {
-      status,
+      status: statuses && statuses.length === 1 ? statuses[0] : undefined,
       leadId,
-      from: from && !isNaN(from.getTime()) ? from : undefined,
-      to: to && !isNaN(to.getTime()) ? to : undefined,
+      from: fromDate,
+      to: toDate,
     });
     res.json(tasks);
+  }));
+
+  // Count of tasks completed since a given timestamp — powers the empty
+  // "All caught up — N completed today" state on the Follow-ups page.
+  app.get("/api/sales-process/tasks/completed-count", asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const sinceRaw = typeof req.query.since === 'string' ? new Date(req.query.since) : undefined;
+    const since = sinceRaw && !isNaN(sinceRaw.getTime()) ? sinceRaw : new Date(new Date().setHours(0, 0, 0, 0));
+    const count = await storage.countCompletedTasksSince(req.user.contractorId, since);
+    res.json({ count });
   }));
 
   app.post("/api/sales-process/tasks/:id/complete", asyncHandler(async (req: AuthedRequest, res: Response) => {
@@ -154,6 +188,17 @@ export function registerSalesProcessRoutes(app: Express): void {
     // Per spec: completing an already-terminal (completed/skipped/failed)
     // task is a no-op rather than a 404 — avoids confusing error toasts on
     // double-click / stale UI / race with cron auto-send.
+    const current = await storage.getTaskInstance(req.params.id, req.user.contractorId);
+    if (!current) return res.status(404).json({ error: 'Task not found' });
+    return res.json(current);
+  }));
+
+  // Reset a permanently-failed task back to pending so the cron retries it.
+  // Only operates on `failed` rows; if the task is in any other state we
+  // return its current state so the UI can resync without an error toast.
+  app.post("/api/sales-process/tasks/:id/retry", asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const updated = await storage.retryFailedTask(req.params.id, req.user.contractorId);
+    if (updated) return res.json(updated);
     const current = await storage.getTaskInstance(req.params.id, req.user.contractorId);
     if (!current) return res.status(404).json({ error: 'Task not found' });
     return res.json(current);

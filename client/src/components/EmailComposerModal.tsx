@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { ResponsiveModal } from "@/components/ui/responsive-modal";
 import { Button } from "@/components/ui/button";
@@ -35,6 +35,16 @@ interface EmailComposerModalProps {
   customerId?: string;
   estimateId?: string;
   onSent?: () => void;
+  /**
+   * Optional pre-filled subject. Seeds the subject input on open so callers
+   * (e.g. the Sales Process Follow-ups view) can pre-populate from a step
+   * template. The user can still edit before sending.
+   */
+  initialSubject?: string;
+  /**
+   * Optional pre-filled body content. Seeds the message textarea on open.
+   */
+  initialContent?: string;
 }
 
 export function EmailComposerModal({
@@ -50,13 +60,25 @@ export function EmailComposerModal({
   customerId,
   estimateId,
   onSent,
+  initialSubject,
+  initialContent,
 }: EmailComposerModalProps) {
   const [, navigate] = useLocation();
-  const [subject, setSubject] = useState("");
-  const [content, setContent] = useState("");
+  const [subject, setSubject] = useState(initialSubject ?? "");
+  const [content, setContent] = useState(initialContent ?? "");
   const [selectedTemplate, setSelectedTemplate] = useState<string>("");
   const [selectedFromAddress, setSelectedFromAddress] = useState<string>("");
   const { toast } = useToast();
+
+  // When the modal opens (or initial values change while open), seed the
+  // subject/content fields. We only seed if the field is currently empty so
+  // an in-progress edit isn't clobbered by a parent re-render.
+  useEffect(() => {
+    if (!isOpen) return;
+    if (initialSubject && !subject) setSubject(initialSubject);
+    if (initialContent && !content) setContent(initialContent);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, initialSubject, initialContent]);
 
   const { data: currentUser } = useCurrentUser();
 

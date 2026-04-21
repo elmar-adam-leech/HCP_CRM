@@ -3,7 +3,7 @@ import { type FilterState } from "@/components/FilterPanel";
 // Re-export so callers don't need to import FilterPanel separately
 export type { FilterState };
 
-export type ViewMode = "cards" | "kanban" | "spreadsheet";
+export type ViewMode = "cards" | "kanban" | "spreadsheet" | "sales-process";
 
 export interface PagePreferences {
   viewMode?: ViewMode;

@@ -9,7 +9,7 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useContactMutations } from "@/hooks/useContactMutations";
 import { useEstimateMutations } from "@/hooks/useEstimateMutations";
-import { Calendar, Filter, LayoutGrid, Table } from "lucide-react";
+import { Calendar, Filter, LayoutGrid, Table, ListChecks } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,8 @@ import { HousecallProSchedulingModal } from "@/components/HousecallProScheduling
 import { FollowUpDateModal } from "@/components/FollowUpDateModal";
 import { FollowUpCard, FollowUpItem, getFollowUpStatus } from "@/components/FollowUpCard";
 import { FollowUpSpreadsheetView } from "@/components/FollowUpSpreadsheetView";
+import { SalesProcessFollowUpView } from "@/components/SalesProcessFollowUpView";
+import type { SalesProcess, SalesProcessStep } from "@shared/schema";
 import { useState, useCallback } from "react";
 import { useLocation } from "wouter";
 import type { Contact, EstimateSummary } from "@shared/schema";
@@ -45,6 +47,10 @@ export default function FollowUps() {
   const { data: currentUserData } = useCurrentUser();
   const contractorName = currentUserData?.user?.contractorName || '';
 
+  // We re-derive the page default once the sales-process query resolves so
+  // tenants with an active process land on the new step-based view by
+  // default. Users who have explicitly picked another view in the past
+  // keep their saved choice (preferences.viewMode wins over the default).
   const { viewMode, setViewMode } = usePagePreferences({
     pageKey: "follow-ups",
     defaultViewMode: "cards",
@@ -80,6 +86,39 @@ export default function FollowUps() {
     isOpen: boolean;
     contact?: Contact;
   }>({ isOpen: false });
+
+  // Fetch the sales-process metadata to (a) decide whether to show the
+  // Sales Process view toggle and (b) pass step rows down so the new view
+  // can group tasks by step.
+  const { data: salesProcessData } = useQuery<{ process: SalesProcess; steps: SalesProcessStep[] }>({
+    queryKey: ["/api/sales-process"],
+  });
+  const salesProcess = salesProcessData?.process;
+  const salesProcessSteps = salesProcessData?.steps ?? [];
+  const hasActiveSalesProcess = !!salesProcess?.active && salesProcessSteps.length > 0;
+
+  // One-shot: when the sales-process metadata loads and the contractor has
+  // an active process, switch to the new view *unless* the user has
+  // explicitly saved a different viewMode (in which case the persisted
+  // value wins). We detect "no explicit choice" by reading the same
+  // localStorage key usePagePreferences uses.
+  const [hasAutoSwitchedToSalesProcess, setHasAutoSwitchedToSalesProcess] = useState(false);
+  if (
+    hasActiveSalesProcess &&
+    !hasAutoSwitchedToSalesProcess &&
+    typeof window !== "undefined"
+  ) {
+    try {
+      const raw = window.localStorage.getItem("page-preferences-follow-ups");
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (!parsed?.viewMode) {
+        setViewMode("sales-process");
+      }
+      setHasAutoSwitchedToSalesProcess(true);
+    } catch {
+      setHasAutoSwitchedToSalesProcess(true);
+    }
+  }
 
   const { data: allFollowUps = [], isLoading } = useQuery<FollowUpItem[]>({
     queryKey: ["/api/follow-ups/unified"],
@@ -355,7 +394,27 @@ export default function FollowUps() {
     }
   }, [toast, removeLeadFollowUpMutation, removeEstimateFollowUpMutation, removeJobFollowUpMutation]);
 
-  const activeViewMode = viewMode === "kanban" ? "cards" : viewMode;
+  // If the user previously selected the sales-process view but the
+  // contractor disabled the process, fall back to cards.
+  const activeViewMode =
+    viewMode === "kanban"
+      ? "cards"
+      : viewMode === "sales-process" && !hasActiveSalesProcess
+        ? "cards"
+        : viewMode;
+
+  const handleOpenLeadFromSalesProcess = useCallback(
+    async (leadId: string) => {
+      try {
+        const res = await apiRequest("GET", `/api/contacts/${leadId}`);
+        const contact: Contact = await res.json();
+        setLeadDetailsModal({ isOpen: true, contact });
+      } catch {
+        toast({ title: "Failed to load lead", variant: "destructive" });
+      }
+    },
+    [toast],
+  );
 
   return (
     <PageLayout>
@@ -381,6 +440,17 @@ export default function FollowUps() {
               >
                 <Table className="h-4 w-4" />
               </Button>
+              {hasActiveSalesProcess && (
+                <Button
+                  variant={activeViewMode === "sales-process" ? "default" : "ghost"}
+                  size="sm"
+                  onClick={() => setViewMode("sales-process")}
+                  data-testid="view-sales-process"
+                  title="Sales Process"
+                >
+                  <ListChecks className="h-4 w-4" />
+                </Button>
+              )}
             </div>
             <Select value={filterView} onValueChange={setFilterView} data-testid="select-filter-view">
               <SelectTrigger className="w-full sm:w-[180px]">
@@ -404,7 +474,13 @@ export default function FollowUps() {
         }
       />
 
-      {activeViewMode === "spreadsheet" ? (
+      {activeViewMode === "sales-process" ? (
+        <SalesProcessFollowUpView
+          process={salesProcess}
+          steps={salesProcessSteps}
+          onOpenLead={handleOpenLeadFromSalesProcess}
+        />
+      ) : activeViewMode === "spreadsheet" ? (
         <FollowUpSpreadsheetView
           items={followUpItems}
           isLoading={isLoading}
