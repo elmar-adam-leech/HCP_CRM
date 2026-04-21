@@ -22,6 +22,8 @@ type ContactWithCounts = Contact & {
   leadCount: number;
   estimateCount: number;
   jobCount: number;
+  allLeadsArchived?: boolean;
+  anyLeadAged?: boolean;
 };
 
 type ContactsResponse = {

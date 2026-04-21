@@ -755,7 +755,7 @@ async function getContactsWithCounts(contractorId: string, options: {
   limit?: number;
   offset?: number;
 } = {}): Promise<{
-  data: Array<Contact & { leadCount: number; estimateCount: number; jobCount: number }>;
+  data: Array<Contact & { leadCount: number; estimateCount: number; jobCount: number; allLeadsArchived: boolean; anyLeadAged: boolean }>;
   pagination: { total: number; hasMore: boolean; nextCursor: string | null };
 }> {
   const limit = Math.min(options.limit || 50, 100);
@@ -794,6 +794,11 @@ async function getContactsWithCounts(contractorId: string, options: {
       leadCount: sql<number>`(SELECT COUNT(*) FROM leads WHERE leads.contact_id = "contacts"."id" AND leads.contractor_id = ${contractorId})::int`,
       estimateCount: sql<number>`(SELECT COUNT(*) FROM estimates WHERE estimates.contact_id = "contacts"."id" AND estimates.contractor_id = ${contractorId})::int`,
       jobCount: sql<number>`(SELECT COUNT(*) FROM jobs WHERE jobs.contact_id = "contacts"."id" AND jobs.contractor_id = ${contractorId})::int`,
+      // State-summary booleans used to render Disqualified / Archived /
+      // Aged badges. Inline correlated subqueries — same pattern as
+      // CONTACT_FIELDS in getContactsPaginated, no per-row N+1.
+      allLeadsArchived: sql<boolean>`COALESCE((SELECT BOOL_AND(archived) FROM leads WHERE leads.contact_id = "contacts"."id"), false)`,
+      anyLeadAged: sql<boolean>`EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = "contacts"."id" AND leads.aged = true)`,
     })
     .from(contacts)
     .where(and(...conditions))
@@ -818,7 +823,7 @@ async function getContactsWithCounts(contractorId: string, options: {
     const currentOffset = options.offset ?? 0;
     const hasMore = currentOffset + rows.length < total;
     return {
-      data: rows as Array<Contact & { leadCount: number; estimateCount: number; jobCount: number }>,
+      data: rows as Array<Contact & { leadCount: number; estimateCount: number; jobCount: number; allLeadsArchived: boolean; anyLeadAged: boolean }>,
       pagination: { total, hasMore, nextCursor: null },
     };
   }
@@ -828,7 +833,7 @@ async function getContactsWithCounts(contractorId: string, options: {
   const nextCursor = hasMore ? data[data.length - 1].createdAt?.toISOString() ?? null : null;
 
   return {
-    data: data as Array<Contact & { leadCount: number; estimateCount: number; jobCount: number }>,
+    data: data as Array<Contact & { leadCount: number; estimateCount: number; jobCount: number; allLeadsArchived: boolean; anyLeadAged: boolean }>,
     pagination: { total, hasMore, nextCursor },
   };
 }

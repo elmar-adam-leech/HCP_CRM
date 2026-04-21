@@ -12,6 +12,8 @@ type ContactWithCounts = Contact & {
   leadCount: number;
   estimateCount: number;
   jobCount: number;
+  allLeadsArchived?: boolean;
+  anyLeadAged?: boolean;
 };
 
 interface ContactGridProps {
@@ -121,6 +123,21 @@ export function ContactGrid({
                 </div>
               </div>
               <div className="flex items-center gap-2 mt-3 flex-wrap">
+                {contact.status === 'disqualified' && (
+                  <Badge variant="destructive" className="text-xs" data-testid={`badge-disqualified-${contact.id}`}>
+                    Disqualified
+                  </Badge>
+                )}
+                {contact.allLeadsArchived && (
+                  <Badge variant="secondary" className="text-xs" data-testid={`badge-archived-${contact.id}`}>
+                    Archived
+                  </Badge>
+                )}
+                {contact.anyLeadAged && (
+                  <Badge variant="secondary" className="text-xs" data-testid={`badge-aged-${contact.id}`}>
+                    Aged
+                  </Badge>
+                )}
                 {contact.leadCount > 0 && (
                   <Badge variant="secondary" className="text-xs gap-1">
                     <Users className="h-3 w-3" />
