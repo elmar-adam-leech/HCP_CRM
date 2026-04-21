@@ -22,6 +22,11 @@ import { isIntegrationEnabledCached } from './services/cache';
 import { syncHousecallPro, syncHousecallProJobs } from './sync/housecall-pro';
 import { syncGmail } from './sync/gmail';
 import { syncFacebookLeads, getContractorsWithFacebookEnabled } from './sync/facebook-leads';
+import {
+  syncGoogleLocalServicesLeads,
+  getContractorsWithGoogleLocalServicesEnabled,
+  GLS_SERVICE,
+} from './sync/google-local-services-leads';
 import { syncLeadCaptureInbox } from './services/lead-capture-sync';
 import { logger } from './utils/logger';
 import { formatDbError } from './utils/db-error';
@@ -138,6 +143,20 @@ export class SyncScheduler {
       }
     } catch (err) {
       log.error(`[schedule-recovery] Failed to recover facebook-leads schedules on startup: ${formatDbError(err)}`);
+    }
+
+    // Same defensive recovery for Google Local Services Ads.
+    try {
+      const glsContractorIds = await getContractorsWithGoogleLocalServicesEnabled();
+      for (const contractorId of glsContractorIds) {
+        const existing = await storage.getSyncSchedule(contractorId, GLS_SERVICE);
+        if (!existing) {
+          await this.scheduleSync(contractorId, GLS_SERVICE, 'every-5-minutes');
+          log.info(`[schedule-recovery] Restored missing ${GLS_SERVICE} schedule for contractor: ${contractorId}`);
+        }
+      }
+    } catch (err) {
+      log.error(`[schedule-recovery] Failed to recover ${GLS_SERVICE} schedules on startup: ${formatDbError(err)}`);
     }
 
     // Run immediately on startup, then schedule the next wake adaptively.
@@ -336,6 +355,9 @@ export class SyncScheduler {
         case 'facebook-leads':
           await syncFacebookLeads(tenantId);
           break;
+        case GLS_SERVICE:
+          await syncGoogleLocalServicesLeads(tenantId);
+          break;
         case 'lead-capture': {
           const inbox = await storage.getLeadCaptureInbox(tenantId);
           if (inbox && inbox.isActive) {
@@ -398,6 +420,8 @@ export class SyncScheduler {
     } else if (integrationName === 'lead-capture') {
       await this.scheduleSync(tenantId, integrationName, 'every-5-minutes');
     } else if (integrationName === 'facebook-leads') {
+      await this.scheduleSync(tenantId, integrationName, 'every-5-minutes');
+    } else if (integrationName === GLS_SERVICE) {
       await this.scheduleSync(tenantId, integrationName, 'every-5-minutes');
     }
   }

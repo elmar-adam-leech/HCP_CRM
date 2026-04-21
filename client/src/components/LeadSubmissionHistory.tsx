@@ -7,6 +7,7 @@ import { AlertCircle, Calendar, ExternalLink, FileText, Briefcase, LayoutTemplat
 import { format } from "date-fns";
 import type { Lead } from "@shared/schema";
 import { Link } from "wouter";
+import { formatLeadSource } from "@/lib/lead-source";
 
 interface LeadSubmissionHistoryProps {
   contactId: string;
@@ -97,7 +98,7 @@ export function LeadSubmissionHistory({ contactId }: LeadSubmissionHistoryProps)
             {lead.source && (
               <div data-testid={`lead-source-${lead.id}`}>
                 <span className="text-sm font-medium text-muted-foreground">Source: </span>
-                <span className="text-sm">{lead.source}</span>
+                <span className="text-sm">{formatLeadSource(lead.source)}</span>
               </div>
             )}
 
@@ -121,6 +122,32 @@ export function LeadSubmissionHistory({ contactId }: LeadSubmissionHistoryProps)
                       <>{formName} <span className="text-xs text-muted-foreground font-mono">({formId})</span></>
                     ) : (
                       <span className="font-mono text-xs">{formId}</span>
+                    )}
+                  </span>
+                </div>
+              );
+            })()}
+
+            {lead.source === 'google_local_services' && (() => {
+              let glsLeadId: string | undefined;
+              let glsLeadType: string | undefined;
+              try {
+                const raw = JSON.parse(lead.rawPayload ?? '{}');
+                glsLeadId = raw._gls_lead_id ? String(raw._gls_lead_id) : undefined;
+                glsLeadType = raw._gls_lead_type ? String(raw._gls_lead_type) : undefined;
+              } catch {
+                // ignore parse errors
+              }
+              if (!glsLeadId) return null;
+              return (
+                <div className="flex items-center gap-2" data-testid={`lead-gls-info-${lead.id}`}>
+                  <LayoutTemplate className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <span className="text-sm font-medium text-muted-foreground">Google Local Services:</span>
+                  <span className="text-sm">
+                    {glsLeadType ? (
+                      <>{glsLeadType.toLowerCase().replace('_', ' ')} <span className="text-xs text-muted-foreground font-mono">({glsLeadId})</span></>
+                    ) : (
+                      <span className="font-mono text-xs">{glsLeadId}</span>
                     )}
                   </span>
                 </div>

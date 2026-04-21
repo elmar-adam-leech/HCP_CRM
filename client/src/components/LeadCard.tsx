@@ -16,6 +16,7 @@ import { WorkflowEnrollmentBadges } from "./WorkflowEnrollmentBadges";
 import { getInitials, hcpUrl } from "@/lib/utils";
 import { getStatusBorderColor } from "@/lib/card-utils";
 import { useContactMutations } from "@/hooks/useContactMutations";
+import { formatLeadSource } from "@/lib/lead-source";
 import type { Contact } from "@shared/schema";
 
 // hasJobs is a virtual computed column added by the paginated contacts query,
@@ -53,6 +54,7 @@ export const LeadCard = memo(function LeadCard({ lead, onSchedule, onSendEmail, 
   const leadPhone = (lead.phones && lead.phones.length > 0) ? lead.phones[0] : '';
   const leadAddress = lead.address || '';
   const leadSource = lead.source || '';
+  const leadSourceLabel = formatLeadSource(lead.source);
   const leadScheduledDate = lead.scheduledAt ? new Date(lead.scheduledAt).toLocaleDateString() : undefined;
   const leadTags = lead.tags || [];
 
@@ -90,7 +92,7 @@ export const LeadCard = memo(function LeadCard({ lead, onSchedule, onSendEmail, 
             <div className="flex items-center gap-2 mt-1 flex-wrap">
               <StatusBadge status={lead.status as Parameters<typeof StatusBadge>[0]['status']} entityType="lead" />
               <CustomerBadge hasJobs={lead.hasJobs} />
-              <span className="text-xs text-muted-foreground truncate">{leadSource}</span>
+              <span className="text-xs text-muted-foreground truncate">{leadSourceLabel}</span>
               {lead.housecallProCustomerId && (
                 <a
                   href={hcpUrl('customer', lead.housecallProCustomerId)}

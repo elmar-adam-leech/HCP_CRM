@@ -9,6 +9,7 @@ const HCP_LEAD_SOURCE_MAP: Record<string, string> = {
   facebook_history: 'Facebook',
 
   google: 'Google',
+  google_local_services: 'Google Local Services',
   website: 'Website',
   public_booking: 'Website',
 
@@ -50,6 +51,7 @@ export function mapToHcpLeadSource(source: string | null | undefined): string | 
 const SOURCE_VARIANT_TO_CANONICAL: Record<string, string> = {
   facebook_lead_ad: 'facebook',
   facebook_history: 'facebook',
+  google_local_services: 'google',
   public_booking: 'website',
   email_capture: 'email',
   repeat_customer: 'referral',

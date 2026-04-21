@@ -31,6 +31,7 @@ import { registerHousecallProRoutes } from './routes/integrations/housecall-pro'
 import { registerHcpSyncRoutes } from './routes/integrations/hcp-sync';
 import { registerHcpSchedulingRoutes } from './routes/integrations/hcp-scheduling';
 import { registerFacebookIntegrationRoutes } from './routes/integrations/facebook';
+import { registerGoogleLocalServicesIntegrationRoutes } from './routes/integrations/google-local-services';
 import { registerWebhookRoutes } from './routes/webhooks';
 import { registerPublicRoutes } from './routes/public';
 import { registerDashboardRoutes } from './routes/dashboard';
@@ -115,6 +116,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerSettingsRoutes(app);
   registerLeadCaptureRoutes(app);
   registerFacebookIntegrationRoutes(app);
+  registerGoogleLocalServicesIntegrationRoutes(app);
   registerIntegrationRoutes(app);
   registerDialpadRoutes(app);
   registerHousecallProRoutes(app);
