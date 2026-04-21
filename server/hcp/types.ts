@@ -74,6 +74,7 @@ export interface HousecallProEstimate {
     country?: string;
   };
   address?: {
+    id?: string;
     street?: string;
     street_line_2?: string;
     city?: string;
@@ -81,6 +82,7 @@ export interface HousecallProEstimate {
     zip?: string;
     country?: string;
   };
+  address_id?: string;
   source?: {
     name?: string;
   };

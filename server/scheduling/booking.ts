@@ -118,16 +118,17 @@ export async function bookAppointment(tenantId: string, request: BookingRequest)
   }
 
   if (selectedSalesperson.housecallProUserId && request.contactId) {
-    const hcpCustomerId = await resolveHcpCustomer(tenantId, request.contactId, request);
-    if (hcpCustomerId) {
+    const resolved = await resolveHcpCustomer(tenantId, request.contactId, request);
+    if (resolved?.customerId) {
       const hcpResult = await createOrConvertHcpEstimate(
         tenantId,
-        hcpCustomerId,
+        resolved.customerId,
         selectedSalesperson,
         request,
         endTime,
         storedContactAddress?.address,
-        storedContactAddress
+        storedContactAddress,
+        resolved.serviceAddressId
       );
       if (hcpResult) {
         hcpEstimateId = hcpResult.hcpEstimateId;

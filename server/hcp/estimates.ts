@@ -65,6 +65,7 @@ export class HcpEstimatesModule extends HcpBaseClient {
       zip: string;
       country?: string;
     };
+    address_id?: string;
   }): Promise<HousecallProResponse<HousecallProEstimate>> {
     return this.makeRequest<HousecallProEstimate>('/estimates', tenantId, 'POST', estimateData, 3, ESTIMATES_ACCEPT);
   }

@@ -15,6 +15,7 @@ import { logConsent, hashIp } from '../utils/consent-log';
 import { normalizeAddress } from '../utils/normalize-address';
 import { buildContactEnrichment } from '../utils/contact-enrichment';
 import { buildFormattedAddress, parseAddressString } from '../utils/address';
+import { syncHcpCustomerAddress } from '../scheduling/hcp-customer';
 
 const log = logger('LeadIngestion');
 
@@ -323,6 +324,28 @@ export async function ingestLead(
           return;
         }
 
+        // Build the structured service-address payload once so both the
+        // new-customer and existing-customer branches can pass it through to
+        // syncHcpCustomerAddress and end up with a verified `address_id` on
+        // the resulting HCP lead.
+        const ingestionAddressData: { street: string; city: string; state: string; zip: string; country?: string } | undefined =
+          (freshContact.street || freshContact.city || freshContact.state || freshContact.zip)
+            ? {
+                street: freshContact.street || '',
+                city: freshContact.city || '',
+                state: freshContact.state || '',
+                zip: freshContact.zip || '',
+              }
+            : (freshContact.address ? (() => {
+                const parsed = parseAddressString(freshContact.address!);
+                return parsed.street ? {
+                  street: parsed.street,
+                  city: parsed.city || '',
+                  state: parsed.state || '',
+                  zip: parsed.zip || '',
+                } : undefined;
+              })() : undefined);
+
         if (!freshContact.housecallProCustomerId) {
           const nameParts = freshContact.name.split(' ');
           const firstName = nameParts[0] || '';
@@ -357,15 +380,11 @@ export async function ingestLead(
               mobile_number: searchPhone,
               lead_source: hcpLeadSource,
               notes: input.notes || undefined,
-              addresses: (freshContact.street || freshContact.address) ? [{
-                ...(!freshContact.street && !freshContact.city && !freshContact.state && !freshContact.zip && freshContact.address
-                  ? parseAddressString(freshContact.address)
-                  : {
-                      street: freshContact.street || '',
-                      city: freshContact.city || '',
-                      state: freshContact.state || '',
-                      zip: freshContact.zip || '',
-                    }),
+              addresses: ingestionAddressData ? [{
+                street: ingestionAddressData.street,
+                city: ingestionAddressData.city,
+                state: ingestionAddressData.state,
+                zip: ingestionAddressData.zip,
                 type: 'service' as const,
               }] : undefined
             });
@@ -381,12 +400,29 @@ export async function ingestLead(
           }
 
           await storage.updateContact(freshContact.id, { housecallProCustomerId: hcpCustomerId }, contractorId);
+
+          // Sync the service address to recover the `address_id` HCP assigned
+          // to it (the create response can omit the addresses array entirely),
+          // and pass it through so the resulting lead is pinned to the right
+          // address record. Failures here are non-fatal: we still create the
+          // lead, just without `address_id`.
+          let serviceAddressId: string | undefined;
+          if (ingestionAddressData?.street) {
+            try {
+              serviceAddressId = await syncHcpCustomerAddress(contractorId, hcpCustomerId, ingestionAddressData);
+            } catch (err) {
+              log.warn(`HCP: address sync threw for new customer ${hcpCustomerId}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+
           const hcpLeadResult = await housecallProService.createLead(contractorId, {
             customer_id: hcpCustomerId,
             lead_source: hcpLeadSource,
-            note: input.message || undefined
+            note: input.message || undefined,
+            address_id: serviceAddressId,
           });
           if (hcpLeadResult.success && hcpLeadResult.data?.id) {
+            log.info(`HCP: created lead ${hcpLeadResult.data.id} for customer ${hcpCustomerId} addressId=${serviceAddressId ?? '<none>'}`);
             await storage.updateLead(lead.id, {
               housecallProLeadId: hcpLeadResult.data.id,
               hcpSyncSkipReason: null,
@@ -399,12 +435,33 @@ export async function ingestLead(
           }
         } else {
           const hcpLeadSource = await resolveHcpLeadSource(contractorId, input.source);
+
+          // Existing HCP customer: previously this branch skipped the address
+          // sync entirely, which meant the resulting lead inherited the
+          // customer's billing address. Run the same sync used by the
+          // scheduling flow so the lead gets pinned to the right service
+          // address record.
+          let serviceAddressId: string | undefined;
+          if (ingestionAddressData?.street) {
+            try {
+              serviceAddressId = await syncHcpCustomerAddress(
+                contractorId,
+                freshContact.housecallProCustomerId,
+                ingestionAddressData,
+              );
+            } catch (err) {
+              log.warn(`HCP: address sync threw for existing customer ${freshContact.housecallProCustomerId}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+
           const hcpLeadResult = await housecallProService.createLead(contractorId, {
             customer_id: freshContact.housecallProCustomerId,
             lead_source: hcpLeadSource,
-            note: input.message || undefined
+            note: input.message || undefined,
+            address_id: serviceAddressId,
           });
           if (hcpLeadResult.success && hcpLeadResult.data?.id) {
+            log.info(`HCP: created lead ${hcpLeadResult.data.id} for existing customer ${freshContact.housecallProCustomerId} addressId=${serviceAddressId ?? '<none>'}`);
             await storage.updateLead(lead.id, {
               housecallProLeadId: hcpLeadResult.data.id,
               hcpSyncSkipReason: null,

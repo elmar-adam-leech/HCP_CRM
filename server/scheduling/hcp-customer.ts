@@ -67,7 +67,7 @@ async function postNewServiceAddress(
   tenantId: string,
   customerId: string,
   addressData: { street: string; city: string; state: string; zip: string; country?: string }
-): Promise<boolean> {
+): Promise<string | undefined> {
   log.info(`[scheduling] POSTing new service address for HCP customer ${customerId}: street="${addressData.street}", city="${addressData.city}", state="${addressData.state}", zip="${addressData.zip}"`);
   const postResult = await housecallProService.createCustomerAddress(tenantId, customerId, {
     street: addressData.street,
@@ -82,9 +82,21 @@ async function postNewServiceAddress(
   });
   if (!postResult.success) {
     log.warn(`[scheduling] POST address failed for HCP customer ${customerId}: ${postResult.error}`);
-    return false;
+    return undefined;
   }
-  return true;
+  const newId = (postResult.data as { id?: string } | undefined)?.id;
+  if (!newId) {
+    log.warn(`[scheduling] POST address for HCP customer ${customerId} succeeded but response did not include an id; refetching to recover`);
+    const refetch = await housecallProService.getCustomer(tenantId, customerId);
+    if (refetch.success) {
+      const refList: HcpAddressRecord[] = refetch.data?.addresses ?? [];
+      const match = refList.find((a) => (a?.street || '').trim() === addressData.street.trim() && a?.type === 'service')
+        || refList.find((a) => (a?.street || '').trim() === addressData.street.trim());
+      if (match?.id) return match.id;
+    }
+    return undefined;
+  }
+  return newId;
 }
 
 /**
@@ -106,16 +118,16 @@ async function postNewServiceAddress(
  * All failures are non-fatal and logged with the customer id, address id,
  * the payload we sent, and the HCP error body so regressions stay debuggable.
  */
-async function syncHcpCustomerAddress(
+export async function syncHcpCustomerAddress(
   tenantId: string,
   customerId: string,
   addressData: { street: string; city: string; state: string; zip: string; country?: string }
-): Promise<void> {
+): Promise<string | undefined> {
   const customerResult = await housecallProService.getCustomer(tenantId, customerId);
 
   if (!customerResult.success) {
     log.warn(`[scheduling] Could not fetch HCP customer ${customerId} to check address status (${customerResult.error}); skipping address sync`);
-    return;
+    return undefined;
   }
 
   const hcpCustomer = customerResult.data;
@@ -130,8 +142,7 @@ async function syncHcpCustomerAddress(
 
   if (!existingAddressId) {
     log.info(`[scheduling] HCP customer ${customerId} has no address record on file; creating one`);
-    await postNewServiceAddress(tenantId, customerId, addressData);
-    return;
+    return await postNewServiceAddress(tenantId, customerId, addressData);
   }
 
   const addressPayload = {
@@ -157,8 +168,7 @@ async function syncHcpCustomerAddress(
     if (!deleteResult.success) {
       log.warn(`[scheduling] Could not delete stale HCP address ${existingAddressId} on customer ${customerId}: ${deleteResult.error}; attempting POST anyway`);
     }
-    await postNewServiceAddress(tenantId, customerId, addressData);
-    return;
+    return await postNewServiceAddress(tenantId, customerId, addressData);
   }
 
   // Verify the street actually persisted. HCP has been observed to return 2xx
@@ -167,7 +177,7 @@ async function syncHcpCustomerAddress(
   const verifyResult = await housecallProService.getCustomer(tenantId, customerId);
   if (!verifyResult.success) {
     log.warn(`[scheduling] Could not re-fetch HCP customer ${customerId} after per-address PATCH to verify street persistence: ${verifyResult.error}`);
-    return;
+    return existingAddressId;
   }
   const verifiedList: HcpAddressRecord[] = verifyResult.data?.addresses ?? [];
   const verifiedRecord = verifiedList.find((a) => a?.id === existingAddressId);
@@ -175,7 +185,7 @@ async function syncHcpCustomerAddress(
   const expectedStreet = addressData.street.trim();
   if (persistedStreet === expectedStreet) {
     log.info(`[scheduling] Verified HCP address ${existingAddressId} street persisted as "${persistedStreet}" for customer ${customerId}`);
-    return;
+    return existingAddressId;
   }
 
   log.warn(`[scheduling] HCP per-address PATCH returned success but street did not persist for customer ${customerId} address ${existingAddressId} (expected "${expectedStreet}", got "${persistedStreet}"). Deleting stale record and POSTing a fresh one.`);
@@ -183,7 +193,7 @@ async function syncHcpCustomerAddress(
   if (!deleteResult.success) {
     log.warn(`[scheduling] Could not delete stale HCP address ${existingAddressId} on customer ${customerId} during recovery: ${deleteResult.error}; POSTing new address anyway (may result in duplicate)`);
   }
-  await postNewServiceAddress(tenantId, customerId, addressData);
+  return await postNewServiceAddress(tenantId, customerId, addressData);
 }
 
 /**
@@ -191,11 +201,16 @@ async function syncHcpCustomerAddress(
  * Updates the local contact row with the HCP customer ID on success.
  * Returns the HCP customer ID, or undefined if it could not be resolved.
  */
+export interface ResolvedHcpCustomer {
+  customerId: string;
+  serviceAddressId?: string;
+}
+
 export async function resolveHcpCustomer(
   tenantId: string,
   contactId: string,
   request: BookingRequest
-): Promise<string | undefined> {
+): Promise<ResolvedHcpCustomer | undefined> {
   const [contact] = await db.select()
     .from(contacts)
     .where(eq(contacts.id, contactId))
@@ -206,10 +221,11 @@ export async function resolveHcpCustomer(
   const addressData = resolveAddressComponents(request, contact.address, contact);
 
   if (contact.housecallProCustomerId) {
+    let serviceAddressId: string | undefined;
     if (addressData?.street) {
-      await syncHcpCustomerAddress(tenantId, contact.housecallProCustomerId, addressData);
+      serviceAddressId = await syncHcpCustomerAddress(tenantId, contact.housecallProCustomerId, addressData);
     }
-    return contact.housecallProCustomerId;
+    return { customerId: contact.housecallProCustomerId, serviceAddressId };
   }
 
   const primaryEmail = contact.emails?.[0];
@@ -227,10 +243,11 @@ export async function resolveHcpCustomer(
       await db.update(contacts)
         .set({ housecallProCustomerId: hcpCustomerId })
         .where(eq(contacts.id, contact.id));
+      let serviceAddressId: string | undefined;
       if (addressData?.street) {
-        await syncHcpCustomerAddress(tenantId, hcpCustomerId, addressData);
+        serviceAddressId = await syncHcpCustomerAddress(tenantId, hcpCustomerId, addressData);
       }
-      return hcpCustomerId;
+      return { customerId: hcpCustomerId, serviceAddressId };
     }
   }
 
@@ -257,10 +274,11 @@ export async function resolveHcpCustomer(
     // always echo a usable address record back in the create response — and
     // even when it does, it can omit the street. Run the same sync routine
     // here so all three resolution paths converge on the same verified state.
+    let serviceAddressId: string | undefined;
     if (addressData?.street) {
-      await syncHcpCustomerAddress(tenantId, hcpCustomerId, addressData);
+      serviceAddressId = await syncHcpCustomerAddress(tenantId, hcpCustomerId, addressData);
     }
-    return hcpCustomerId;
+    return { customerId: hcpCustomerId, serviceAddressId };
   }
 
   log.warn(`Failed to create HCP customer: ${customerResult.error}`);

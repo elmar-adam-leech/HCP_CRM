@@ -87,9 +87,10 @@ describe('resolveHcpCustomer / syncHcpCustomerAddress', () => {
     });
     hcp.updateCustomerAddress.mockResolvedValue({ success: true, data: {} });
 
-    const id = await resolveHcpCustomer(TENANT, 'c1', REQUEST);
+    const result = await resolveHcpCustomer(TENANT, 'c1', REQUEST);
 
-    expect(id).toBe('hcp-1');
+    expect(result?.customerId).toBe('hcp-1');
+    expect(result?.serviceAddressId).toBe('addr-1');
     expect(hcp.searchCustomers).not.toHaveBeenCalled();
     expect(hcp.createCustomer).toHaveBeenCalledTimes(1);
     const [tenantArg, payload] = hcp.createCustomer.mock.calls[0];
@@ -110,11 +111,12 @@ describe('resolveHcpCustomer / syncHcpCustomerAddress', () => {
     };
 
     hcp.getCustomer.mockResolvedValue({ success: true, data: { addresses: [] } });
-    hcp.createCustomerAddress.mockResolvedValue({ success: true, data: {} });
+    hcp.createCustomerAddress.mockResolvedValue({ success: true, data: { id: 'addr-2' } });
 
-    const id = await resolveHcpCustomer(TENANT, 'c2', REQUEST);
+    const result = await resolveHcpCustomer(TENANT, 'c2', REQUEST);
 
-    expect(id).toBe('hcp-2');
+    expect(result?.customerId).toBe('hcp-2');
+    expect(result?.serviceAddressId).toBe('addr-2');
     expect(hcp.updateCustomerAddress).not.toHaveBeenCalled();
     expect(hcp.deleteCustomerAddress).not.toHaveBeenCalled();
     expect(hcp.createCustomerAddress).toHaveBeenCalledTimes(1);
@@ -194,7 +196,7 @@ describe('resolveHcpCustomer / syncHcpCustomerAddress', () => {
       });
     hcp.updateCustomerAddress.mockResolvedValue({ success: true, data: {} });
     hcp.deleteCustomerAddress.mockResolvedValue({ success: true, data: {} });
-    hcp.createCustomerAddress.mockResolvedValue({ success: true, data: {} });
+    hcp.createCustomerAddress.mockResolvedValue({ success: true, data: { id: 'addr-4-new' } });
 
     await resolveHcpCustomer(TENANT, 'c4', REQUEST);
 
@@ -226,7 +228,7 @@ describe('resolveHcpCustomer / syncHcpCustomerAddress', () => {
     });
     hcp.updateCustomerAddress.mockResolvedValue({ success: false, error: 'boom' });
     hcp.deleteCustomerAddress.mockResolvedValue({ success: true, data: {} });
-    hcp.createCustomerAddress.mockResolvedValue({ success: true, data: {} });
+    hcp.createCustomerAddress.mockResolvedValue({ success: true, data: { id: 'addr-5-new' } });
 
     await resolveHcpCustomer(TENANT, 'c5', REQUEST);
 

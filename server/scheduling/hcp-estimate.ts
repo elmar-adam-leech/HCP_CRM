@@ -78,9 +78,11 @@ export async function createOrConvertHcpEstimate(
   request: BookingRequest,
   endTime: Date,
   contactAddress?: string | null,
-  contact?: { street?: string | null; city?: string | null; state?: string | null; zip?: string | null } | null
+  contact?: { street?: string | null; city?: string | null; state?: string | null; zip?: string | null } | null,
+  serviceAddressId?: string
 ): Promise<HcpEstimateResult | undefined> {
   const estimateAddress = resolveAddressComponents(request, contactAddress, contact);
+  log.info(`[scheduling] createOrConvertHcpEstimate entry: customerId=${hcpCustomerId} serviceAddressId=${serviceAddressId ?? '<none>'}`);
 
   let hcpLeadId: string | undefined;
   if (request.contactId) {
@@ -152,7 +154,13 @@ export async function createOrConvertHcpEstimate(
               country: estimateAddress!.country || 'US',
             };
           }
-          log.info(`[scheduling] Updating reused estimate ${rawEstimateData.id} with notes/address (notes=${reuseHasNotes}, address=${reuseHasAddress})`);
+          if (serviceAddressId) {
+            const currentAddrId = rawEstimateData.address_id || rawEstimateData.address?.id;
+            if (currentAddrId !== serviceAddressId) {
+              updatePayload.address_id = serviceAddressId;
+            }
+          }
+          log.info(`[scheduling] Updating reused estimate ${rawEstimateData.id} with notes/address (notes=${reuseHasNotes}, address=${reuseHasAddress}, addressId=${updatePayload.address_id ?? '<unchanged>'})`);
           try {
             const updateResult = await housecallProService.updateEstimate(tenantId, rawEstimateData.id, updatePayload);
             if (updateResult.success) {
@@ -226,6 +234,7 @@ export async function createOrConvertHcpEstimate(
           message: buildNotesWithAddress(fallbackNotes, estimateAddress),
           options: [{ name: request.title || 'Estimate Appointment', message: buildNotesWithAddress(fallbackNotes, estimateAddress) }],
           address: estimateAddress,
+          address_id: serviceAddressId,
         });
         if (fallbackResult.success) rawEstimateData = fallbackResult.data;
       }
@@ -235,7 +244,7 @@ export async function createOrConvertHcpEstimate(
         const hasNotes = notesText.length > 0;
         const hasAddress = !!estimateAddress?.street;
 
-        if (hasNotes || hasAddress) {
+        if (hasNotes || hasAddress || serviceAddressId) {
           const updatePayload: Partial<HousecallProEstimate> = {};
           const notesWithAddress = buildNotesWithAddress(notesText || undefined, estimateAddress);
           updatePayload.message = notesWithAddress;
@@ -252,7 +261,10 @@ export async function createOrConvertHcpEstimate(
               country: estimateAddress!.country || 'US',
             };
           }
-          log.info(`[scheduling] Updating converted estimate ${rawEstimateData.id} with notes/address (notes=${hasNotes}, address=${hasAddress})`);
+          if (serviceAddressId) {
+            updatePayload.address_id = serviceAddressId;
+          }
+          log.info(`[scheduling] Updating converted estimate ${rawEstimateData.id} with notes/address (notes=${hasNotes}, address=${hasAddress}, addressId=${updatePayload.address_id ?? '<none>'})`);
           try {
             const updateResult = await housecallProService.updateEstimate(tenantId, rawEstimateData.id, updatePayload);
             if (updateResult.success) {
@@ -276,6 +288,7 @@ export async function createOrConvertHcpEstimate(
         message: buildNotesWithAddress(directNotes, estimateAddress),
         options: [{ name: request.title || 'Estimate Appointment', message: buildNotesWithAddress(directNotes, estimateAddress) }],
         address: estimateAddress,
+        address_id: serviceAddressId,
       });
       if (createResult.success) rawEstimateData = createResult.data;
     }
@@ -292,7 +305,25 @@ export async function createOrConvertHcpEstimate(
     : usedConvertPath
       ? 'converted from lead'
       : 'direct create';
-  log.info(`[scheduling] HCP estimate ready: ${hcpEstimateId} (${pathLabel})`);
+  log.info(`[scheduling] HCP estimate ready: ${hcpEstimateId} (${pathLabel}) addressId=${serviceAddressId ?? '<none>'}`);
+
+  if (serviceAddressId) {
+    try {
+      const verifyResult = await housecallProService.getEstimate(tenantId, hcpEstimateId);
+      if (verifyResult.success && verifyResult.data) {
+        const persistedId = verifyResult.data.address_id || verifyResult.data.address?.id;
+        if (persistedId === serviceAddressId) {
+          log.info(`[scheduling] HCP estimate ${hcpEstimateId} address pinned to ${serviceAddressId}`);
+        } else {
+          log.warn(`[scheduling] HCP estimate ${hcpEstimateId} address did not pin to ${serviceAddressId} after PATCH; HCP returned ${JSON.stringify({ address_id: verifyResult.data.address_id, address: verifyResult.data.address })}`);
+        }
+      } else {
+        log.warn(`[scheduling] HCP estimate ${hcpEstimateId} verify re-fetch failed (could not confirm address pin to ${serviceAddressId}): ${verifyResult.error}`);
+      }
+    } catch (err) {
+      log.warn(`[scheduling] HCP estimate ${hcpEstimateId} verify re-fetch threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   if (estimateAddress?.street) {
     const addressLine = [estimateAddress.street, estimateAddress.city, estimateAddress.state, estimateAddress.zip]
