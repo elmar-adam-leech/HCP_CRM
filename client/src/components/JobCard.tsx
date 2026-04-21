@@ -7,8 +7,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { StatusBadge } from "./StatusBadge";
 import { Calendar, Clock, MoreHorizontal, ExternalLink, Phone, Mail, Tag, Trash2 } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { ViewDetailsButton } from "./ViewDetailsButton";
+import { CommunicationActionButtons } from "./CommunicationActionButtons";
 import { TagsDialog } from "./TagsDialog";
 import { useContact } from "@/hooks/useContact";
 import { useToast } from "@/hooks/use-toast";
@@ -90,17 +92,24 @@ export const JobCard = memo(function JobCard({ job, onStatusChange, onViewDetail
             <StatusBadge status={job.status} entityType="job" />
             <span className="text-xs text-muted-foreground">{job.type}</span>
             {isHousecallProJob && job.externalId && (
-              <a
-                href={hcpUrl('job', job.externalId)}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <Badge variant="secondary" className="text-xs flex items-center gap-1">
-                  <ExternalLink className="h-3 w-3" />
-                  Housecall Pro
-                </Badge>
-              </a>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <a
+                    href={hcpUrl('job', job.externalId)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Badge variant="secondary" className="text-xs flex items-center gap-1">
+                      <ExternalLink className="h-3 w-3" />
+                      Housecall Pro
+                    </Badge>
+                  </a>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-xs">
+                  Tracking only: synced from Housecall Pro for lead value tracking. Status updates are managed in Housecall Pro.
+                </TooltipContent>
+              </Tooltip>
             )}
           </div>
         </div>
@@ -132,7 +141,7 @@ export const JobCard = memo(function JobCard({ job, onStatusChange, onViewDetail
           </DropdownMenuContent>
         </DropdownMenu>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Avatar className="h-6 w-6">
@@ -168,13 +177,17 @@ export const JobCard = memo(function JobCard({ job, onStatusChange, onViewDetail
           )}
         </div>
 
-        {isHousecallProJob && (
-          <div className="text-xs text-muted-foreground bg-blue-500/10 border border-blue-500/20 p-2 rounded-md">
-            <span className="font-medium">Tracking Only:</span> This job was automatically synced from Housecall Pro for lead value tracking. Status updates are managed in Housecall Pro.
-          </div>
-        )}
+        <CommunicationActionButtons
+          recipientName={job.contactName}
+          recipientEmail={job.contactEmail || ''}
+          recipientPhone={job.contactPhone || ''}
+          contactId={job.contactId}
+          hasUnreadText={hasUnreadText}
+          hasUnreadEmail={hasUnreadEmail}
+          compact
+        />
 
-        <div className="flex gap-2 pt-2 border-t">
+        <div className="flex gap-2 pt-1 border-t">
           <Button
             variant="outline"
             size="sm"
@@ -184,19 +197,18 @@ export const JobCard = memo(function JobCard({ job, onStatusChange, onViewDetail
           >
             View Details
           </Button>
+          {showMarkComplete && (
+            <Button
+              variant="default"
+              size="sm"
+              className="flex-1"
+              onClick={() => onStatusChange!(job.id, 'completed')}
+              data-testid={`button-mark-complete-${job.id}`}
+            >
+              Mark Complete
+            </Button>
+          )}
         </div>
-
-        {showMarkComplete && (
-          <Button
-            variant="default"
-            size="sm"
-            className="w-full"
-            onClick={() => onStatusChange!(job.id, 'completed')}
-            data-testid={`button-mark-complete-${job.id}`}
-          >
-            Mark Complete
-          </Button>
-        )}
 
         {contact?.tags && contact.tags.length > 0 && (
           <div className="pt-2 border-t">

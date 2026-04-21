@@ -173,7 +173,7 @@ export const LeadCard = memo(function LeadCard({ lead, onSchedule, onSendEmail, 
           </DropdownMenuContent>
         </DropdownMenu>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-2">
         <div className="space-y-2 text-sm text-muted-foreground">
           <div className="flex items-center gap-2 min-w-0">
             <Mail className="h-4 w-4 shrink-0" />
@@ -217,32 +217,21 @@ export const LeadCard = memo(function LeadCard({ lead, onSchedule, onSendEmail, 
           hasUnreadEmail={hasUnreadEmail}
           onTextSent={onTextSent}
           onCallCompleted={onCallCompleted}
+          compact
         />
-        
-        <div className="flex flex-wrap gap-2">
+
+        <div className="flex gap-2 pt-1 border-t">
           <Button
             variant="secondary"
             size="sm"
-            className="flex-1 sm:flex-none w-full sm:w-auto"
+            className="flex-1"
             onClick={() => onSchedule?.(lead.id)}
             data-testid={`button-schedule-lead-${lead.id}`}
           >
             Schedule
           </Button>
         </div>
-        
-        {/* Customer Section - shown when lead is converted to customer */}
-        {lead.hasJobs && (
-          <div className="pt-2 border-t">
-            <div className="flex items-center gap-2 text-sm">
-              <Badge variant="default" className="bg-green-500 hover:bg-green-600">
-                Customer
-              </Badge>
-              <span className="text-muted-foreground text-xs">This lead has been converted to a customer</span>
-            </div>
-          </div>
-        )}
-        
+
         {/* Workflow Enrollment Badges */}
         <WorkflowEnrollmentBadges contactId={lead.id} variant="compact" />
         
