@@ -4,6 +4,7 @@ import { useLocation } from "wouter";
 import { Search, Users, Briefcase, Calendar, ArrowRight } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "./StatusBadge";
 import type { Contact, Job, Estimate } from "@shared/schema";
 import { formatEntityTitle } from "@/lib/utils";
@@ -189,7 +190,24 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
                           <div className="text-xs text-muted-foreground truncate">{lead.emails[0]}</div>
                         )}
                       </div>
-                      <StatusBadge status={(lead.status ?? "new") as Parameters<typeof StatusBadge>[0]['status']} entityType="lead" />
+                      <div className="flex items-center gap-1 shrink-0">
+                        {lead.status === 'disqualified' && (
+                          <Badge variant="destructive" className="text-xs" data-testid={`badge-disqualified-${lead.id}`}>
+                            Disqualified
+                          </Badge>
+                        )}
+                        {lead.allLeadsArchived && (
+                          <Badge variant="secondary" className="text-xs" data-testid={`badge-archived-${lead.id}`}>
+                            Archived
+                          </Badge>
+                        )}
+                        {lead.anyLeadAged && (
+                          <Badge variant="secondary" className="text-xs" data-testid={`badge-aged-${lead.id}`}>
+                            Aged
+                          </Badge>
+                        )}
+                        <StatusBadge status={(lead.status ?? "new") as Parameters<typeof StatusBadge>[0]['status']} entityType="lead" />
+                      </div>
                     </button>
                   ))
                 )}

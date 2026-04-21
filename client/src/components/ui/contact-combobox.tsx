@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Badge } from "@/components/ui/badge";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Check, ChevronsUpDown, Plus } from "lucide-react";
@@ -19,8 +20,11 @@ interface Contact {
   id: string;
   name: string;
   type: string;
+  status?: string;
   emails: string[];
   phones: string[];
+  allLeadsArchived?: boolean;
+  anyLeadAged?: boolean;
 }
 
 const createCustomerSchema = z.object({
@@ -175,9 +179,20 @@ export function ContactCombobox({ value, onChange, error }: ContactComboboxProps
                     data-testid={`option-contact-${contact.id}`}
                   >
                     <Check className={cn("mr-2 h-4 w-4", value === contact.id ? "opacity-100" : "opacity-0")} />
-                    <div className="flex flex-col">
-                      <span>{contact.name}</span>
-                      <span className="text-xs text-muted-foreground">
+                    <div className="flex flex-col flex-1 min-w-0">
+                      <div className="flex items-center gap-1 flex-wrap">
+                        <span className="truncate">{contact.name}</span>
+                        {contact.status === 'disqualified' && (
+                          <Badge variant="destructive" className="text-xs">Disqualified</Badge>
+                        )}
+                        {contact.allLeadsArchived && (
+                          <Badge variant="secondary" className="text-xs">Archived</Badge>
+                        )}
+                        {contact.anyLeadAged && (
+                          <Badge variant="secondary" className="text-xs">Aged</Badge>
+                        )}
+                      </div>
+                      <span className="text-xs text-muted-foreground truncate">
                         {contact.emails?.[0] || contact.phones?.[0] || 'No contact info'}
                       </span>
                     </div>

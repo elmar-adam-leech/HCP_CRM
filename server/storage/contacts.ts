@@ -78,6 +78,12 @@ const CONTACT_FIELDS = {
   updatedAt: contacts.updatedAt,
   lastActivityAt: contacts.lastActivityAt,
   hasJobs: sql<boolean>`EXISTS(SELECT 1 FROM ${jobs} WHERE ${jobs.contactId} = "contacts"."id")`,
+  // State-summary booleans used by header search to render Disqualified
+  // / Archived / Aged badges. Inline correlated subqueries — they reuse
+  // the same indexes as the lead-board archived/aged predicates and add
+  // no per-row N+1 lookups.
+  allLeadsArchived: sql<boolean>`COALESCE((SELECT BOOL_AND(archived) FROM leads WHERE leads.contact_id = "contacts"."id"), false)`,
+  anyLeadAged: sql<boolean>`EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = "contacts"."id" AND leads.aged = true)`,
 } as const;
 
 /** Derive the 10-digit normalized phone stored in contacts.normalizedPhone from a phones array. */
@@ -118,14 +124,28 @@ function escapeLike(s: string): string {
  *   contacts broken down *by* status (including disqualified) in the SELECT,
  *   so pre-filtering by status would zero-out those CASE counts.
  */
-function buildContactConditions(contractorId: string, options: ContactFilterOptions, skipStatusFilter = false) {
+export function buildContactConditions(contractorId: string, options: ContactFilterOptions, skipStatusFilter = false) {
   const conditions = [eq(contacts.contractorId, contractorId)];
+
+  // GDPR-anonymized contacts are never surfaced — not in lists, not in
+  // search. This is a hard guard that applies regardless of includeAll
+  // or search-mode bypasses below.
+  conditions.push(eq(contacts.anonymized, false));
+
+  // A non-empty text search means the user is asking "does this record
+  // exist anywhere?" — never silently drop matches based on pipeline
+  // state (disqualified / archived / aged). Treat search-mode as if
+  // includeAll were set, but ONLY for the disqualified / archived /
+  // aged gates. type / date / assignedTo filters still apply if
+  // explicitly set, and an explicit `status` filter is still honored.
+  const isTextSearch = !!options.search?.trim();
+  const bypassPipelineGates = options.includeAll || isTextSearch;
 
   if (options.type) {
     conditions.push(eq(contacts.type, options.type));
   }
 
-  if (!skipStatusFilter && !options.includeAll) {
+  if (!skipStatusFilter && !bypassPipelineGates) {
     if (options.status && options.status !== 'all') {
       conditions.push(eq(contacts.status, options.status as typeof contactStatusEnum.enumValues[number]));
     } else if (!options.status || options.status === 'all') {
@@ -133,6 +153,10 @@ function buildContactConditions(contractorId: string, options: ContactFilterOpti
         conditions.push(ne(contacts.status, 'disqualified'));
       }
     }
+  } else if (!skipStatusFilter && bypassPipelineGates && options.status && options.status !== 'all') {
+    // An explicit status filter must always pin results to that status,
+    // even when pipeline-gate bypass is active for search mode.
+    conditions.push(eq(contacts.status, options.status as typeof contactStatusEnum.enumValues[number]));
   }
 
   if (options.search) {
@@ -176,7 +200,7 @@ function buildContactConditions(contractorId: string, options: ContactFilterOpti
   // (even with includeAll, which only skips status filtering, not archived/aged gating).
   const isLeadScope = (options.type === 'lead' || !options.type);
   const hasExplicitAgedOrArchived = options.aged !== undefined || options.archived !== undefined;
-  const gateArchived = isLeadScope && (hasExplicitAgedOrArchived || !options.includeAll);
+  const gateArchived = isLeadScope && (hasExplicitAgedOrArchived || !bypassPipelineGates);
   if (gateArchived) {
     if (options.aged === true) {
       conditions.push(sql`EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = "contacts"."id" AND leads.contractor_id = ${contractorId} AND leads.aged = true)`);
