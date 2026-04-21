@@ -99,12 +99,15 @@ describe('webhook merge with manual override', () => {
     expect(updateEstimate.mock.calls[0][1].status).toBe('in_progress');
   });
 
-  it('estimate.option.approval_status_changed: "pro declined" payload flips to rejected', async () => {
+  it('estimate.option.approval_status_changed: ALL declined → parent flips to rejected', async () => {
     getEstimateByHousecallProEstimateId.mockResolvedValue({
       id: 'e1', status: 'scheduled', statusManuallySet: false,
     });
-    // Fetched estimate has the same "pro declined" option HCP just told us about.
-    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp1', options: [{ approval_status: 'pro declined' }] } });
+    // Every option on the freshly fetched estimate is declined → parent rejected.
+    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp1', options: [
+      { approval_status: 'pro declined' },
+      { approval_status: 'customer declined' },
+    ] } });
 
     await handleEstimateEvent(
       CONTRACTOR,
@@ -116,11 +119,81 @@ describe('webhook merge with manual override', () => {
     expect(updateEstimate.mock.calls[0][1].status).toBe('rejected');
   });
 
-  it('estimate.option.approval_status_changed: "pro declined" wins even when local status is manually set', async () => {
+  it('estimate.option.approval_status_changed: declined option but ANOTHER option approved → parent stays approved (not rejected)', async () => {
+    // Task #484 regression: previously the inbound 'pro declined' single-option
+    // signal would force the parent to 'rejected' even though the freshly
+    // fetched estimate still had an approved option. Now we re-derive parent
+    // from the full options array, so 'any approved wins' correctly applies.
+    getEstimateByHousecallProEstimateId.mockResolvedValue({
+      id: 'e1', status: 'approved', statusManuallySet: false,
+    });
+    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp1', options: [
+      { approval_status: 'pro declined' },
+      { approval_status: 'approved' },
+    ] } });
+
+    await handleEstimateEvent(
+      CONTRACTOR,
+      'estimate.option.approval_status_changed',
+      { estimate_id: 'hcp1', approval_status: 'pro declined' },
+      undefined,
+    );
+
+    expect(updateEstimate.mock.calls[0][1].status).toBe('approved');
+  });
+
+  it('estimate.option.approval_status_changed: declined option + others awaiting → parent stays at active status, NOT rejected', async () => {
+    getEstimateByHousecallProEstimateId.mockResolvedValue({
+      id: 'e1', status: 'sent', statusManuallySet: false,
+    });
+    // Top-level work_status='sent' so the mapper falls through to 'sent';
+    // crucially it does NOT return 'rejected' just because one option declined.
+    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp1', work_status: 'sent', options: [
+      { approval_status: 'pro declined' },
+      { approval_status: 'awaiting response' },
+      { approval_status: 'awaiting response' },
+      { approval_status: 'awaiting response' },
+    ] } });
+
+    await handleEstimateEvent(
+      CONTRACTOR,
+      'estimate.option.approval_status_changed',
+      { estimate_id: 'hcp1', approval_status: 'pro declined' },
+      undefined,
+    );
+
+    expect(updateEstimate.mock.calls[0][1].status).toBe('sent');
+  });
+
+  it('estimate.option.approval_status_changed: manual override + mixed declined+approved → manual value wins (mapper returns approved, manual respected)', async () => {
     getEstimateByHousecallProEstimateId.mockResolvedValue({
       id: 'e1', status: 'in_progress', statusManuallySet: true,
     });
-    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp1', options: [{ approval_status: 'pro declined' }] } });
+    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp1', options: [
+      { approval_status: 'pro declined' },
+      { approval_status: 'approved' },
+    ] } });
+
+    await handleEstimateEvent(
+      CONTRACTOR,
+      'estimate.option.approval_status_changed',
+      { estimate_id: 'hcp1', approval_status: 'pro declined' },
+      undefined,
+    );
+
+    // Mapped is 'approved' (not 'rejected'), so the manual flag preserves the
+    // local in_progress value per resolveHcpEstimateStatus rule 2.
+    expect(updateEstimate.mock.calls[0][1].status).toBe('in_progress');
+  });
+
+  it('estimate.option.approval_status_changed: ALL declined wins even with manual flag (rejected is terminal)', async () => {
+    getEstimateByHousecallProEstimateId.mockResolvedValue({
+      id: 'e1', status: 'in_progress', statusManuallySet: true,
+    });
+    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp1', options: [
+      { approval_status: 'pro declined' },
+      { approval_status: 'customer declined' },
+    ] } });
 
     await handleEstimateEvent(
       CONTRACTOR,
@@ -132,23 +205,10 @@ describe('webhook merge with manual override', () => {
     expect(updateEstimate.mock.calls[0][1].status).toBe('rejected');
   });
 
-  it('estimate.option.approval_status_changed: rejected always wins, even with manual flag', async () => {
-    getEstimateByHousecallProEstimateId.mockResolvedValue({
-      id: 'e1', status: 'in_progress', statusManuallySet: true,
-    });
-    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp1', options: [{ approval_status: 'rejected' }] } });
-
-    await handleEstimateEvent(
-      CONTRACTOR,
-      'estimate.option.approval_status_changed',
-      { estimate_id: 'hcp1', approval_status: 'rejected' },
-      undefined,
-    );
-
-    expect(updateEstimate.mock.calls[0][1].status).toBe('rejected');
-  });
-
-  it('estimate.option.approval_status_changed without fetched data: rejected wins, approved respects manual', async () => {
+  it('estimate.option.approval_status_changed without fetched data: parent status untouched', async () => {
+    // No way to safely infer parent state from a single-option signal alone.
+    // We only persist syncedAt; the per-option workflow trigger still fires
+    // separately so workflow authors aren't blocked.
     getEstimateByHousecallProEstimateId.mockResolvedValue({
       id: 'e1', status: 'in_progress', statusManuallySet: true,
     });
@@ -160,7 +220,9 @@ describe('webhook merge with manual override', () => {
       { estimate_id: 'hcp1', approval_status: 'approved' },
       undefined,
     );
-    expect(updateEstimate.mock.calls[0][1].status).toBe('in_progress');
+    // updateEstimate is gated on updateData.status — without it the row is not
+    // updated at all. Verify nothing was written.
+    expect(updateEstimate).not.toHaveBeenCalled();
 
     updateEstimate.mockClear();
     await handleEstimateEvent(
@@ -169,7 +231,7 @@ describe('webhook merge with manual override', () => {
       { estimate_id: 'hcp1', approval_status: 'rejected' },
       undefined,
     );
-    expect(updateEstimate.mock.calls[0][1].status).toBe('rejected');
+    expect(updateEstimate).not.toHaveBeenCalled();
   });
 
   it('estimate.on_my_way: respects manual override (does not flip to in_progress)', async () => {

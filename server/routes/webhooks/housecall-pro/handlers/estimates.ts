@@ -320,23 +320,32 @@ export async function handleEstimateEvent(
     const estimate = estimateId ? await storage.getEstimateByHousecallProEstimateId(estimateId, contractorId) : null;
     if (estimate) {
       const approvalStatus = (data.approval_status || data.status || '').toString();
-      let newStatus: "approved" | "rejected" | undefined;
-      if (isHcpApprovedOptionStatus(approvalStatus)) newStatus = 'approved';
-      else if (isHcpDeclinedOptionStatus(approvalStatus) || isHcpExpiredOptionStatus(approvalStatus)) newStatus = 'rejected';
+      // `inboundOptionStatus` is used ONLY to decide whether to fire the
+      // per-option workflow trigger below. It must NOT short-circuit the
+      // parent estimate's status — the parent is always re-derived from the
+      // freshly fetched full options array via the corrected mapper. This
+      // fixes the Task #484 bug where a single 'pro declined' event would
+      // force the parent to 'rejected' even when other options were
+      // approved or still pending.
+      let inboundOptionStatus: "approved" | "rejected" | undefined;
+      if (isHcpApprovedOptionStatus(approvalStatus)) inboundOptionStatus = 'approved';
+      else if (isHcpDeclinedOptionStatus(approvalStatus) || isHcpExpiredOptionStatus(approvalStatus)) inboundOptionStatus = 'rejected';
       const fetchResult = await housecallProService.getEstimate(contractorId, estimateId);
       const fetched = fetchResult.success && fetchResult.data ? fetchResult.data : null;
       const updateData: Record<string, any> = {
         syncedAt: new Date(),
       };
       if (fetched) {
+        // Re-derive the parent from the FRESHLY fetched full options array.
+        // resolveHcpEstimateStatus already treats 'rejected' as terminal and
+        // overrides the manual flag, so we can pass the mapped value through
+        // it unconditionally without losing the "rejected always wins" rule.
         const mapped = mapHcpEstimateStatus(fetched);
-        const candidate = newStatus || mapped;
-        // Only terminal 'rejected' (cancellation/decline) bypasses the manual override.
-        // 'approved' must still go through resolveHcpEstimateStatus so a user-set status
-        // (e.g. in_progress, sent) is preserved.
-        updateData.status = newStatus === 'rejected'
-          ? 'rejected'
-          : resolveHcpEstimateStatus(candidate, estimate.status, estimate.statusManuallySet ?? false);
+        updateData.status = resolveHcpEstimateStatus(
+          mapped,
+          estimate.status,
+          estimate.statusManuallySet ?? false,
+        );
         updateData.title = extractHcpEstimateTitle(fetched);
         updateData.amount = extractHcpAmount(fetched).toString();
         updateData.description = fetched.description ?? null;
@@ -352,11 +361,12 @@ export async function handleEstimateEvent(
         updateData.scheduledStart = approvalFetchedStart ? new Date(approvalFetchedStart) : null;
         updateData.scheduledEnd = approvalFetchedEnd ? new Date(approvalFetchedEnd) : null;
         updateData.scheduledEmployeeId = extractHcpScheduledEmployeeId(fetched);
-      } else if (newStatus) {
-        updateData.status = newStatus === 'rejected'
-          ? 'rejected'
-          : resolveHcpEstimateStatus(newStatus, estimate.status, estimate.statusManuallySet ?? false);
       }
+      // If we couldn't fetch the full estimate, leave the parent status
+      // untouched. We have no idea what the OTHER options on the estimate
+      // are, and the inbound single-option signal is not enough to safely
+      // re-derive parent state. The per-option workflow trigger below still
+      // fires so workflow authors can react to the option event itself.
       let updated = estimate;
       if (updateData.status) {
         const result = await storage.updateEstimate(estimate.id, updateData, contractorId);
@@ -375,7 +385,7 @@ export async function handleEstimateEvent(
       // 'sent' but a workflow author still wants to react to the per-option
       // event). Triggers fire once per webhook so multiple option approvals
       // produce multiple events naturally.
-      if (newStatus === 'approved' || newStatus === 'rejected') {
+      if (inboundOptionStatus === 'approved' || inboundOptionStatus === 'rejected') {
         const optionId: string | undefined = data.option_id || data.id;
         const optionFromFetched = (fetched && Array.isArray((fetched as any).options))
           ? ((fetched as any).options as any[]).find((o) => o?.id === optionId)
@@ -389,8 +399,8 @@ export async function handleEstimateEvent(
             : (typeof data.total_amount === 'number' ? data.total_amount / 100 : undefined),
           approval_status_changed_at: data.approval_status_changed_at || new Date().toISOString(),
         };
-        const triggerKey = newStatus === 'approved' ? 'estimate_option_approved' : 'estimate_option_rejected';
-        const optionField = newStatus === 'approved' ? 'approved_option' : 'rejected_option';
+        const triggerKey = inboundOptionStatus === 'approved' ? 'estimate_option_approved' : 'estimate_option_rejected';
+        const optionField = inboundOptionStatus === 'approved' ? 'approved_option' : 'rejected_option';
         workflowEngine.triggerWorkflowsForEvent(triggerKey, {
           ...toWorkflowEvent(updated),
           [optionField]: optionPayload,

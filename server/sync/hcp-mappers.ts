@@ -69,11 +69,24 @@ export function mapHcpEstimateStatus(hcpEstimate: { status?: string; work_status
   const st = (hcpEstimate.status || '').toLowerCase();
   if (isHcpRejectedEstimateStatus(ws) || isHcpRejectedEstimateStatus(st)) return 'rejected';
   const opts = Array.isArray(hcpEstimate.options) ? hcpEstimate.options : [];
-  const hasApproved = opts.some(o => isHcpApprovedOptionStatus(o.approval_status));
-  if (hasApproved) return 'approved';
-  // New rule: if no option is approved but at least one is rejection-like,
-  // treat the parent estimate as rejected.
-  if (opts.length > 0 && opts.some(o => isHcpDeclinedOptionStatus(o.approval_status) || isHcpExpiredOptionStatus(o.approval_status))) return 'rejected';
+  if (opts.length > 0) {
+    const anyApproved = opts.some(o => isHcpApprovedOptionStatus(o.approval_status));
+    if (anyApproved) return 'approved';
+
+    // Parent → 'rejected' ONLY when EVERY option is terminal (declined or
+    // expired) AND at least one is actually declined. The previous rule used
+    // `.some` here, which mis-flipped any multi-option estimate where a
+    // single option had been declined while others were still approved or
+    // pending. See Task #484. The "any approved wins" check above already
+    // handles the mixed-with-approved case before we get here.
+    const allTerminal = opts.every(o =>
+      isHcpDeclinedOptionStatus(o.approval_status) || isHcpExpiredOptionStatus(o.approval_status));
+    const anyDeclined = opts.some(o => isHcpDeclinedOptionStatus(o.approval_status));
+    if (allTerminal && anyDeclined) return 'rejected';
+    // Otherwise at least one option is still active (pending/awaiting), or
+    // every option is expired with none declined — fall through to the
+    // work_status / status rules below.
+  }
   if (['completed','approved','accepted'].some(v => ws === v || st === v)) return 'approved';
   if (ws === 'in_progress') return 'in_progress';
   if (ws === 'scheduled') return 'scheduled';

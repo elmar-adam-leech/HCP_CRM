@@ -82,10 +82,28 @@ describe('mapHcpEstimateStatus', () => {
     expect(mapHcpEstimateStatus({ work_status: 'scheduled', options: [{ approval_status: 'pro approved' }] })).toBe('approved');
   });
 
-  it('maps an estimate whose only option is "pro declined" to rejected', () => {
+  it('maps an estimate whose options are ALL declined-like to rejected', () => {
     expect(mapHcpEstimateStatus({ work_status: 'scheduled', options: [{ approval_status: 'pro declined' }] })).toBe('rejected');
-    expect(mapHcpEstimateStatus({ work_status: 'scheduled', options: [{ approval_status: 'expired' }] })).toBe('rejected');
     expect(mapHcpEstimateStatus({ work_status: 'scheduled', options: [{ approval_status: 'declined' }, { approval_status: 'pro declined' }] })).toBe('rejected');
+    // 5 declined — full regression check for the all-declined case
+    expect(mapHcpEstimateStatus({
+      work_status: 'scheduled',
+      options: [
+        { approval_status: 'pro declined' },
+        { approval_status: 'pro declined' },
+        { approval_status: 'customer declined' },
+        { approval_status: 'declined' },
+        { approval_status: 'pro declined' },
+      ],
+    })).toBe('rejected');
+  });
+
+  it('maps a single-option estimate whose only option is expired through to active rules', () => {
+    // All-expired with NO declined option — falls through, no work_status hint
+    // → defaults to 'scheduled'. (HCP usually marks the top-level work_status
+    // 'expired' in this case, which the rejection check at the top of the
+    // mapper catches before we ever inspect options.)
+    expect(mapHcpEstimateStatus({ work_status: 'somethingelse', options: [{ approval_status: 'expired' }] })).toBe('scheduled');
   });
 
   it('preserves "any approved wins" for mixed-option estimates', () => {
@@ -93,10 +111,65 @@ describe('mapHcpEstimateStatus', () => {
       work_status: 'scheduled',
       options: [{ approval_status: 'approved' }, { approval_status: 'pro declined' }],
     })).toBe('approved');
+    // declined + approved + pending → still 'approved' (any approved wins)
+    expect(mapHcpEstimateStatus({
+      work_status: 'sent',
+      options: [
+        { approval_status: 'pro declined' },
+        { approval_status: 'approved' },
+        { approval_status: 'awaiting response' },
+      ],
+    })).toBe('approved');
+    // mixed pro_declined / customer_declined / pro_approved → 'approved'
+    expect(mapHcpEstimateStatus({
+      options: [
+        { approval_status: 'pro declined' },
+        { approval_status: 'customer declined' },
+        { approval_status: 'pro approved' },
+      ],
+    })).toBe('approved');
+  });
+
+  it('mixed declined + pending (no approved) falls through to active work_status', () => {
+    // 1 declined + 4 awaiting response, work_status='sent' → 'sent'
+    expect(mapHcpEstimateStatus({
+      work_status: 'sent',
+      options: [
+        { approval_status: 'pro declined' },
+        { approval_status: 'awaiting response' },
+        { approval_status: 'awaiting response' },
+        { approval_status: 'awaiting response' },
+        { approval_status: 'awaiting response' },
+      ],
+    })).toBe('sent');
+    // Same options, no work_status hint → defaults to 'scheduled'
+    expect(mapHcpEstimateStatus({
+      options: [
+        { approval_status: 'pro declined' },
+        { approval_status: 'awaiting response' },
+      ],
+    })).toBe('scheduled');
+  });
+
+  it('declined + expired (all terminal, at least one declined) maps to rejected', () => {
+    expect(mapHcpEstimateStatus({
+      options: [
+        { approval_status: 'pro declined' },
+        { approval_status: 'expired' },
+        { approval_status: 'expired' },
+        { approval_status: 'expired' },
+        { approval_status: 'expired' },
+      ],
+    })).toBe('rejected');
   });
 
   it('falls through normally when an option is awaiting response', () => {
     expect(mapHcpEstimateStatus({ work_status: 'scheduled', options: [{ approval_status: 'awaiting response' }] })).toBe('scheduled');
+  });
+
+  it('an empty/missing options array falls through to active rules', () => {
+    expect(mapHcpEstimateStatus({ options: [], work_status: 'sent' })).toBe('sent');
+    expect(mapHcpEstimateStatus({ work_status: 'sent' })).toBe('sent');
   });
 
   it('maps cancelled/rejected/expired/deleted to rejected', () => {
