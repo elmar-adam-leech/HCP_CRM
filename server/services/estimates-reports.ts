@@ -642,7 +642,7 @@ async function getOutstanding(
   // Salesperson + lead-source filters still apply.
   const parts: SQL[] = [
     sql.raw(`e.contractor_id = `).append(sql`${contractorId}`),
-    sql`e.status = ANY(${statuses})`,
+    sql`e.status IN (${sql.join(statuses.map((s) => sql`${s}`), sql`, `)})`,
   ];
   if (f.salespersonId) {
     parts.push(sql.raw(`e.salesperson_user_id = `).append(sql`${f.salespersonId}`));

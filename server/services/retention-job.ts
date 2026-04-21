@@ -50,8 +50,9 @@ async function runRetentionCheck(): Promise<void> {
           if (rows.length === 0) break;
 
           const ids = rows.map(r => r.id);
+          const idsList = sql.join(ids.map((id) => sql`${id}`), sql`, `);
           await db.execute(sql`
-            UPDATE contacts SET retention_flagged_at = NOW() WHERE id = ANY(${ids}::text[])
+            UPDATE contacts SET retention_flagged_at = NOW() WHERE id IN (${idsList})
           `);
 
           for (const contact of rows) {

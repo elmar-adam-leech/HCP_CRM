@@ -7,7 +7,7 @@ import {
   workflowApprovalStatusEnum,
 } from "@shared/schema";
 import { db } from "../db";
-import { eq, and, desc, asc, lt, lte, inArray, sql } from "drizzle-orm";
+import { eq, and, or, desc, asc, lt, lte, inArray, sql } from "drizzle-orm";
 import type { UpdateWorkflow, UpdateWorkflowStep, UpdateWorkflowExecution } from "../storage-types";
 
 export interface EstimateWithContact extends Estimate {
@@ -317,7 +317,10 @@ async function getActiveExecutionsForContacts(contactIds: string[], contractorId
     .where(and(
       eq(workflowExecutions.contractorId, contractorId),
       inArray(workflowExecutions.status, ['pending', 'running', 'suspended']),
-      sql`(${workflowExecutions.triggerData}::jsonb ->> 'id' = ANY(${contactIds}) OR ${workflowExecutions.triggerData}::jsonb ->> 'contactId' = ANY(${contactIds}))`
+      or(
+        inArray(sql`${workflowExecutions.triggerData}::jsonb ->> 'id'`, contactIds),
+        inArray(sql`${workflowExecutions.triggerData}::jsonb ->> 'contactId'`, contactIds),
+      )!
     ))
     .orderBy(desc(workflowExecutions.createdAt));
 

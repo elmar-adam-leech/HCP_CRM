@@ -9,7 +9,7 @@ import {
   dialpadSyncJobs, syncSchedules,
 } from "@shared/schema";
 import { db } from "../db";
-import { eq, and, asc, desc, lte, sql } from "drizzle-orm";
+import { eq, and, asc, desc, lte, inArray } from "drizzle-orm";
 import type {
   UpdateDialpadPhoneNumber,
   UpdateUserPhoneNumberPermission,
@@ -36,7 +36,7 @@ async function getDialpadPhoneNumberByNumber(contractorId: string, phoneNumber: 
 
 async function getDialpadPhoneNumbersByIds(ids: string[]): Promise<DialpadPhoneNumber[]> {
   if (ids.length === 0) return [];
-  return await db.select().from(dialpadPhoneNumbers).where(sql`${dialpadPhoneNumbers.id} = ANY(${ids})`);
+  return await db.select().from(dialpadPhoneNumbers).where(inArray(dialpadPhoneNumbers.id, ids));
 }
 
 async function createDialpadPhoneNumber(phoneNumber: InsertDialpadPhoneNumber): Promise<DialpadPhoneNumber> {
