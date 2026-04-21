@@ -191,11 +191,6 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
                         )}
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
-                        {lead.status === 'disqualified' && (
-                          <Badge variant="destructive" className="text-xs" data-testid={`badge-disqualified-${lead.id}`}>
-                            Disqualified
-                          </Badge>
-                        )}
                         {lead.allLeadsArchived && (
                           <Badge variant="secondary" className="text-xs" data-testid={`badge-archived-${lead.id}`}>
                             Archived
