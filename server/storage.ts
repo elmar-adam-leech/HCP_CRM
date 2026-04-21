@@ -104,6 +104,7 @@ import { notificationMethods } from "./storage/notifications";
 import { settingsMethods } from "./storage/settings";
 import { workflowMethods } from "./storage/workflows";
 import { leadCaptureMethods } from "./storage/lead-capture";
+import { salesProcessMethods } from "./storage/sales-process";
 
 export interface IStorage {
   // User operations
@@ -574,6 +575,25 @@ export interface IStorage {
   markSpamAuditRecovered(id: string, contractorId: string, leadId: string): Promise<SpamAuditLog | undefined>;
   deleteSpamAuditLogEntry(contractorId: string, entryId: string): Promise<number>;
   deleteAllUnrecoveredSpamAuditLog(contractorId: string): Promise<number>;
+
+  // Sales Process operations (task #506)
+  getOrCreateSalesProcess: typeof salesProcessMethods.getOrCreateSalesProcess;
+  getSalesProcessSteps: typeof salesProcessMethods.getSalesProcessSteps;
+  getSalesProcessWithSteps: typeof salesProcessMethods.getSalesProcessWithSteps;
+  upsertSalesProcess: typeof salesProcessMethods.upsertSalesProcess;
+  listTaskInstances: typeof salesProcessMethods.listTaskInstances;
+  getTaskInstance: typeof salesProcessMethods.getTaskInstance;
+  bulkInsertTaskInstances: typeof salesProcessMethods.bulkInsertTaskInstances;
+  getOpenLeadsForBackfill: typeof salesProcessMethods.getOpenLeadsForBackfill;
+  countOpenLeadsForBackfill: typeof salesProcessMethods.countOpenLeadsForBackfill;
+  countTaskInstancesForLead: typeof salesProcessMethods.countTaskInstancesForLead;
+  markTaskCompleted: typeof salesProcessMethods.markTaskCompleted;
+  markTaskSkipped: typeof salesProcessMethods.markTaskSkipped;
+  markTaskFailed: typeof salesProcessMethods.markTaskFailed;
+  rescheduleTaskForRetry: typeof salesProcessMethods.rescheduleTaskForRetry;
+  incrementAttemptCount: typeof salesProcessMethods.incrementAttemptCount;
+  skipPendingTasksForLead: typeof salesProcessMethods.skipPendingTasksForLead;
+  claimDueAutoTasks: typeof salesProcessMethods.claimDueAutoTasks;
 }
 
 export const storage: IStorage = {
@@ -591,4 +611,5 @@ export const storage: IStorage = {
   ...settingsMethods,
   ...workflowMethods,
   ...leadCaptureMethods,
+  ...salesProcessMethods,
 };

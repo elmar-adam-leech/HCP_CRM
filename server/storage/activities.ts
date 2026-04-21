@@ -146,6 +146,18 @@ async function createActivity(activity: Omit<InsertActivity, 'contractorId'>, co
         sql`(${contacts.lastActivityAt} IS NULL OR ${contacts.lastActivityAt} < ${activityTs})`,
       ));
   }
+  // Sales-process auto-completion hook (task #506). Fire-and-forget so a
+  // hook failure cannot break the primary activity-creation write path.
+  if (result[0]) {
+    void (async () => {
+      try {
+        const { onActivityCreated } = await import("../services/sales-process");
+        await onActivityCreated(result[0]);
+      } catch (err) {
+        console.warn('[sales-process] onActivityCreated hook failed:', err);
+      }
+    })();
+  }
   return result[0];
 }
 

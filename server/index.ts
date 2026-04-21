@@ -279,6 +279,11 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   spamAuditCleanupJob.start();
   log("SpamAuditCleanupJob registered (runs every 24 h)");
 
+  // Sales-process cron: poll for due auto-mode tasks and dispatch them.
+  const { salesProcessCron } = await import("./services/sales-process-cron");
+  salesProcessCron.start();
+  log("SalesProcessCron registered (runs every 60s)");
+
   // Hourly cleanup of expired revoked_tokens rows (prevents unbounded table growth)
   timerRegistry.push(setInterval(() => {
     AuthService.cleanupExpiredRevokedTokens().catch(err =>
@@ -413,6 +418,7 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
       gmailOAuthCleanupJob.stop();
       rateLimitCleanupJob.stop();
       spamAuditCleanupJob.stop();
+      salesProcessCron.stop();
       dialpadEventPoller.stop();
       stopHcpWebhookHealthCheck();
       stopDialpadCallHealthCheck();

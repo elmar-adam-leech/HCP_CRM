@@ -37,6 +37,7 @@ import { registerPublicRoutes } from './routes/public';
 import { registerDashboardRoutes } from './routes/dashboard';
 import { registerReportsRoutes } from './routes/reports';
 import { registerLeadCaptureRoutes } from './routes/lead-capture';
+import { registerSalesProcessRoutes } from './routes/sales-process';
 
 export async function registerRoutes(app: Express): Promise<Server> {
   app.use(cookieParser());
@@ -115,6 +116,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerAiRoutes(app);
   registerSettingsRoutes(app);
   registerLeadCaptureRoutes(app);
+  registerSalesProcessRoutes(app);
   registerFacebookIntegrationRoutes(app);
   registerGoogleLocalServicesIntegrationRoutes(app);
   registerIntegrationRoutes(app);

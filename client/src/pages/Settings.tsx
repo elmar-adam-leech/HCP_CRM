@@ -11,7 +11,8 @@ import { WebhooksTab } from "@/components/settings/webhooks/WebhooksTab";
 import { SalespeopleTab } from "@/components/settings/salespeople/SalespeopleTab";
 import { AssignmentsTab } from "@/components/settings/assignments/AssignmentsTab";
 import { PrivacyTab } from "@/components/settings/privacy/PrivacyTab";
-type TabId = 'account' | 'integrations' | 'security' | 'targets' | 'webhooks' | 'salespeople' | 'assignments' | 'privacy';
+import { SalesProcessTab } from "@/components/settings/sales-process/SalesProcessTab";
+type TabId = 'account' | 'integrations' | 'security' | 'targets' | 'webhooks' | 'salespeople' | 'assignments' | 'privacy' | 'sales_process';
 
 export default function Settings() {
   const [, navigate] = useLocation();
@@ -64,6 +65,7 @@ export default function Settings() {
         {tabBtn('webhooks', 'Webhooks', 'tab-webhooks')}
         {isAdmin && tabBtn('salespeople', 'Salespeople', 'tab-salespeople')}
         {isAdmin && tabBtn('assignments', 'Assignments', 'tab-assignments')}
+        {canManageIntegrations && tabBtn('sales_process', 'Sales Process', 'tab-sales-process')}
         {isAdmin && tabBtn('privacy', 'Privacy & Data', 'tab-privacy')}
       </div>
 
@@ -74,6 +76,7 @@ export default function Settings() {
       {activeTab === 'webhooks' && <WebhooksTab />}
       {activeTab === 'salespeople' && <SalespeopleTab />}
       {activeTab === 'assignments' && isAdmin && <AssignmentsTab />}
+      {activeTab === 'sales_process' && canManageIntegrations && <SalesProcessTab />}
       {activeTab === 'privacy' && isAdmin && <PrivacyTab />}
     </PageLayout>
   );

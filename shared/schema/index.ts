@@ -48,3 +48,4 @@ export * from "./integrations";
 export * from "./notifications";
 export * from "./workflows";
 export * from "./assignments";
+export * from "./sales-process";

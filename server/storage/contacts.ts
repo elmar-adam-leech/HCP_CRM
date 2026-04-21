@@ -648,15 +648,49 @@ async function getLeadByHousecallProLeadId(housecallProLeadId: string, contracto
 }
 
 async function createLead(lead: Omit<InsertLead, 'contractorId'>, contractorId: string): Promise<Lead> {
-  const result = await db.insert(leads).values({ ...lead, contractorId }).returning();
-  return result[0];
+  // Wrap the lead insert + sales-process materialization in a single
+  // transaction so a materialization failure rolls back the lead. This
+  // closes the prior fire-and-forget gap (task #506 code review): we no
+  // longer return a half-initialized lead and we surface real errors to
+  // the caller instead of swallowing them.
+  return await db.transaction(async (tx) => {
+    const result = await tx.insert(leads).values({ ...lead, contractorId }).returning();
+    const created = result[0];
+    if (created) {
+      // Pass `tx` so the cadence task instances are inserted in the SAME
+      // transaction as the lead — if materialization fails we roll back
+      // the lead too. Closes the prior atomicity gap (task #506 review).
+      const { materializeForLead } = await import("../services/sales-process");
+      await materializeForLead(created, tx);
+    }
+    return created;
+  });
 }
 
 async function updateLead(id: string, lead: Partial<InsertLead>, contractorId: string): Promise<Lead | undefined> {
+  // Capture prior status so we can detect status transitions for the
+  // sales-process cadence-skip hook (task #506).
+  const beforeStatus = lead.status !== undefined
+    ? (await db.select({ status: leads.status })
+        .from(leads)
+        .where(and(eq(leads.id, id), eq(leads.contractorId, contractorId)))
+        .limit(1))[0]?.status
+    : undefined;
   const result = await db.update(leads)
     .set({ ...lead, updatedAt: new Date() })
     .where(and(eq(leads.id, id), eq(leads.contractorId, contractorId)))
     .returning();
+  if (result[0] && lead.status !== undefined && beforeStatus !== undefined && beforeStatus !== result[0].status) {
+    const after = result[0];
+    void (async () => {
+      try {
+        const { onLeadStatusChanged } = await import("../services/sales-process");
+        await onLeadStatusChanged(after.id, contractorId, after.status, beforeStatus);
+      } catch (err) {
+        console.warn('[sales-process] onLeadStatusChanged hook failed:', err);
+      }
+    })();
+  }
   return result[0];
 }
 
