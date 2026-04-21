@@ -26,6 +26,7 @@ import { updateContactTags, getStatusBorderColor } from "@/lib/card-utils";
 import { WorkflowEnrollmentBadges } from "./WorkflowEnrollmentBadges";
 import { useEstimateMutations } from "@/hooks/useEstimateMutations";
 import type { EstimateListItem } from "./EstimateDetailsModal";
+import { isHcpApprovedOptionStatus, isHcpDeclinedOptionStatus, isHcpExpiredOptionStatus } from "@shared/hcp-option-status";
 
 const HCP_STATUS_OPTIONS: Array<{ value: 'sent' | 'in_progress' | 'approved' | 'rejected'; label: string }> = [
   { value: 'sent', label: 'Sent' },
@@ -102,7 +103,7 @@ export const EstimateCard = memo(function EstimateCard({ estimate, onViewDetails
             <CustomerBadge hasJobs={estimate.contactHasJobs} />
             {isHousecallProEstimate && (() => {
               const opts = Array.isArray(estimate.hcpOptions) ? estimate.hcpOptions : [];
-              const approvedOpt = opts.find(o => o.approval_status === 'approved');
+              const approvedOpt = opts.find(o => isHcpApprovedOptionStatus(o.approval_status));
               const firstOpt = opts[0];
               const optionId = approvedOpt?.id || firstOpt?.id;
               const hcpEstimateUrl = optionId
@@ -122,12 +123,53 @@ export const EstimateCard = memo(function EstimateCard({ estimate, onViewDetails
                 </a>
               ) : null;
             })()}
-            {isHousecallProEstimate && Array.isArray(estimate.hcpOptions) && estimate.hcpOptions.length > 1 && (
-              <Badge variant="secondary" className="text-xs flex items-center gap-1">
-                <ListChecks className="h-3 w-3" />
-                {estimate.hcpOptions.length} options
-              </Badge>
-            )}
+            {isHousecallProEstimate && Array.isArray(estimate.hcpOptions) && estimate.hcpOptions.length > 0 && (() => {
+              const opts = estimate.hcpOptions;
+              const approved = opts.filter(o => isHcpApprovedOptionStatus(o.approval_status)).length;
+              const declined = opts.filter(o => isHcpDeclinedOptionStatus(o.approval_status)).length;
+              const expired = opts.filter(o => isHcpExpiredOptionStatus(o.approval_status)).length;
+              return (
+                <>
+                  {opts.length > 1 && (
+                    <Badge
+                      variant="secondary"
+                      className="text-xs flex items-center gap-1"
+                      data-testid={`badge-option-count-${estimate.id}`}
+                    >
+                      <ListChecks className="h-3 w-3" />
+                      {opts.length} options
+                    </Badge>
+                  )}
+                  {approved > 0 && (
+                    <Badge
+                      variant="secondary"
+                      className="text-xs"
+                      data-testid={`badge-options-approved-${estimate.id}`}
+                    >
+                      {approved} approved
+                    </Badge>
+                  )}
+                  {declined > 0 && (
+                    <Badge
+                      variant="destructive"
+                      className="text-xs"
+                      data-testid={`badge-options-declined-${estimate.id}`}
+                    >
+                      {declined} declined
+                    </Badge>
+                  )}
+                  {expired > 0 && (
+                    <Badge
+                      variant="secondary"
+                      className="text-xs text-amber-700 dark:text-amber-400"
+                      data-testid={`badge-options-expired-${estimate.id}`}
+                    >
+                      {expired} expired
+                    </Badge>
+                  )}
+                </>
+              );
+            })()}
           </div>
         </div>
         <DropdownMenu>

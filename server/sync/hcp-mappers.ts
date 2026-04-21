@@ -31,33 +31,23 @@ const mapLog = logger('HcpMappers');
  *     the estimate has been accepted and the associated job is actively running.
  */
 /**
- * Normalize an HCP option approval_status string and decide whether it
- * indicates a rejection. HCP emits variants like "declined", "pro declined",
- * "customer declined", "expired" (and historically the underscored forms
- * "pro_declined", "customer_declined"). This predicate handles all of them
- * by lowercasing, collapsing whitespace and underscores, and checking for
- * the substrings "declined", "rejected", "canceled"/"cancelled", or
- * "expired" / "void".
+ * Per-option approval_status predicates live in `@shared/hcp-option-status`
+ * so the client can reuse them. We re-export here to keep existing server
+ * imports working.
+ *
+ * Note: `isHcpDeclinedOptionStatus` no longer matches "expired" — use the
+ * dedicated `isHcpExpiredOptionStatus` for that. Server callers that
+ * historically lumped expired in with declined now check both predicates
+ * explicitly.
  */
-export function isHcpDeclinedOptionStatus(s: string | null | undefined): boolean {
-  if (!s) return false;
-  const norm = s.toLowerCase().replace(/[_\s]+/g, ' ').trim();
-  if (norm === 'approved' || norm === 'pro approved' || norm === 'customer approved') return false;
-  return /\b(declined|rejected|canceled|cancelled|expired|void(?:ed)?)\b/.test(norm);
-}
+export { isHcpApprovedOptionStatus, isHcpDeclinedOptionStatus, isHcpExpiredOptionStatus } from '@shared/hcp-option-status';
+import { isHcpApprovedOptionStatus, isHcpDeclinedOptionStatus, isHcpExpiredOptionStatus } from '@shared/hcp-option-status';
 
 /** Same idea for the top-level estimate `status` / `work_status` strings. */
 export function isHcpRejectedEstimateStatus(s: string | null | undefined): boolean {
   if (!s) return false;
   const norm = s.toLowerCase().replace(/[_\s]+/g, ' ').trim();
   return /\b(canceled|cancelled|rejected|declined|expired|deleted|void(?:ed)?)\b/.test(norm);
-}
-
-/** True when an HCP option approval_status indicates explicit approval. */
-export function isHcpApprovedOptionStatus(s: string | null | undefined): boolean {
-  if (!s) return false;
-  const norm = s.toLowerCase().replace(/[_\s]+/g, ' ').trim();
-  return norm === 'approved' || norm === 'pro approved' || norm === 'customer approved';
 }
 
 /**
@@ -71,7 +61,7 @@ export function isHcpExcludedEstimateStatus(s: string | null | undefined): boole
   if (!s) return false;
   const norm = s.toLowerCase().replace(/[_\s]+/g, ' ').trim();
   if (norm === 'completed' || norm === 'unscheduled') return true;
-  return isHcpRejectedEstimateStatus(s) || isHcpDeclinedOptionStatus(s);
+  return isHcpRejectedEstimateStatus(s) || isHcpDeclinedOptionStatus(s) || isHcpExpiredOptionStatus(s);
 }
 
 export function mapHcpEstimateStatus(hcpEstimate: { status?: string; work_status?: string; options?: Array<{ approval_status?: string }> }): 'approved' | 'rejected' | 'scheduled' | 'sent' | 'in_progress' {
@@ -83,7 +73,7 @@ export function mapHcpEstimateStatus(hcpEstimate: { status?: string; work_status
   if (hasApproved) return 'approved';
   // New rule: if no option is approved but at least one is rejection-like,
   // treat the parent estimate as rejected.
-  if (opts.length > 0 && opts.some(o => isHcpDeclinedOptionStatus(o.approval_status))) return 'rejected';
+  if (opts.length > 0 && opts.some(o => isHcpDeclinedOptionStatus(o.approval_status) || isHcpExpiredOptionStatus(o.approval_status))) return 'rejected';
   if (['completed','approved','accepted'].some(v => ws === v || st === v)) return 'approved';
   if (ws === 'in_progress') return 'in_progress';
   if (ws === 'scheduled') return 'scheduled';

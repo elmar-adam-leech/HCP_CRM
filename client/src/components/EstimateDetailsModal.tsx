@@ -3,12 +3,13 @@ import { Badge } from "@/components/ui/badge";
 import { ActivityList } from "@/components/ActivityList";
 import { CommunicationActionButtons } from "@/components/CommunicationActionButtons";
 import { LineItemsTable } from "@/components/LineItemsTable";
-import { Phone, Mail, Calendar, User, CheckCircle, UserCircle } from "lucide-react";
+import { Phone, Mail, Calendar, User, CheckCircle, XCircle, Clock, UserCircle } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { WorkflowEnrollmentBadges } from "./WorkflowEnrollmentBadges";
 import { formatCurrency, formatEntityTitle } from "@/lib/utils";
 import { useUsers } from "@/hooks/useUsers";
 import type { Contact, Estimate, EstimateSummary, HcpOptionEntry } from "@shared/schema";
+import { isHcpApprovedOptionStatus, isHcpDeclinedOptionStatus, isHcpExpiredOptionStatus } from "@shared/hcp-option-status";
 
 export type EstimateListItem = {
   id: string;
@@ -126,18 +127,32 @@ export function EstimateDetailsModal({
                   <span className="font-medium">Estimate Options</span>
                   <div className="mt-2 space-y-2">
                     {estimate.hcpOptions.map((opt) => {
-                      const isApproved = opt.approval_status === 'approved';
+                      const approved = isHcpApprovedOptionStatus(opt.approval_status);
+                      const declined = isHcpDeclinedOptionStatus(opt.approval_status);
+                      const expired = isHcpExpiredOptionStatus(opt.approval_status);
+                      const borderTint = approved
+                        ? 'border-green-500/40 bg-green-500/5'
+                        : declined
+                          ? 'border-destructive/40 bg-destructive/5'
+                          : expired
+                            ? 'border-amber-500/40 bg-amber-500/5'
+                            : '';
                       return (
                         <div
                           key={opt.id}
-                          className={`flex items-center justify-between gap-1 p-2 rounded-md border ${isApproved ? 'border-green-500/40 bg-green-500/5' : ''}`}
+                          data-testid={`option-row-${opt.id}`}
+                          className={`flex items-center justify-between gap-2 p-2 rounded-md border ${borderTint}`}
                         >
-                          <div className="flex items-center gap-2">
-                            {isApproved && <CheckCircle className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />}
+                          <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                            {approved && <CheckCircle className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />}
+                            {declined && <XCircle className="h-4 w-4 text-destructive shrink-0" />}
+                            {expired && <Clock className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />}
                             <span className="text-sm">{opt.name || `Option ${opt.option_number || opt.id}`}</span>
-                            {isApproved && <Badge variant="secondary" className="text-xs">Approved</Badge>}
+                            {approved && <Badge variant="secondary" className="text-xs">Approved</Badge>}
+                            {declined && <Badge variant="destructive" className="text-xs">Declined</Badge>}
+                            {expired && <Badge variant="secondary" className="text-xs">Expired</Badge>}
                           </div>
-                          <span className="text-sm font-medium">
+                          <span className="text-sm font-medium tabular-nums">
                             {opt.total_amount != null ? formatCurrency(opt.total_amount / 100) : '—'}
                           </span>
                         </div>

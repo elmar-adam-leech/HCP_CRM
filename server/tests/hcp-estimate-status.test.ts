@@ -4,6 +4,7 @@ import {
   resolveHcpEstimateStatus,
   isHcpDeclinedOptionStatus,
   isHcpApprovedOptionStatus,
+  isHcpExpiredOptionStatus,
   isHcpRejectedEstimateStatus,
   isHcpExcludedEstimateStatus,
 } from '../sync/hcp-mappers';
@@ -17,7 +18,8 @@ describe('isHcpDeclinedOptionStatus', () => {
     expect(isHcpDeclinedOptionStatus('declined')).toBe(true);
     expect(isHcpDeclinedOptionStatus('pro declined')).toBe(true);
     expect(isHcpDeclinedOptionStatus('customer declined')).toBe(true);
-    expect(isHcpDeclinedOptionStatus('expired')).toBe(true);
+    // expired is now its own predicate (isHcpExpiredOptionStatus)
+    expect(isHcpDeclinedOptionStatus('expired')).toBe(false);
     // underscored/legacy forms
     expect(isHcpDeclinedOptionStatus('pro_declined')).toBe(true);
     expect(isHcpDeclinedOptionStatus('customer_declined')).toBe(true);
@@ -27,6 +29,17 @@ describe('isHcpDeclinedOptionStatus', () => {
     expect(isHcpDeclinedOptionStatus(null)).toBe(false);
     expect(isHcpDeclinedOptionStatus(undefined)).toBe(false);
     expect(isHcpDeclinedOptionStatus('')).toBe(false);
+  });
+});
+
+describe('isHcpExpiredOptionStatus', () => {
+  it('only matches expired variants', () => {
+    expect(isHcpExpiredOptionStatus('expired')).toBe(true);
+    expect(isHcpExpiredOptionStatus('EXPIRED')).toBe(true);
+    expect(isHcpExpiredOptionStatus('approved')).toBe(false);
+    expect(isHcpExpiredOptionStatus('declined')).toBe(false);
+    expect(isHcpExpiredOptionStatus('')).toBe(false);
+    expect(isHcpExpiredOptionStatus(null)).toBe(false);
   });
 });
 
