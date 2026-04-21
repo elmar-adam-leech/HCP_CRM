@@ -25,6 +25,7 @@ interface CommunicationActionButtonsProps {
   onCallCompleted?: () => void;
   showQuickNote?: boolean;
   forceInAppEmail?: boolean;
+  compact?: boolean;
 }
 
 export const CommunicationActionButtons = memo(function CommunicationActionButtons({
@@ -47,15 +48,20 @@ export const CommunicationActionButtons = memo(function CommunicationActionButto
   onCallCompleted,
   showQuickNote = true,
   forceInAppEmail = false,
+  compact = false,
 }: CommunicationActionButtonsProps) {
+  const containerClass = compact
+    ? "grid grid-cols-4 gap-2"
+    : "grid grid-cols-2 sm:flex sm:flex-wrap gap-2";
+  const buttonClass = compact ? "w-full" : "w-full sm:w-auto";
   return (
-    <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
+    <div className={containerClass}>
       <CallButton
         recipientName={recipientName}
         recipientPhone={recipientPhone}
         variant="outline"
         size="sm"
-        className="w-full sm:w-auto"
+        className={buttonClass}
         leadId={leadId}
         estimateId={estimateId}
         customerId={customerId}
@@ -66,7 +72,7 @@ export const CommunicationActionButtons = memo(function CommunicationActionButto
         recipientEmail={recipientEmail}
         variant="outline"
         size="sm"
-        className="w-full sm:w-auto"
+        className={buttonClass}
         onSendEmail={onSendEmail}
         leadId={leadId}
         estimateId={estimateId}
@@ -79,7 +85,7 @@ export const CommunicationActionButtons = memo(function CommunicationActionButto
         recipientPhone={recipientPhone}
         variant="outline"
         size="sm"
-        className="w-full sm:w-auto"
+        className={buttonClass}
         leadId={leadId}
         estimateId={estimateId}
         recipientEmail={recipientEmail}
@@ -98,7 +104,7 @@ export const CommunicationActionButtons = memo(function CommunicationActionButto
           estimateId={estimateId}
           variant="outline"
           size="sm"
-          className="w-full sm:w-auto"
+          className={buttonClass}
         />
       )}
     </div>

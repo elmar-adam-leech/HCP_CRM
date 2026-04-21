@@ -7,6 +7,7 @@ import { CustomerBadge } from "./CustomerBadge";
 import { Calendar, FileText, MoreHorizontal, Edit, ExternalLink, Phone, Mail, CalendarClock, Trash2, Tag, ListChecks } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { CommunicationActionButtons } from "./CommunicationActionButtons";
 import { ViewDetailsButton } from "./ViewDetailsButton";
 import { TagsDialog } from "./TagsDialog";
@@ -110,17 +111,24 @@ export const EstimateCard = memo(function EstimateCard({ estimate, onViewDetails
                 ? hcpUrl('estimate', optionId)
                 : undefined;
               return hcpEstimateUrl ? (
-                <a
-                  href={hcpEstimateUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <Badge variant="secondary" className="text-xs flex items-center gap-1">
-                    <ExternalLink className="h-3 w-3" />
-                    Housecall Pro
-                  </Badge>
-                </a>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <a
+                      href={hcpEstimateUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <Badge variant="secondary" className="text-xs flex items-center gap-1">
+                        <ExternalLink className="h-3 w-3" />
+                        Housecall Pro
+                      </Badge>
+                    </a>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-xs">
+                    Synced from Housecall Pro. Status can be changed locally and your choice is preserved on future syncs. Other fields are edited in Housecall Pro.
+                  </TooltipContent>
+                </Tooltip>
               ) : null;
             })()}
             {isHousecallProEstimate && Array.isArray(estimate.hcpOptions) && estimate.hcpOptions.length > 0 && (() => {
@@ -128,9 +136,14 @@ export const EstimateCard = memo(function EstimateCard({ estimate, onViewDetails
               const approved = opts.filter(o => isHcpApprovedOptionStatus(o.approval_status)).length;
               const declined = opts.filter(o => isHcpDeclinedOptionStatus(o.approval_status)).length;
               const expired = opts.filter(o => isHcpExpiredOptionStatus(o.approval_status)).length;
+              const parentStatus = estimate.status;
+              const showOptionCount = opts.length > 1;
+              const showApproved = approved > 0 && !(parentStatus === 'approved' && approved === opts.length);
+              const showDeclined = declined > 0 && parentStatus !== 'rejected';
+              const showExpired = expired > 0 && parentStatus !== 'rejected';
               return (
                 <>
-                  {opts.length > 1 && (
+                  {showOptionCount && (
                     <Badge
                       variant="secondary"
                       className="text-xs flex items-center gap-1"
@@ -140,7 +153,7 @@ export const EstimateCard = memo(function EstimateCard({ estimate, onViewDetails
                       {opts.length} options
                     </Badge>
                   )}
-                  {approved > 0 && (
+                  {showApproved && (
                     <Badge
                       variant="secondary"
                       className="text-xs"
@@ -149,7 +162,7 @@ export const EstimateCard = memo(function EstimateCard({ estimate, onViewDetails
                       {approved} approved
                     </Badge>
                   )}
-                  {declined > 0 && (
+                  {showDeclined && (
                     <Badge
                       variant="destructive"
                       className="text-xs"
@@ -158,7 +171,7 @@ export const EstimateCard = memo(function EstimateCard({ estimate, onViewDetails
                       {declined} declined
                     </Badge>
                   )}
-                  {expired > 0 && (
+                  {showExpired && (
                     <Badge
                       variant="secondary"
                       className="text-xs text-amber-700 dark:text-amber-400"
@@ -234,7 +247,7 @@ export const EstimateCard = memo(function EstimateCard({ estimate, onViewDetails
           </DropdownMenuContent>
         </DropdownMenu>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-2">
         <>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -284,15 +297,10 @@ export const EstimateCard = memo(function EstimateCard({ estimate, onViewDetails
               contactId={estimate.contactId}
               hasUnreadText={hasUnreadText}
               hasUnreadEmail={hasUnreadEmail}
+              compact
             />
-            
-            {isHousecallProEstimate && (
-              <div className="text-xs text-muted-foreground bg-blue-500/10 border border-blue-500/20 p-2 rounded-md">
-                <span className="font-medium">Synced from Housecall Pro:</span> Status can be changed locally and your choice will be preserved on future syncs. Other fields are edited in Housecall Pro.
-              </div>
-            )}
 
-            <div className="flex gap-2 pt-2 border-t">
+            <div className="flex gap-2 pt-1 border-t">
               <Button
                 variant="outline"
                 size="sm"
