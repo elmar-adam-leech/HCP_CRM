@@ -42,18 +42,18 @@ function buildEstimatesWhere(
   const alias = opts.tableAlias ?? "e";
   const dateCol = opts.dateColumn ?? `${alias}.created_at`;
   const parts: SQL[] = [
-    sql.raw(`${alias}.contractor_id = `).append(sql`${contractorId}`),
-    sql.raw(`${dateCol} >= `).append(sql`${f.startDate.toISOString()}`),
-    sql.raw(`${dateCol} < `).append(sql`${f.endDate.toISOString()}`),
+    sql`${sql.raw(alias)}.contractor_id = ${contractorId}`,
+    sql`${sql.raw(dateCol)} >= ${f.startDate.toISOString()}`,
+    sql`${sql.raw(dateCol)} < ${f.endDate.toISOString()}`,
   ];
   if (f.salespersonId) {
-    parts.push(sql.raw(`${alias}.salesperson_user_id = `).append(sql`${f.salespersonId}`));
+    parts.push(sql`${sql.raw(alias)}.salesperson_user_id = ${f.salespersonId}`);
   }
   if (f.leadSource) {
     if (f.leadSource === "__unknown__") {
-      parts.push(sql.raw(`l.source IS NULL`));
+      parts.push(sql`l.source IS NULL`);
     } else {
-      parts.push(sql.raw(`l.source = `).append(sql`${f.leadSource}`));
+      parts.push(sql`l.source = ${f.leadSource}`);
     }
   }
   return sql.join(parts, sql.raw(" AND "));
