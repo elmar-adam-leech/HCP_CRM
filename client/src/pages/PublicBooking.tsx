@@ -235,6 +235,9 @@ export default function PublicBooking() {
           notes: data.notes,
           source: 'public_booking',
           timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          // Pass the short booking code so the backend can verify the caller
+          // controls the pre-populated contact record (ownership token).
+          bookingCode: bookingCode || undefined,
         }),
       });
 

@@ -173,6 +173,12 @@ export function registerPublicRoutes(app: Express): void {
       if (start < now) {
         start.setTime(now.getTime());
       }
+      // Clamp the requested range to a maximum of 30 days to prevent
+      // unbounded CPU/memory consumption from arbitrarily large date spans.
+      const MAX_RANGE_MS = 30 * 24 * 60 * 60 * 1000;
+      if (end.getTime() - start.getTime() > MAX_RANGE_MS) {
+        end.setTime(start.getTime() + MAX_RANGE_MS);
+      }
       slots = await housecallSchedulingService.getUnifiedAvailability(contractor.id, start, end, timezone);
     }
     
@@ -257,7 +263,7 @@ export function registerPublicRoutes(app: Express): void {
   // Create a booking from public page (stricter rate limit for submissions)
   app.post("/api/public/book/:slug", publicBookingSubmitRateLimiter, asyncHandler(async (req: Request, res: Response) => {
     const { slug } = req.params;
-    const { name, email, phone, address, customerAddressComponents, startTime, notes, source, timeZone } = req.body;
+    const { name, email, phone, address, customerAddressComponents, startTime, notes, source, timeZone, bookingCode } = req.body;
     
     // Find contractor by booking slug
     const contractor = await storage.getContractorBySlug(slug);
@@ -299,18 +305,41 @@ export function registerPublicRoutes(app: Express): void {
     const emails = email ? [email] : [];
     const phones = phone ? [phone] : [];
     
-    // Check for existing contact by email or phone
+    // Check for existing contact by email or phone.
+    // IMPORTANT: An email or phone match alone does not prove the caller
+    // controls that identity. An attacker who knows a victim's phone or email
+    // could otherwise attach bookings and trigger status/workflow transitions
+    // on the victim's CRM record, and redirect automated communications to
+    // themselves by overwriting stored contact fields.
+    //
+    // We only reuse an existing contact when the request carries a signed
+    // booking token (bookingCode) that resolves to the same contact — this
+    // proves the caller was given a pre-populated booking link for that record.
+    //
+    // Without a verified token, we create a new contact from the submitted
+    // data. This isolates the new booking from the existing record entirely:
+    // no status transitions, no workflow events, and no field mutations are
+    // applied to the pre-existing contact.
     const existingContactId = await storage.findMatchingContact(contractor.id, emails, phones);
-    
-    let contactId: string;
-    if (existingContactId) {
-      contactId = existingContactId;
-      const existingContact = await storage.getContact(existingContactId, contractor.id);
 
+    // Verify ownership via bookingCode when a matching contact is found.
+    const tokenContact = (existingContactId && bookingCode)
+      ? await storage.getContactByBookingCode(bookingCode as string, contractor.id)
+      : null;
+    const callerOwnsContact = tokenContact?.id === existingContactId;
+
+    let contactId: string;
+    if (existingContactId && callerOwnsContact) {
+      // Caller holds a valid booking token for this exact contact.
+      contactId = existingContactId;
+
+      // Update address fields only when the submitted address is more
+      // complete than what is already stored. Never overwrite name/emails/phones.
+      const existingContact = tokenContact!;
       const parsed = parseAddressString(address);
       const submittedHasStreet = hasRealStreetAddress(address);
-      const existingHasStreet = !!(existingContact?.street)
-        || hasRealStreetAddress(existingContact?.address || '');
+      const existingHasStreet = !!(existingContact.street)
+        || hasRealStreetAddress(existingContact.address || '');
 
       const addressFields: {
         address?: string;
@@ -333,17 +362,19 @@ export function registerPublicRoutes(app: Express): void {
         if (parsed.zip) addressFields.zip = parsed.zip;
       }
 
-      await storage.updateContact(existingContactId, {
-        name,
-        emails,
-        phones,
-        ...addressFields,
-      }, contractor.id);
-      broadcastToContractor(contractor.id, { type: 'contact_updated', contactId: existingContactId });
+      if (Object.keys(addressFields).length > 0) {
+        await storage.updateContact(existingContactId, { ...addressFields }, contractor.id);
+        broadcastToContractor(contractor.id, { type: 'contact_updated', contactId: existingContactId });
+      }
     } else {
-      // Create new contact in default ("new") status. The status flip to "scheduled"
-      // is performed by markContactScheduled() below so the contact_status_changed
-      // workflow trigger fires exactly once via the centralized helper.
+      // Either no match was found, or the match was found but the caller could
+      // not prove ownership via a valid bookingCode. In both cases, create a
+      // fresh contact so that no status transitions, workflow side-effects, or
+      // field mutations are applied to any pre-existing CRM record.
+      //
+      // The status flip to "scheduled" is performed by markContactScheduled()
+      // below so the contact_status_changed workflow trigger fires exactly once
+      // via the centralized helper.
       const newContact = await storage.createContact({
         name,
         emails,
