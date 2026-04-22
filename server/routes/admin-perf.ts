@@ -4,6 +4,7 @@ import { db } from "../db";
 import { requireAuth, AuthService, type AuthedRequest } from "../auth-service";
 import { asyncHandler } from "../utils/async-handler";
 import { getStats } from "../services/latency-stats";
+import { getAuthCacheStats } from "../services/auth-cache";
 
 const requireSuperAdmin = AuthService.requireRole(['super_admin']);
 
@@ -16,7 +17,17 @@ export function registerAdminPerfRoutes(app: Express): void {
     requireAuth,
     requireSuperAdmin,
     asyncHandler(async (_req: AuthedRequest, res: Response) => {
-      res.json(getStats());
+      const snapshot = getStats();
+      const authCache = getAuthCacheStats();
+      const total = authCache.hits + authCache.misses;
+      const hitRate = total > 0 ? authCache.hits / total : 0;
+      res.json({
+        ...snapshot,
+        authCache: {
+          ...authCache,
+          hitRate: Math.round(hitRate * 10000) / 10000,
+        },
+      });
     }),
   );
 
