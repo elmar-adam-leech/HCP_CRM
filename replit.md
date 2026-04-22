@@ -105,3 +105,4 @@ Every change must pull its weight in load time, network bytes, JS bundle size, D
 - **AES-256-GCM**: Encryption standard used for sensitive data.
 - **SendGrid**: (Implied by credential storage) For email sending capabilities.
 - **Twilio**: (Implied by webhook service enum) Likely used for SMS capabilities.
+- **lucide-react**: Icon library. Per-icon ESM tree-shaking is verified working — the `icons-vendor` chunk (~55 KB / 11 KB gzip) reflects genuine usage of ~131 distinct icons across the app (~420 bytes/icon minified), not a bundling failure. All imports use the named-import form (`import { X } from "lucide-react"`) which Vite/Rollup tree-shakes correctly. Do not switch to `lucide-react/icons/*` deep imports — they offer no further savings and break TypeScript types. If this chunk grows significantly, audit for new icon additions before assuming a regression.
