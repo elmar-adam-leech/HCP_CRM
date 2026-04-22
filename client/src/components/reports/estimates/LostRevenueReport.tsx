@@ -17,6 +17,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  EstimatesReportsFiltersProvider,
   ReportShell,
   Stat,
   formatDate,
@@ -42,7 +43,7 @@ interface LostRevenueData {
   }[];
 }
 
-export function LostRevenueReport() {
+function LostRevenueReportInner() {
   const [page, setPage] = useState(0);
   useResetOnFilterChange(() => setPage(0));
   const { data, isLoading, isError } = useReportQuery<LostRevenueData>(
@@ -137,5 +138,13 @@ export function LostRevenueReport() {
         </>
       )}
     </ReportShell>
+  );
+}
+
+export function LostRevenueReport() {
+  return (
+    <EstimatesReportsFiltersProvider urlPrefix="lostRevenue">
+      <LostRevenueReportInner />
+    </EstimatesReportsFiltersProvider>
   );
 }

@@ -7,6 +7,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  EstimatesReportsFiltersProvider,
   ReportShell,
   Stat,
   formatMoney,
@@ -28,7 +29,7 @@ interface PipelineData {
   }[];
 }
 
-export function PipelineForecastReport() {
+function PipelineForecastReportInner() {
   const { data, isLoading, isError } = useReportQuery<PipelineData>(
     "/api/reports/estimates/pipeline-forecast",
   );
@@ -85,5 +86,13 @@ export function PipelineForecastReport() {
         </>
       )}
     </ReportShell>
+  );
+}
+
+export function PipelineForecastReport() {
+  return (
+    <EstimatesReportsFiltersProvider urlPrefix="pipeline">
+      <PipelineForecastReportInner />
+    </EstimatesReportsFiltersProvider>
   );
 }

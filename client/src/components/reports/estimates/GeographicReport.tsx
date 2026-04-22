@@ -8,6 +8,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  EstimatesReportsFiltersProvider,
   ReportShell,
   Stat,
   formatMoney,
@@ -27,7 +28,7 @@ interface GeographicData {
   }[];
 }
 
-export function GeographicReport() {
+function GeographicReportInner() {
   const { data, isLoading, isError } = useReportQuery<GeographicData>(
     "/api/reports/estimates/geographic",
   );
@@ -92,5 +93,13 @@ export function GeographicReport() {
         </>
       )}
     </ReportShell>
+  );
+}
+
+export function GeographicReport() {
+  return (
+    <EstimatesReportsFiltersProvider urlPrefix="geographic">
+      <GeographicReportInner />
+    </EstimatesReportsFiltersProvider>
   );
 }

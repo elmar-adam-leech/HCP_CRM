@@ -119,7 +119,7 @@ function parseLocalDate(s: string): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
-function parseDateRangeFromUrl(prefix: string): Partial<EstimatesReportFilters> {
+function parseFiltersFromUrl(prefix: string): Partial<EstimatesReportFilters> {
   if (typeof window === "undefined") return {};
   const p = new URLSearchParams(window.location.search);
   const preset = p.get(`${prefix}Preset`);
@@ -138,6 +138,10 @@ function parseDateRangeFromUrl(prefix: string): Partial<EstimatesReportFilters> 
       }
     }
   }
+  const sp = p.get(`${prefix}Sp`);
+  if (sp) out.salespersonId = sp;
+  const src = p.get(`${prefix}Src`);
+  if (src) out.leadSource = src;
   return out;
 }
 
@@ -154,16 +158,15 @@ export function EstimatesReportsFiltersProvider({
   const [, setLocation] = useLocation();
   const [filters, setFiltersState] = useState<EstimatesReportFilters>(() => {
     const base: EstimatesReportFilters = { preset: "30d" };
-    if (urlPrefix) Object.assign(base, parseDateRangeFromUrl(urlPrefix));
+    if (urlPrefix) Object.assign(base, parseFiltersFromUrl(urlPrefix));
     return base;
   });
   const setFilters = useCallback((next: Partial<EstimatesReportFilters>) => {
     setFiltersState((prev) => ({ ...prev, ...next }));
   }, []);
 
-  // Mirror date range state to the URL so reload/share preserves the view.
-  // Only the preset (and custom dates when relevant) are persisted — the task
-  // scope keeps salesperson/lead source out of the URL.
+  // Mirror filter state (date range + salesperson + lead source) to the URL so
+  // reload/share preserves the view.
   const customFromKey = filters.customRange?.from?.getTime() ?? 0;
   const customToKey = filters.customRange?.to?.getTime() ?? 0;
   useEffect(() => {
@@ -185,12 +188,30 @@ export function EstimatesReportsFiltersProvider({
       p.delete(`${urlPrefix}From`);
       p.delete(`${urlPrefix}To`);
     }
+    if (filters.salespersonId) {
+      p.set(`${urlPrefix}Sp`, filters.salespersonId);
+    } else {
+      p.delete(`${urlPrefix}Sp`);
+    }
+    if (filters.leadSource) {
+      p.set(`${urlPrefix}Src`, filters.leadSource);
+    } else {
+      p.delete(`${urlPrefix}Src`);
+    }
     const qs = p.toString();
     const target = `${window.location.pathname}${qs ? `?${qs}` : ""}`;
     if (target !== `${window.location.pathname}${window.location.search}`) {
       setLocation(target, { replace: true });
     }
-  }, [urlPrefix, filters.preset, customFromKey, customToKey, setLocation]);
+  }, [
+    urlPrefix,
+    filters.preset,
+    customFromKey,
+    customToKey,
+    filters.salespersonId,
+    filters.leadSource,
+    setLocation,
+  ]);
 
   const value = useMemo(() => ({ filters, setFilters }), [filters, setFilters]);
   return <FiltersContext.Provider value={value}>{children}</FiltersContext.Provider>;

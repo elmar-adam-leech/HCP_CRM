@@ -16,6 +16,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  EstimatesReportsFiltersProvider,
   ReportShell,
   Stat,
   formatNumber,
@@ -36,7 +37,7 @@ interface TimeToCloseData {
   histogram: { bucket: string; count: number }[];
 }
 
-export function TimeToCloseReport() {
+function TimeToCloseReportInner() {
   const { data, isLoading, isError } = useReportQuery<TimeToCloseData>(
     "/api/reports/estimates/time-to-close",
   );
@@ -105,5 +106,13 @@ export function TimeToCloseReport() {
         </>
       )}
     </ReportShell>
+  );
+}
+
+export function TimeToCloseReport() {
+  return (
+    <EstimatesReportsFiltersProvider urlPrefix="timeToClose">
+      <TimeToCloseReportInner />
+    </EstimatesReportsFiltersProvider>
   );
 }

@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { ArrowUpDown } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
+  EstimatesReportsFiltersProvider,
   ReportShell,
   Stat,
   formatPercent,
@@ -119,7 +120,7 @@ function CloseRateTable({
   );
 }
 
-export function CloseRateBySalespersonReport() {
+function CloseRateBySalespersonReportInner() {
   const { data, isLoading, isError } = useReportQuery<CloseRateData>(
     "/api/reports/estimates/close-rate-by-salesperson",
   );
@@ -161,7 +162,7 @@ export function CloseRateBySalespersonReport() {
   );
 }
 
-export function CloseRateBySourceReport() {
+function CloseRateBySourceReportInner() {
   const { data, isLoading, isError } = useReportQuery<CloseRateData>(
     "/api/reports/estimates/close-rate-by-source",
   );
@@ -197,5 +198,21 @@ export function CloseRateBySourceReport() {
         </>
       )}
     </ReportShell>
+  );
+}
+
+export function CloseRateBySalespersonReport() {
+  return (
+    <EstimatesReportsFiltersProvider urlPrefix="crSalesperson">
+      <CloseRateBySalespersonReportInner />
+    </EstimatesReportsFiltersProvider>
+  );
+}
+
+export function CloseRateBySourceReport() {
+  return (
+    <EstimatesReportsFiltersProvider urlPrefix="crSource">
+      <CloseRateBySourceReportInner />
+    </EstimatesReportsFiltersProvider>
   );
 }

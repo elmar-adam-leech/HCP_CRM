@@ -18,6 +18,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  EstimatesReportsFiltersProvider,
   ReportShell,
   Stat,
   formatNumber,
@@ -56,7 +57,7 @@ function formatWeek(iso: string): string {
   }
 }
 
-export function SalesActivityReport() {
+function SalesActivityReportInner() {
   const { data, isLoading, isError } = useReportQuery<SalesActivityData>(
     "/api/reports/estimates/sales-activity",
   );
@@ -136,5 +137,13 @@ export function SalesActivityReport() {
         </>
       )}
     </ReportShell>
+  );
+}
+
+export function SalesActivityReport() {
+  return (
+    <EstimatesReportsFiltersProvider urlPrefix="salesActivity">
+      <SalesActivityReportInner />
+    </EstimatesReportsFiltersProvider>
   );
 }

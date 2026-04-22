@@ -17,6 +17,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  EstimatesReportsFiltersProvider,
   ReportShell,
   Stat,
   formatMoney,
@@ -39,7 +40,7 @@ interface RevenueReportData {
   }[];
 }
 
-export function RevenueReport() {
+function RevenueReportInner() {
   const { data, isLoading, isError } = useReportQuery<RevenueReportData>(
     "/api/reports/estimates/revenue",
   );
@@ -119,5 +120,13 @@ export function RevenueReport() {
         </>
       )}
     </ReportShell>
+  );
+}
+
+export function RevenueReport() {
+  return (
+    <EstimatesReportsFiltersProvider urlPrefix="revenue">
+      <RevenueReportInner />
+    </EstimatesReportsFiltersProvider>
   );
 }
