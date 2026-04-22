@@ -701,6 +701,23 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS most_recent_status_change_reason text`,
       description: 'estimates.most_recent_status_change_reason (free-form reason for latest status change)',
     },
+    // ---- Task #464: Time-to-close anchors for estimates ----
+    {
+      sql: `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS approved_at timestamp`,
+      description: 'estimates.approved_at (Task #464: time-to-close anchor for approved estimates)',
+    },
+    {
+      sql: `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS rejected_at timestamp`,
+      description: 'estimates.rejected_at (Task #464: time-to-close anchor for rejected estimates)',
+    },
+    {
+      sql: `UPDATE estimates SET approved_at = updated_at WHERE status = 'approved' AND approved_at IS NULL`,
+      description: 'backfill estimates.approved_at from updated_at for existing approved rows (one-time, idempotent)',
+    },
+    {
+      sql: `UPDATE estimates SET rejected_at = updated_at WHERE status = 'rejected' AND rejected_at IS NULL`,
+      description: 'backfill estimates.rejected_at from updated_at for existing rejected rows (one-time, idempotent)',
+    },
     // ---- Task #506: Sales Process settings + scheduling engine ----
     {
       sql: `DO $$ BEGIN
