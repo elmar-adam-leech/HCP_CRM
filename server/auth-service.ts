@@ -452,3 +452,22 @@ export const requireManagerOrAdmin = AuthService.requireRole(['manager', 'admin'
 export const requireAdmin = AuthService.requireRole(['admin', 'super_admin']);
 export const requireContractorAccess = AuthService.requireContractorAccess;
 export const validateContractorAccess = AuthService.validateContractorAccess;
+
+/**
+ * Allows managers, admins, super_admins, and users with the `canManageIntegrations`
+ * delegation flag. Use this for integration management routes where the UI exposes
+ * functionality to both privileged roles and delegated integration admins.
+ */
+export const requireIntegrationManager = (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+  if (!req.user) {
+    res.status(401).json({ message: 'Unauthorized' });
+    return;
+  }
+  const role = req.user.role;
+  const isManagerOrAdmin = role === 'manager' || role === 'admin' || role === 'super_admin';
+  if (!isManagerOrAdmin && !req.user.canManageIntegrations) {
+    res.status(403).json({ message: 'Access denied. Insufficient permissions.' });
+    return;
+  }
+  next();
+};

@@ -194,7 +194,7 @@ export function registerHcpSchedulingRoutes(app: Express): void {
     res.json({ message: "Salesperson updated successfully" });
   }));
 
-  app.get("/api/integrations/housecall-pro/webhook-config", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  app.get("/api/integrations/housecall-pro/webhook-config", requireManagerOrAdmin, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const contractorId = req.user.contractorId;
     let baseWebhookUrl: string;
     if (process.env.APP_URL) {

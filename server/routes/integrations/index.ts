@@ -265,7 +265,7 @@ export function registerIntegrationRoutes(app: Express): void {
 
   // Webhook configuration endpoint — returns the public webhook URL and a persistent API key
   // for this contractor's lead intake webhook. Generates and saves the key on first call.
-  app.get("/api/webhook-config", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  app.get("/api/webhook-config", requireManagerOrAdmin, asyncHandler(async (req: AuthedRequest, res: Response) => {
     const contractorId = req.user.contractorId;
     
     let apiKey: string;

@@ -16,6 +16,12 @@ const log = logger('OAuthRoutes');
 export function registerOAuthRoutes(app: Express): void {
   app.get("/api/settings/shared-email", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user) { res.status(401).json({ message: "Not authenticated" }); return; }
+    const role = req.user.role;
+    const isAdmin = role === 'admin' || role === 'super_admin' || role === 'manager';
+    if (!isAdmin && !req.user.canManageIntegrations) {
+      res.status(403).json({ message: "Only managers and admins can view the shared company email settings" });
+      return;
+    }
     const account = await storage.getSharedEmailAccount(req.user.contractorId);
     if (!account) { res.json({ connected: false }); return; }
     let connectedByName: string | undefined;
@@ -38,6 +44,12 @@ export function registerOAuthRoutes(app: Express): void {
 
   app.post("/api/settings/shared-email/sync", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user) { res.status(401).json({ message: "Not authenticated" }); return; }
+    const role = req.user.role;
+    const isAdmin = role === 'admin' || role === 'super_admin' || role === 'manager';
+    if (!isAdmin && !req.user.canManageIntegrations) {
+      res.status(403).json({ message: "Only managers and admins can trigger a shared email sync" });
+      return;
+    }
     const contractorId = req.user.contractorId;
     const account = await storage.getSharedEmailAccount(contractorId);
     if (!account) { res.status(404).json({ message: "Shared email is not connected" }); return; }

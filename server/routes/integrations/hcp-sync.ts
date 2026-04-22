@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { storage } from "../../storage";
 import { isIntegrationEnabledCached } from "../../services/cache";
 import { housecallProService } from "../../hcp/index";
-import { requireAdmin } from "../../auth-service";
+import { requireAdmin, requireIntegrationManager } from "../../auth-service";
 import { syncStatus, setSyncStatus, lastSyncLoaded } from "../../sync-status-store";
 import { mapHcpEstimateStatus } from "../../sync/housecall-pro";
 import { extractHcpAmount, resolveHcpEstimateStatus } from "../../sync/hcp-mappers";
@@ -20,7 +20,7 @@ import { and, eq } from "drizzle-orm";
 const log = logger('HcpSync');
 
 export function registerHcpSyncRoutes(app: Express): void {
-  app.post("/api/housecall-pro/sync", asyncHandler(async (req, res) => {
+  app.post("/api/housecall-pro/sync", requireIntegrationManager, asyncHandler(async (req, res) => {
     const contractorId = req.user.contractorId;
     const syncType = (req.query.type as string) || 'all';
 
