@@ -5,6 +5,15 @@ import { createServer as createViteServer, createLogger } from "vite";
 import { type Server } from "http";
 import viteConfig from "../vite.config";
 import { nanoid } from "nanoid";
+import { PRERENDERED_ROUTE_PATHS } from "@shared/prerendered-routes.mjs";
+
+// Cache-Control for pre-rendered marketing HTML. Short max-age + must-revalidate
+// keeps mobile visitors hitting an edge POP for the typical session, but lets
+// the CDN re-validate quickly. The deploy-time CDN purge (scripts/purge-cdn.mjs)
+// is what guarantees a brand-new build is visible immediately even if a POP is
+// still holding the previous HTML.
+const PRERENDERED_CACHE_CONTROL =
+  process.env.PRERENDERED_CACHE_CONTROL ?? "public, max-age=300, must-revalidate";
 
 const viteLogger = createLogger();
 
@@ -103,17 +112,29 @@ export function serveStatic(app: Express) {
   // Marketing/public routes are pre-rendered into per-route HTML files at
   // build time (scripts/prerender.mjs). Serve those files directly so the
   // browser paints content before any JavaScript loads. The hashed JS/CSS
-  // bundles they reference are still long-cached; only the HTML must
-  // invalidate per deploy, hence Cache-Control: no-store.
+  // bundles they reference are still long-cached.
+  //
+  // Cache-Control is `public, max-age=300, must-revalidate` (overridable via
+  // PRERENDERED_CACHE_CONTROL) so a CDN/edge POP can serve these pages
+  // without round-tripping. New builds publish new asset hashes, and the
+  // post-build CDN purge step (scripts/purge-cdn.mjs) invalidates these
+  // exact paths so visitors never see HTML that points at deleted assets.
+  // The route list is the single source of truth in
+  // shared/prerendered-routes.mjs — see docs/cdn-purge-runbook.md when
+  // adding a new route.
   //
   // Any path not in this set falls through to the SPA shell (spa.html, the
   // empty-root index.html the original SPA used) so wouter can route it.
-  const PRERENDERED_ROUTES: Record<string, string> = {
-    "/": path.resolve(distPath, "index.html"),
-    "/privacy": path.resolve(distPath, "privacy", "index.html"),
-    "/terms": path.resolve(distPath, "terms", "index.html"),
-    "/licenses": path.resolve(distPath, "licenses", "index.html"),
-  };
+  // The SPA shell stays `no-store` because it is the entry point for
+  // authenticated app routes and must never be cached at the edge.
+  const PRERENDERED_ROUTES: Record<string, string> = Object.fromEntries(
+    PRERENDERED_ROUTE_PATHS.map((route) => [
+      route,
+      route === "/"
+        ? path.resolve(distPath, "index.html")
+        : path.resolve(distPath, route.replace(/^\//, ""), "index.html"),
+    ]),
+  );
 
   const spaShellPath = fs.existsSync(path.resolve(distPath, "spa.html"))
     ? path.resolve(distPath, "spa.html")
@@ -122,7 +143,7 @@ export function serveStatic(app: Express) {
   app.use("*", (req, res) => {
     const prerendered = PRERENDERED_ROUTES[req.path];
     if (prerendered && fs.existsSync(prerendered)) {
-      res.set("Cache-Control", "no-store");
+      res.set("Cache-Control", PRERENDERED_CACHE_CONTROL);
       res.set("Content-Type", "text/html; charset=utf-8");
       return res.sendFile(prerendered);
     }

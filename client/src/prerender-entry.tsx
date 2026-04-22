@@ -6,8 +6,9 @@ import LandingPage from "@/pages/LandingPage";
 import PrivacyPolicy from "@/pages/PrivacyPolicy";
 import TermsOfService from "@/pages/TermsOfService";
 import OpenSourceLicenses from "@/pages/OpenSourceLicenses";
+import { PRERENDERED_ROUTE_PATHS } from "@shared/prerendered-routes.mjs";
 
-export const PRERENDER_PATHS = ["/", "/privacy", "/terms", "/licenses"] as const;
+export const PRERENDER_PATHS = PRERENDERED_ROUTE_PATHS;
 
 export function render(path: string): string {
   const queryClient = new QueryClient({

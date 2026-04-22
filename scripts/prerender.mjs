@@ -20,6 +20,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import Critters from "critters";
+import { purgeCdnIfBuildChanged } from "./purge-cdn.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -103,6 +104,10 @@ async function main() {
     await fs.writeFile(outPath, pageHtml, "utf-8");
     console.log(`[prerender] Wrote ${path.relative(projectRoot, outPath)}`);
   }
+
+  // Purge the CDN edge caches for the pre-rendered routes if the build
+  // produced new asset hashes. No-op when no CDN credentials are set.
+  await purgeCdnIfBuildChanged();
 }
 
 main().catch((err) => {
