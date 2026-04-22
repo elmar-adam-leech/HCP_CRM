@@ -31,6 +31,7 @@ export interface LeadsStatusCounts {
   scheduled: number | undefined;
   disqualified: number | undefined;
   lost: number | undefined;
+  [key: string]: number | undefined;
 }
 
 export function useLeadsData(params: LeadsDataParams) {

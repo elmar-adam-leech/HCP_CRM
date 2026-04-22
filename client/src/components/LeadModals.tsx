@@ -9,15 +9,16 @@ import { EditStatusModal } from "@/components/EditStatusModal";
 import { invalidateContacts } from "@/hooks/useInvalidations";
 import type { Contact } from "@shared/schema";
 import type { LeadActiveModal } from "@/types/leadTypes";
+import type { EmailModalState, SchedulingModalState } from "@/hooks/useCommunicationActions";
 
 const LEAD_STATUSES = ["new", "contacted", "scheduled", "disqualified", "lost"] as const;
 
 interface LeadModalsProps {
   activeModal: LeadActiveModal;
   closeModal: () => void;
-  emailModal: { isOpen: boolean; lead: Contact | null };
+  emailModal: EmailModalState;
   closeEmailModal: () => void;
-  schedulingModal: { isOpen: boolean; lead: Contact | null };
+  schedulingModal: SchedulingModalState;
   closeSchedulingModal: () => void;
   addContactModal: boolean;
   setAddContactModal: (open: boolean) => void;
@@ -84,7 +85,7 @@ export function LeadModals({
       <LocalSchedulingModal
         isOpen={schedulingModal.isOpen}
         onClose={closeSchedulingModal}
-        lead={schedulingModal.lead || null}
+        lead={schedulingModal.lead ?? null}
         onScheduled={() => closeSchedulingModal()}
       />
 

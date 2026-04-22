@@ -211,7 +211,7 @@ export default function Leads({ externalSearch = "" }: { externalSearch?: string
             {!showArchived && (
               <Button
                 variant="outline"
-                onClick={() => setLeadViewMode(leadViewMode === "archived" ? "active" : "archived")}
+                onClick={() => setLeadViewMode("archived")}
                 data-testid="button-toggle-archived"
               >
                 <Archive className="h-4 w-4 mr-2" />
@@ -221,7 +221,7 @@ export default function Leads({ externalSearch = "" }: { externalSearch?: string
             {!showAged && (
               <Button
                 variant="outline"
-                onClick={() => setLeadViewMode(leadViewMode === "aged" ? "active" : "aged")}
+                onClick={() => setLeadViewMode("aged")}
                 data-testid="button-toggle-aged"
               >
                 <Clock className="h-4 w-4 mr-2" />

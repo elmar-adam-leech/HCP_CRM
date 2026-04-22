@@ -8,7 +8,11 @@ interface CommunicationActionButtonsProps {
   recipientName: string;
   recipientEmail: string;
   recipientPhone: string;
-  onSendEmail: () => void;
+  /**
+   * Optional. When omitted, the Email action is hidden — used by surfaces
+   * (like JobCard) that don't currently support sending emails.
+   */
+  onSendEmail?: () => void;
   leadId?: string;
   estimateId?: string;
   jobId?: string;
@@ -67,19 +71,21 @@ export const CommunicationActionButtons = memo(function CommunicationActionButto
         customerId={customerId}
         onCallCompleted={onCallCompleted}
       />
-      <EmailButton
-        recipientName={recipientName}
-        recipientEmail={recipientEmail}
-        variant="outline"
-        size="sm"
-        className={buttonClass}
-        onSendEmail={onSendEmail}
-        leadId={leadId}
-        estimateId={estimateId}
-        customerId={customerId}
-        hasUnread={hasUnreadEmail}
-        forceInAppCompose={forceInAppEmail}
-      />
+      {onSendEmail && (
+        <EmailButton
+          recipientName={recipientName}
+          recipientEmail={recipientEmail}
+          variant="outline"
+          size="sm"
+          className={buttonClass}
+          onSendEmail={onSendEmail}
+          leadId={leadId}
+          estimateId={estimateId}
+          customerId={customerId}
+          hasUnread={hasUnreadEmail}
+          forceInAppCompose={forceInAppEmail}
+        />
+      )}
       <TextButton
         recipientName={recipientName}
         recipientPhone={recipientPhone}

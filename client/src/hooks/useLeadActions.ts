@@ -6,14 +6,24 @@ import { invalidateContacts } from "@/hooks/useInvalidations";
 import { useToast } from "@/hooks/use-toast";
 import type { Contact } from "@shared/schema";
 import type { LeadActiveModal } from "@/types/leadTypes";
+import type { CommunicationEntity } from "@/hooks/useCommunicationActions";
 
 interface UseLeadActionsParams {
   leadById: Map<string, Contact>;
   activeModal: LeadActiveModal;
   setActiveModal: (modal: LeadActiveModal) => void;
   closeModal: () => void;
-  handleSchedule: (contact: Contact) => void;
-  handleSendEmail: (contact: Contact, type: string) => void;
+  handleSchedule: (lead: CommunicationEntity & {
+    isScheduled?: boolean;
+    status?: string;
+    address?: string | null;
+    street?: string | null;
+    city?: string | null;
+    state?: string | null;
+    zip?: string | null;
+    housecallProEstimateId?: string | null;
+  }) => void;
+  handleSendEmail: (entity: CommunicationEntity, entityType?: 'lead' | 'estimate' | 'customer') => void;
   leads: Contact[];
 }
 

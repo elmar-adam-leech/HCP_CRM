@@ -70,7 +70,8 @@ export function registerSalesProcessRoutes(app: Express): void {
   app.put("/api/sales-process", requireManagerOrAdmin, asyncHandler(async (req: AuthedRequest, res: Response) => {
     const parsed = upsertProcessSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: 'Invalid sales process', details: parsed.error.flatten() });
+      res.status(400).json({ error: 'Invalid sales process', details: parsed.error.flatten() });
+      return;
     }
     // Normalize displayOrder to mirror array order, ignoring whatever the
     // client sent — the canonical order is "as listed in the request body".
@@ -159,7 +160,8 @@ export function registerSalesProcessRoutes(app: Express): void {
         from: fromDate,
         to: toDate,
       });
-      return res.json(tasks);
+      res.json(tasks);
+      return;
     }
     const tasks = await storage.listTaskInstances(req.user.contractorId, {
       status: statuses && statuses.length === 1 ? statuses[0] : undefined,
@@ -186,13 +188,19 @@ export function registerSalesProcessRoutes(app: Express): void {
       'manual',
       req.user.userId,
     );
-    if (updated) return res.json(updated);
+    if (updated) {
+      res.json(updated);
+      return;
+    }
     // Per spec: completing an already-terminal (completed/skipped/failed)
     // task is a no-op rather than a 404 — avoids confusing error toasts on
     // double-click / stale UI / race with cron auto-send.
     const current = await storage.getTaskInstance(req.params.id, req.user.contractorId);
-    if (!current) return res.status(404).json({ error: 'Task not found' });
-    return res.json(current);
+    if (!current) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+    res.json(current);
   }));
 
   // Reset a permanently-failed task back to pending so the cron retries it.
@@ -200,10 +208,16 @@ export function registerSalesProcessRoutes(app: Express): void {
   // return its current state so the UI can resync without an error toast.
   app.post("/api/sales-process/tasks/:id/retry", asyncHandler(async (req: AuthedRequest, res: Response) => {
     const updated = await storage.retryFailedTask(req.params.id, req.user.contractorId);
-    if (updated) return res.json(updated);
+    if (updated) {
+      res.json(updated);
+      return;
+    }
     const current = await storage.getTaskInstance(req.params.id, req.user.contractorId);
-    if (!current) return res.status(404).json({ error: 'Task not found' });
-    return res.json(current);
+    if (!current) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+    res.json(current);
   }));
 
   app.post("/api/sales-process/tasks/:id/skip", asyncHandler(async (req: AuthedRequest, res: Response) => {
@@ -213,11 +227,17 @@ export function registerSalesProcessRoutes(app: Express): void {
       'manual',
       req.user.userId,
     );
-    if (updated) return res.json(updated);
+    if (updated) {
+      res.json(updated);
+      return;
+    }
     // No-op on already-terminal tasks (same rationale as complete endpoint).
     const current = await storage.getTaskInstance(req.params.id, req.user.contractorId);
-    if (!current) return res.status(404).json({ error: 'Task not found' });
-    return res.json(current);
+    if (!current) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+    res.json(current);
   }));
 
   // Manager debug endpoint: force a cron tick FOR THE CALLER'S TENANT ONLY.

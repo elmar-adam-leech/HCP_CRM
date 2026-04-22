@@ -53,6 +53,7 @@ interface DiagnoseResult {
   tokenType?: string;
   grantedPermissions?: string[];
   hasLeadsRetrieval?: boolean;
+  hasPagesManageMetadata?: boolean;
   tokenExpiresAt?: string;
   tokenDebugError?: string;
   pageTokenWorks?: boolean;

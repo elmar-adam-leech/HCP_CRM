@@ -338,11 +338,16 @@ async function getTaskInstance(id: string, contractorId: string): Promise<SalesP
  */
 async function bulkInsertTaskInstances(
   rows: InsertSalesProcessTaskInstance[],
-  executor: typeof db = db,
+  executor: DbExecutor = db,
 ): Promise<SalesProcessTaskInstance[]> {
   if (rows.length === 0) return [];
   return executor.insert(salesProcessTaskInstances).values(rows).returning();
 }
+
+// `db` itself OR a Drizzle transaction handle obtained via db.transaction(tx => ...).
+// Both expose the same query API (insert/select/update); the union lets storage
+// helpers participate in callers' transactions when supplied with `tx`.
+type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
  * Open leads = not in a terminal status and not archived. Used by the
