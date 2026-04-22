@@ -314,7 +314,10 @@ function GoogleLocalServicesLeadSection({ lead, contactId }: GoogleLocalServices
   let disputeStatus: string | undefined;
   let disputeReason: string | undefined;
   let disputeSubmittedAt: string | undefined;
+  let disputeAttemptedAt: string | undefined;
   let disputeError: string | undefined;
+  let autoDisputed = false;
+  let autoDisputeRuleId: string | undefined;
   try {
     const raw = JSON.parse(lead.rawPayload ?? '{}');
     glsLeadId = raw._gls_lead_id ? String(raw._gls_lead_id) : undefined;
@@ -322,7 +325,10 @@ function GoogleLocalServicesLeadSection({ lead, contactId }: GoogleLocalServices
     disputeStatus = raw._gls_dispute_status ? String(raw._gls_dispute_status) : undefined;
     disputeReason = raw._gls_dispute_reason ? String(raw._gls_dispute_reason) : undefined;
     disputeSubmittedAt = raw._gls_dispute_submitted_at ? String(raw._gls_dispute_submitted_at) : undefined;
+    disputeAttemptedAt = raw._gls_dispute_attempted_at ? String(raw._gls_dispute_attempted_at) : undefined;
     disputeError = raw._gls_dispute_error ? String(raw._gls_dispute_error) : undefined;
+    autoDisputed = raw._gls_auto_disputed === true;
+    autoDisputeRuleId = raw._gls_auto_dispute_rule_id ? String(raw._gls_auto_dispute_rule_id) : undefined;
   } catch {
     // ignore parse errors
   }
@@ -385,9 +391,19 @@ function GoogleLocalServicesLeadSection({ lead, contactId }: GoogleLocalServices
             {disputeReason ? ` · ${disputeReason.toLowerCase().replace(/_/g, ' ')}` : ''}
           </Badge>
         )}
-        {disputeSubmittedAt && (
+        {autoDisputed && (
+          <Badge
+            variant={disputeStatus === 'failed' ? 'destructive' : 'outline'}
+            data-testid={`lead-gls-auto-disputed-${lead.id}`}
+          >
+            <ShieldAlert className="h-3 w-3 mr-1" />
+            {disputeStatus === 'failed' ? 'Auto-dispute failed' : 'Auto-disputed'}
+            {autoDisputeRuleId ? ` · rule ${autoDisputeRuleId}` : ''}
+          </Badge>
+        )}
+        {(disputeSubmittedAt || disputeAttemptedAt) && (
           <span className="text-xs text-muted-foreground" data-testid={`lead-gls-dispute-time-${lead.id}`}>
-            on {format(new Date(disputeSubmittedAt), "PPP 'at' p")}
+            on {format(new Date(disputeSubmittedAt ?? disputeAttemptedAt!), "PPP 'at' p")}
           </span>
         )}
         {canDispute && (

@@ -5,7 +5,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "./StatusBadge";
 import { CustomerBadge } from "./CustomerBadge";
-import { Phone, Mail, MapPin, Calendar, MoreHorizontal, Edit, Trash2, Settings, CalendarClock, Tag, Archive, ArchiveRestore, UserCheck, ExternalLink, Clock } from "lucide-react";
+import { Phone, Mail, MapPin, Calendar, MoreHorizontal, Edit, Trash2, Settings, CalendarClock, Tag, Archive, ArchiveRestore, UserCheck, ExternalLink, Clock, ShieldAlert, ShieldX } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { CommunicationActionButtons } from "./CommunicationActionButtons";
@@ -21,7 +21,7 @@ import type { Contact } from "@shared/schema";
 
 // hasJobs is a virtual computed column added by the paginated contacts query,
 // not part of the base Contact schema row.
-type LeadCardContact = Contact & { hasJobs?: boolean };
+type LeadCardContact = Contact & { hasJobs?: boolean; autoDisputed?: boolean; autoDisputeFailed?: boolean };
 
 type LeadCardProps = {
   lead: LeadCardContact;
@@ -93,6 +93,20 @@ export const LeadCard = memo(function LeadCard({ lead, onSchedule, onSendEmail, 
               <StatusBadge status={lead.status as Parameters<typeof StatusBadge>[0]['status']} entityType="lead" />
               <CustomerBadge hasJobs={lead.hasJobs} />
               <span className="text-xs text-muted-foreground truncate">{leadSourceLabel}</span>
+              {lead.autoDisputed && (
+                <Badge
+                  variant={lead.autoDisputeFailed ? "destructive" : "secondary"}
+                  className="text-xs flex items-center gap-1"
+                  data-testid={`badge-auto-disputed-${lead.id}`}
+                >
+                  {lead.autoDisputeFailed ? (
+                    <ShieldX className="h-3 w-3" />
+                  ) : (
+                    <ShieldAlert className="h-3 w-3" />
+                  )}
+                  {lead.autoDisputeFailed ? "Auto-dispute failed" : "Auto-disputed"}
+                </Badge>
+              )}
               {lead.housecallProCustomerId && (
                 <a
                   href={hcpUrl('customer', lead.housecallProCustomerId)}

@@ -85,6 +85,13 @@ const CONTACT_FIELDS = {
   // no per-row N+1 lookups.
   allLeadsArchived: sql<boolean>`COALESCE((SELECT BOOL_AND(archived) FROM leads WHERE leads.contact_id = "contacts"."id"), false)`,
   anyLeadAged: sql<boolean>`EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = "contacts"."id" AND leads.aged = true)`,
+  // Auto-dispute markers stamped onto leads.raw_payload by the GLS auto-dispute
+  // service (see server/services/google-local-services-auto-dispute.ts). Surfaced
+  // here so the leads list can render an "Auto-disputed" badge without an N+1
+  // join into leads. Substring match over the JSON text avoids a jsonb cast on
+  // payloads that may not be valid JSON.
+  autoDisputed: sql<boolean>`EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = "contacts"."id" AND leads.raw_payload LIKE '%"_gls_auto_disputed":true%')`,
+  autoDisputeFailed: sql<boolean>`EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = "contacts"."id" AND leads.raw_payload LIKE '%"_gls_auto_disputed":true%' AND leads.raw_payload LIKE '%"_gls_dispute_status":"failed"%')`,
 } as const;
 
 /** Derive the 10-digit normalized phone stored in contacts.normalizedPhone from a phones array. */

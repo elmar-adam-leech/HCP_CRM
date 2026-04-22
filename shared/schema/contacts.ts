@@ -107,6 +107,8 @@ export type Contact = typeof contacts.$inferSelect & {
   assignedToUserName?: string | null;
   allLeadsArchived?: boolean;
   anyLeadAged?: boolean;
+  autoDisputed?: boolean;
+  autoDisputeFailed?: boolean;
 };
 
 // Lightweight DTO for contact lists and pagination.
@@ -134,6 +136,8 @@ export const contactSummarySchema = z.object({
   // result rows can render Disqualified / Archived / Aged badges.
   allLeadsArchived: z.boolean().optional(),
   anyLeadAged: z.boolean().optional(),
+  autoDisputed: z.boolean().optional(),
+  autoDisputeFailed: z.boolean().optional(),
 });
 export type ContactSummary = z.infer<typeof contactSummarySchema>;
 
