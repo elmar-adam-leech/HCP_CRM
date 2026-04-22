@@ -63,6 +63,11 @@ export const estimates = pgTable("estimates", {
   // a CRM user yet (or no employee was assigned).
   salespersonUserId: varchar("salesperson_user_id"),
   syncedAt: timestamp("synced_at"), // Last sync time with Housecall Pro
+  // Status-transition timestamps. Populated the first time an estimate moves into
+  // approved/rejected. Used by the Time-to-Close report so later edits to the
+  // row (notes, line items, etc.) do not shift the apparent close time.
+  approvedAt: timestamp("approved_at"),
+  rejectedAt: timestamp("rejected_at"),
   // True when the CRM user has manually set this estimate's status from the UI.
   // Polling sync and webhook handlers must respect this flag and never overwrite
   // the local status from HCP unless HCP reports a terminal rejected/cancelled state.

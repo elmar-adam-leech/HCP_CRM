@@ -239,7 +239,7 @@ export async function getLostRevenueReport(
     ),
     mo AS (
       SELECT
-        to_char(date_trunc('month', updated_at), 'YYYY-MM') AS month,
+        to_char(date_trunc('month', COALESCE(rejected_at, updated_at)), 'YYYY-MM') AS month,
         SUM(amount::numeric)::float8 AS amount,
         COUNT(*)::int AS count
       FROM base
@@ -251,10 +251,10 @@ export async function getLostRevenueReport(
         b.id, b.title, b.contact_id,
         COALESCE(c.name, 'Unknown') AS contact_name,
         b.amount::numeric::float8 AS amount,
-        b.updated_at AS rejected_at
+        COALESCE(b.rejected_at, b.updated_at) AS rejected_at
       FROM base b
       LEFT JOIN contacts c ON c.id = b.contact_id
-      ORDER BY b.updated_at DESC
+      ORDER BY COALESCE(b.rejected_at, b.updated_at) DESC
       LIMIT 200
     )
     SELECT
@@ -531,9 +531,10 @@ export async function getTimeToCloseReport(
   f: EstimatesReportFilters,
 ): Promise<TimeToCloseReport> {
   const where = buildEstimatesWhere(contractorId, f);
-  // Days from estimate created_at to status transition. We use updated_at as the
-  // approximation of the status transition timestamp — the estimates table does
-  // not record per-status timestamps. This is consistent across rows.
+  // Days from estimate created_at to status transition. We prefer the explicit
+  // approved_at / rejected_at timestamps (stamped on first transition) and fall
+  // back to updated_at for legacy rows that were created before the columns
+  // existed and were never re-touched after the backfill.
   const result = await db.execute<{
     avg_days: string | null;
     median_days: string | null;
@@ -549,7 +550,13 @@ export async function getTimeToCloseReport(
   }>(sql`
     WITH base AS (
       SELECT e.*, l.source AS lead_source,
-        EXTRACT(EPOCH FROM (e.updated_at - e.created_at)) / 86400.0 AS days_to_close
+        EXTRACT(EPOCH FROM (
+          COALESCE(
+            CASE WHEN e.status = 'approved' THEN e.approved_at END,
+            CASE WHEN e.status = 'rejected' THEN e.rejected_at END,
+            e.updated_at
+          ) - e.created_at
+        )) / 86400.0 AS days_to_close
       FROM estimates e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
       WHERE ${where} AND e.status IN ('approved', 'rejected')

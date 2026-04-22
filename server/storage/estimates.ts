@@ -240,18 +240,54 @@ async function createEstimate(estimate: Omit<InsertEstimate, 'contractorId'>, co
     )).limit(1);
     if (!contact[0]) throw new Error('Contact not found or does not belong to this contractor');
   }
+  // Stamp the status-transition timestamps if the estimate is being created
+  // already in a terminal status (e.g. backfilled HCP rows that come in already
+  // approved). Caller-provided values win.
+  const stamped: Record<string, unknown> = { ...estimate };
+  const now = new Date();
+  if (estimate.status === 'approved' && stamped.approvedAt === undefined) {
+    stamped.approvedAt = now;
+  }
+  if (estimate.status === 'rejected' && stamped.rejectedAt === undefined) {
+    stamped.rejectedAt = now;
+  }
   // SAFE: `estimate` is Omit<InsertEstimate, 'contractorId'>; spreading with contractorId
   // produces the correct shape at runtime. Drizzle's insert type is slightly stricter
   // than the inferred spread, so `as any` silences the structural mismatch.
-  const result = await db.insert(estimates).values({ ...estimate, contractorId } as any).returning();
+  const result = await db.insert(estimates).values({ ...stamped, contractorId } as any).returning();
   invalidateReportsCache(contractorId);
   return result[0];
 }
 
 async function updateEstimate(id: string, estimate: UpdateEstimate, contractorId: string): Promise<Estimate | undefined> {
-  const cleanEstimate = Object.fromEntries(
+  const cleanEstimate: Record<string, unknown> = Object.fromEntries(
     Object.entries(estimate).filter(([, v]) => v !== undefined)
   );
+
+  // Stamp approved_at / rejected_at the first time an estimate enters that
+  // status. We compare to the existing row so subsequent edits (notes, etc.)
+  // and re-affirmations of the same status don't bump the timestamp. Callers
+  // can still pass an explicit approvedAt/rejectedAt to override (e.g. backfill).
+  if (cleanEstimate.status === 'approved' || cleanEstimate.status === 'rejected') {
+    const existing = await db.select({
+      status: estimates.status,
+      approvedAt: estimates.approvedAt,
+      rejectedAt: estimates.rejectedAt,
+    }).from(estimates)
+      .where(and(eq(estimates.id, id), eq(estimates.contractorId, contractorId)))
+      .limit(1);
+    const prev = existing[0];
+    if (prev) {
+      const now = new Date();
+      if (cleanEstimate.status === 'approved' && cleanEstimate.approvedAt === undefined && !prev.approvedAt) {
+        cleanEstimate.approvedAt = now;
+      }
+      if (cleanEstimate.status === 'rejected' && cleanEstimate.rejectedAt === undefined && !prev.rejectedAt) {
+        cleanEstimate.rejectedAt = now;
+      }
+    }
+  }
+
   const result = await db.update(estimates)
     // SAFE: `cleanEstimate` is a filtered subset of UpdateEstimate; the spread is
     // structurally correct at runtime. Drizzle's `.set()` type doesn't accept a
