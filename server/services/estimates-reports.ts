@@ -230,6 +230,7 @@ export async function getRevenueReport(
 export interface LostRevenueReport {
   totalLost: number;
   lostCount: number;
+  total: number;
   bySalesperson: { userId: string | null; name: string; amount: number; count: number }[];
   byMonth: { month: string; amount: number; count: number }[];
   estimates: {
@@ -242,24 +243,28 @@ export interface LostRevenueReport {
   }[];
 }
 
+const LOST_REVENUE_DEFAULT_PAGE_SIZE = 25;
+const LOST_REVENUE_MAX_PAGE_SIZE = 100;
+
 export async function getLostRevenueReport(
   contractorId: string,
   f: EstimatesReportFilters,
 ): Promise<LostRevenueReport> {
   const where = buildEstimatesWhere(contractorId, f);
-  const result = await db.execute<{
+
+  // Pagination is server-side: stats span the full filtered set, only the row
+  // list is sliced.
+  const page = Math.max(0, Math.floor(f.page ?? 0));
+  const rawSize = Math.floor(f.pageSize ?? LOST_REVENUE_DEFAULT_PAGE_SIZE);
+  const pageSize = Math.min(LOST_REVENUE_MAX_PAGE_SIZE, Math.max(1, rawSize));
+  const offset = page * pageSize;
+
+  // Aggregate query: headline stats across the full filtered set.
+  const aggResult = await db.execute<{
     total_lost: string | null;
     lost_count: string | number;
     by_salesperson: { user_id: string | null; name: string; amount: number; count: number }[] | null;
     by_month: { month: string; amount: number; count: number }[] | null;
-    estimates: {
-      id: string;
-      title: string;
-      contact_id: string;
-      contact_name: string;
-      amount: number;
-      rejected_at: string;
-    }[] | null;
   }>(sql`
     WITH base AS (
       SELECT e.*, COALESCE(l.source, c.source) AS lead_source
@@ -287,29 +292,41 @@ export async function getLostRevenueReport(
       FROM base
       GROUP BY 1
       ORDER BY 1
-    ),
-    list AS (
-      SELECT
-        b.id, b.title, b.contact_id,
-        COALESCE(c.name, 'Unknown') AS contact_name,
-        b.amount::numeric::float8 AS amount,
-        COALESCE(b.rejected_at, b.updated_at) AS rejected_at
-      FROM base b
-      LEFT JOIN contacts c ON c.id = b.contact_id
-      ORDER BY COALESCE(b.rejected_at, b.updated_at) DESC
-      LIMIT 200
     )
     SELECT
       COALESCE((SELECT SUM(amount::numeric) FROM base), 0)::float8 AS total_lost,
       (SELECT COUNT(*) FROM base)::int AS lost_count,
       (SELECT json_agg(sp) FROM sp) AS by_salesperson,
-      (SELECT json_agg(mo) FROM mo) AS by_month,
-      (SELECT json_agg(list) FROM list) AS estimates
+      (SELECT json_agg(mo) FROM mo) AS by_month
   `);
-  const r = result.rows[0];
+  const r = aggResult.rows[0];
+
+  // Row query: only the requested page slice.
+  const rowResult = await db.execute<{
+    id: string;
+    title: string;
+    contact_id: string;
+    contact_name: string;
+    amount: number;
+    rejected_at: string;
+  }>(sql`
+    SELECT
+      e.id, e.title, e.contact_id,
+      COALESCE(c.name, 'Unknown') AS contact_name,
+      e.amount::numeric::float8 AS amount,
+      COALESCE(e.rejected_at, e.updated_at) AS rejected_at
+    FROM ${canonicalEstimates(contractorId)} e
+    LEFT JOIN contacts c ON c.id = e.contact_id
+    LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
+    WHERE ${where} AND e.status = 'rejected'
+    ORDER BY COALESCE(e.rejected_at, e.updated_at) DESC
+    LIMIT ${pageSize} OFFSET ${offset}
+  `);
+
   return {
     totalLost: round2(num(r?.total_lost)),
     lostCount: num(r?.lost_count),
+    total: num(r?.lost_count),
     bySalesperson: (r?.by_salesperson ?? []).map((s) => ({
       userId: s.user_id,
       name: s.name,
@@ -321,7 +338,7 @@ export async function getLostRevenueReport(
       amount: round2(num(m.amount)),
       count: num(m.count),
     })),
-    estimates: (r?.estimates ?? []).map((e) => ({
+    estimates: rowResult.rows.map((e) => ({
       id: e.id,
       title: e.title,
       contactId: e.contact_id,

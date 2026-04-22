@@ -46,7 +46,7 @@ interface OutstandingData {
   buckets: { bucket: string; count: number }[];
 }
 
-const PAGE_SIZE = 25;
+export const PAGE_SIZE = 25;
 
 const BUCKET_LABEL: Record<OutstandingEstimate["ageBucket"], string> = {
   "0-7": "Under 1 week",
@@ -139,7 +139,7 @@ interface TablePaginationProps {
   testId?: string;
 }
 
-function TablePagination({ page, total, onPageChange, testId }: TablePaginationProps) {
+export function TablePagination({ page, total, onPageChange, testId }: TablePaginationProps) {
   const totalPages = Math.ceil(total / PAGE_SIZE);
   if (totalPages <= 1) return null;
   // Defensive clamp: if a stale page exceeds the new totalPages (e.g. data
@@ -211,7 +211,7 @@ function TablePagination({ page, total, onPageChange, testId }: TablePaginationP
 // timestamps), not the resolved date range. resolveRange() rebuilds Date.now()
 // on every render for preset windows, so depending on it would reset the page
 // on every render and break paging entirely.
-function useResetOnFilterChange(reset: () => void) {
+export function useResetOnFilterChange(reset: () => void) {
   const { filters } = useEstimatesReportFilters();
   const preset = filters.preset;
   const customFrom = filters.customRange?.from?.getTime() ?? 0;

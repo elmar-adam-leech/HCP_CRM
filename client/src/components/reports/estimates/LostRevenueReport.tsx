@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   Bar,
   BarChart,
@@ -23,10 +24,12 @@ import {
   formatMonth,
   useReportQuery,
 } from "./shared";
+import { PAGE_SIZE, TablePagination, useResetOnFilterChange } from "./OutstandingReports";
 
 interface LostRevenueData {
   totalLost: number;
   lostCount: number;
+  total: number;
   bySalesperson: { userId: string | null; name: string; amount: number; count: number }[];
   byMonth: { month: string; amount: number; count: number }[];
   estimates: {
@@ -40,8 +43,11 @@ interface LostRevenueData {
 }
 
 export function LostRevenueReport() {
+  const [page, setPage] = useState(0);
+  useResetOnFilterChange(() => setPage(0));
   const { data, isLoading, isError } = useReportQuery<LostRevenueData>(
     "/api/reports/estimates/lost-revenue",
+    { extraParams: { page, pageSize: PAGE_SIZE } },
   );
   const isEmpty = !!data && data.lostCount === 0;
   const chartData = data?.byMonth.map((m) => ({ ...m, monthLabel: formatMonth(m.month) })) ?? [];
@@ -122,6 +128,12 @@ export function LostRevenueReport() {
               </TableBody>
             </Table>
           </div>
+          <TablePagination
+            page={page}
+            total={data.total}
+            onPageChange={setPage}
+            testId="pagination-lost-revenue"
+          />
         </>
       )}
     </ReportShell>
