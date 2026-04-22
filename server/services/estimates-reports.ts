@@ -31,6 +31,37 @@ const num = (v: unknown): number => {
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
+// Build a SQL fragment that returns the canonical row per logical estimate for a
+// given tenant. HCP estimates with multiple Good/Better/Best options produce one
+// local row per option in the `estimates` table — those rows share a
+// `housecall_pro_estimate_id` and would otherwise be counted/summed multiple
+// times by every report. This fragment deduplicates them by picking, for each
+// logical estimate (keyed by housecall_pro_estimate_id when present, else id),
+// the single best representative row.
+//
+// Picking rule (mirrors `extractHcpAmount` in hcp-mappers.ts):
+//   1. Approved status first — the option the customer picked is the deal.
+//   2. Then highest `amount` (NULLS LAST) — prefer the priced option over the
+//      $0 placeholder rows that HCP often produces.
+//   3. Then most recent `updated_at` for a stable tiebreak.
+//
+// Native (non-HCP) estimates fall through the COALESCE to their own id and are
+// unaffected. Date / salesperson / lead-source filters are intentionally NOT
+// applied inside this CTE — DISTINCT ON runs after WHERE, so filtering first
+// could change which row wins for an estimate whose options straddle a date
+// boundary. Filters are layered on top of the canonical set instead.
+function canonicalEstimates(contractorId: string): SQL {
+  return sql`(
+    SELECT DISTINCT ON (COALESCE(housecall_pro_estimate_id, id::text)) *
+    FROM estimates
+    WHERE contractor_id = ${contractorId}
+    ORDER BY COALESCE(housecall_pro_estimate_id, id::text),
+             CASE WHEN status = 'approved' THEN 0 ELSE 1 END,
+             amount::numeric DESC NULLS LAST,
+             updated_at DESC
+  )`;
+}
+
 // Build the shared WHERE-fragment used by every estimates report. We keep this
 // as a SQL fragment (not Drizzle conditions) because the report queries are
 // hand-written joins that don't always go through the estimates table alone.
@@ -127,7 +158,7 @@ export async function getRevenueReport(
   }>(sql`
     WITH base AS (
       SELECT e.*, l.source AS lead_source
-      FROM estimates e
+      FROM ${canonicalEstimates(contractorId)} e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
       WHERE ${where}
     ),
@@ -222,7 +253,7 @@ export async function getLostRevenueReport(
   }>(sql`
     WITH base AS (
       SELECT e.*, l.source AS lead_source
-      FROM estimates e
+      FROM ${canonicalEstimates(contractorId)} e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
       WHERE ${where} AND e.status = 'rejected'
     ),
@@ -344,13 +375,13 @@ export async function getPipelineForecastReport(
   }>(sql`
     WITH pending AS (
       SELECT e.*, l.source AS lead_source
-      FROM estimates e
+      FROM ${canonicalEstimates(contractorId)} e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
       WHERE ${pendingWhere}
     ),
     hist AS (
       SELECT e.salesperson_user_id, e.status
-      FROM estimates e
+      FROM ${canonicalEstimates(contractorId)} e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
       WHERE ${histWhere} AND e.status IN ('approved', 'rejected')
     ),
@@ -446,7 +477,7 @@ async function getCloseRate(
   }>(sql`
     WITH base AS (
       SELECT e.*, l.source AS lead_source
-      FROM estimates e
+      FROM ${canonicalEstimates(contractorId)} e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
       WHERE ${where}
     ),
@@ -458,7 +489,7 @@ async function getCloseRate(
         COUNT(*) FILTER (WHERE e.status = 'approved')::int AS won,
         COUNT(*) FILTER (WHERE e.status = 'rejected')::int AS lost,
         COUNT(*) FILTER (WHERE e.status IN ('sent', 'scheduled', 'in_progress'))::int AS open
-      FROM estimates e
+      FROM ${canonicalEstimates(contractorId)} e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
       ${join}
       WHERE e.id IN (SELECT id FROM base)
@@ -557,7 +588,7 @@ export async function getTimeToCloseReport(
             e.updated_at
           ) - e.created_at
         )) / 86400.0 AS days_to_close
-      FROM estimates e
+      FROM ${canonicalEstimates(contractorId)} e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
       WHERE ${where} AND e.status IN ('approved', 'rejected')
     ),
@@ -677,7 +708,7 @@ async function getOutstanding(
       e.created_at,
       EXTRACT(EPOCH FROM (NOW() - e.created_at)) / 86400.0 AS age_days,
       u.name AS salesperson_name
-    FROM estimates e
+    FROM ${canonicalEstimates(contractorId)} e
     LEFT JOIN contacts c ON c.id = e.contact_id
     LEFT JOIN users u ON u.id = e.salesperson_user_id
     LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
