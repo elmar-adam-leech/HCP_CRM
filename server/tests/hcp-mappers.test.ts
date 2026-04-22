@@ -108,6 +108,68 @@ describe('resolveSalespersonForHcpEntity', () => {
     expect(r).toBe('user_42');
   });
 
+  it('picks the candidate whose most recent prior estimate is latest when multiple are present', async () => {
+    // 1) employees lookup (batch path) — both candidates resolve to a userContractor
+    (db.select as any).mockReturnValueOnce({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([
+        { externalId: 'emp_a', userContractorId: 'uc_a' },
+        { externalId: 'emp_b', userContractorId: 'uc_b' },
+      ]),
+    });
+    // 2) userContractors lookup (batch path)
+    (db.select as any).mockReturnValueOnce({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([
+        { id: 'uc_a', userId: 'user_a' },
+        { id: 'uc_b', userId: 'user_b' },
+      ]),
+    });
+    // 3) latest-estimate tiebreak query — user_b's most recent estimate is newer
+    const olderTs = new Date('2024-01-01T00:00:00Z');
+    const newerTs = new Date('2025-06-01T00:00:00Z');
+    (db.select as any).mockReturnValueOnce({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      groupBy: vi.fn().mockResolvedValue([
+        { salespersonUserId: 'user_a', lastAt: olderTs },
+        { salespersonUserId: 'user_b', lastAt: newerTs },
+      ]),
+    });
+
+    const r = await resolveSalespersonForHcpEntity('t1', {
+      assigned_employees: [{ id: 'emp_a' }, { id: 'emp_b' }],
+    });
+    expect(r).toBe('user_b');
+  });
+
+  it('falls back to the first candidate when no prior estimates exist for any candidate', async () => {
+    (db.select as any).mockReturnValueOnce({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([
+        { externalId: 'emp_a', userContractorId: 'uc_a' },
+        { externalId: 'emp_b', userContractorId: 'uc_b' },
+      ]),
+    });
+    (db.select as any).mockReturnValueOnce({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([
+        { id: 'uc_a', userId: 'user_a' },
+        { id: 'uc_b', userId: 'user_b' },
+      ]),
+    });
+    (db.select as any).mockReturnValueOnce({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      groupBy: vi.fn().mockResolvedValue([]),
+    });
+
+    const r = await resolveSalespersonForHcpEntity('t1', {
+      assigned_employees: [{ id: 'emp_a' }, { id: 'emp_b' }],
+    });
+    expect(r).toBe('user_a');
+  });
+
   it('swallows DB errors and returns null instead of failing sync', async () => {
     (db.select as any).mockReturnValueOnce({
       from: vi.fn().mockReturnThis(),

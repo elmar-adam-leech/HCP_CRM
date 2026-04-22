@@ -30,6 +30,7 @@ import { registerDialpadRoutes } from './routes/integrations/dialpad';
 import { registerHousecallProRoutes } from './routes/integrations/housecall-pro';
 import { registerHcpSyncRoutes } from './routes/integrations/hcp-sync';
 import { registerHcpSchedulingRoutes } from './routes/integrations/hcp-scheduling';
+import { registerHcpEmployeeMappingRoutes } from './routes/integrations/hcp-employee-mapping';
 import { registerFacebookIntegrationRoutes } from './routes/integrations/facebook';
 import { registerGoogleLocalServicesIntegrationRoutes } from './routes/integrations/google-local-services';
 import { registerWebhookRoutes } from './routes/webhooks';
@@ -124,6 +125,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerHousecallProRoutes(app);
   registerHcpSyncRoutes(app);
   registerHcpSchedulingRoutes(app);
+  registerHcpEmployeeMappingRoutes(app);
   registerWebhookRoutes(app);
   registerPublicRoutes(app);
   registerDashboardRoutes(app);

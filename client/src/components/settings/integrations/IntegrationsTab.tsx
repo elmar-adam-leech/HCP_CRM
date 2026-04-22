@@ -1,6 +1,7 @@
 import { DialpadCard } from "./DialpadCard";
 import { SendGridCard } from "./SendGridCard";
 import { HousecallProCard } from "./HousecallProCard";
+import { HcpEmployeeMappingCard } from "./HcpEmployeeMappingCard";
 import { FacebookLeadsCard } from "./FacebookLeadsCard";
 import { GoogleLocalServicesCard } from "./GoogleLocalServicesCard";
 import { GmailConnectionCard } from "./GmailConnectionCard";
@@ -29,6 +30,7 @@ export function IntegrationsTab() {
       {canView('dialpad') && <DialpadCard />}
       {canView('sendgrid') && <SendGridCard />}
       {canView('housecall-pro') && <HousecallProCard />}
+      {canView('housecall-pro') && <HcpEmployeeMappingCard />}
       {canView('facebook-leads') && <FacebookLeadsCard />}
       {canView('google-local-services') && <GoogleLocalServicesCard />}
     </div>

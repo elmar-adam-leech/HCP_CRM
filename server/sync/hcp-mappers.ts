@@ -1,8 +1,8 @@
 import type { HcpEstimate, HcpJob, HcpRawLineItem } from './hcp-types';
 import type { HcpLineItem } from '@shared/schema';
 import { db } from '../db';
-import { employees, userContractors } from '@shared/schema';
-import { and, eq, inArray } from 'drizzle-orm';
+import { employees, userContractors, estimates } from '@shared/schema';
+import { and, eq, inArray, max } from 'drizzle-orm';
 import { logger } from '../utils/logger';
 
 const mapLog = logger('HcpMappers');
@@ -344,31 +344,116 @@ export async function resolveSalespersonForHcpEntity(
   if (candidateIds.length === 0 && hcpEntity.employee_id) candidateIds.push(hcpEntity.employee_id);
   if (candidateIds.length === 0 && hcpEntity.assigned_employee_id) candidateIds.push(hcpEntity.assigned_employee_id);
   if (candidateIds.length === 0) return null;
-  const primary = candidateIds[0];
-  if (!primary) return null;
 
+  // Single-candidate path — preserve historical behavior exactly.
+  if (candidateIds.length === 1) {
+    const primary = candidateIds[0];
+    try {
+      const rows = await db
+        .select({ userContractorId: employees.userContractorId })
+        .from(employees)
+        .where(and(
+          eq(employees.contractorId, tenantId),
+          eq(employees.externalSource, 'housecall-pro'),
+          eq(employees.externalId, primary),
+        ))
+        .limit(1);
+      const userContractorId = rows[0]?.userContractorId;
+      if (!userContractorId) return null;
+
+      const ucRows = await db
+        .select({ userId: userContractors.userId })
+        .from(userContractors)
+        .where(eq(userContractors.id, userContractorId))
+        .limit(1);
+      return ucRows[0]?.userId ?? null;
+    } catch (err) {
+      mapLog.warn(`[salesperson-resolver] failed to resolve user for HCP employee ${primary} (tenant ${tenantId})`, err);
+      return null;
+    }
+  }
+
+  // Multi-candidate path — apply the "last estimate sender" tiebreak.
+  // Resolve every candidate HCP employee id to a CRM user id (when linked),
+  // then pick the user whose most-recent estimate (within this tenant) is the
+  // latest. If nobody has any prior estimates (or there is a true tie on the
+  // most recent timestamp), fall back to the first listed candidate's user —
+  // which preserves the previous deterministic position-[0] behavior.
   try {
-    const rows = await db
-      .select({ userContractorId: employees.userContractorId })
-      .from(employees)
-      .where(and(
-        eq(employees.contractorId, tenantId),
-        eq(employees.externalSource, 'housecall-pro'),
-        eq(employees.externalId, primary),
-      ))
-      .limit(1);
-    const userContractorId = rows[0]?.userContractorId;
-    if (!userContractorId) return null;
+    const userIdByCandidate = await resolveSalespersonMapForHcpEmployees(tenantId, candidateIds);
+    if (userIdByCandidate.size === 0) return null;
 
-    const ucRows = await db
-      .select({ userId: userContractors.userId })
-      .from(userContractors)
-      .where(eq(userContractors.id, userContractorId))
-      .limit(1);
-    return ucRows[0]?.userId ?? null;
+    const orderedUserIds: string[] = [];
+    const seenUserIds = new Set<string>();
+    for (const cid of candidateIds) {
+      const uid = userIdByCandidate.get(cid);
+      if (!uid) continue;
+      if (!seenUserIds.has(uid)) {
+        orderedUserIds.push(uid);
+        seenUserIds.add(uid);
+      }
+    }
+    if (orderedUserIds.length === 0) return null;
+    if (orderedUserIds.length === 1) return orderedUserIds[0];
+
+    const lastByUser = await db
+      .select({
+        salespersonUserId: estimates.salespersonUserId,
+        lastAt: max(estimates.createdAt).as('last_at'),
+      })
+      .from(estimates)
+      .where(and(
+        eq(estimates.contractorId, tenantId),
+        inArray(estimates.salespersonUserId, orderedUserIds),
+      ))
+      .groupBy(estimates.salespersonUserId);
+
+    const tsByUser = new Map<string, Date>();
+    for (const r of lastByUser) {
+      if (r.salespersonUserId && r.lastAt) {
+        const d = r.lastAt instanceof Date ? r.lastAt : new Date(r.lastAt as unknown as string);
+        if (!isNaN(d.getTime())) tsByUser.set(r.salespersonUserId, d);
+      }
+    }
+
+    let bestUserId: string | null = null;
+    let bestTs = -Infinity;
+    // Iterate in candidate order so ties (or no-prior-estimate buckets) resolve
+    // to the first listed candidate, matching the documented fallback rule.
+    for (const uid of orderedUserIds) {
+      const ts = tsByUser.get(uid)?.getTime();
+      if (ts !== undefined && ts > bestTs) {
+        bestTs = ts;
+        bestUserId = uid;
+      }
+    }
+    if (bestUserId) return bestUserId;
+    // Nobody has any prior estimates — fall back to the first listed candidate.
+    return orderedUserIds[0];
   } catch (err) {
-    mapLog.warn(`[salesperson-resolver] failed to resolve user for HCP employee ${primary} (tenant ${tenantId})`, err);
-    return null;
+    mapLog.warn(`[salesperson-resolver] tiebreak failed for tenant ${tenantId} candidates ${candidateIds.join(',')}`, err);
+    // Tolerant fallback: best-effort first candidate via single-candidate path.
+    try {
+      const rows = await db
+        .select({ userContractorId: employees.userContractorId })
+        .from(employees)
+        .where(and(
+          eq(employees.contractorId, tenantId),
+          eq(employees.externalSource, 'housecall-pro'),
+          eq(employees.externalId, candidateIds[0]),
+        ))
+        .limit(1);
+      const ucId = rows[0]?.userContractorId;
+      if (!ucId) return null;
+      const ucRows = await db
+        .select({ userId: userContractors.userId })
+        .from(userContractors)
+        .where(eq(userContractors.id, ucId))
+        .limit(1);
+      return ucRows[0]?.userId ?? null;
+    } catch {
+      return null;
+    }
   }
 }
 

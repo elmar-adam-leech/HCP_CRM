@@ -120,37 +120,61 @@ export async function backfillEmployeeUserLinks(tenantId: string): Promise<numbe
 }
 
 /**
- * Walks estimates with a scheduledEmployeeId but no salespersonUserId and
- * fills the latter via employees → user_contractors → users.
+ * Walks estimates with no salespersonUserId yet and fills it by routing each
+ * estimate's HCP employee attribution through resolveSalespersonForHcpEntity,
+ * which applies the multi-assignee "last estimate sender" tiebreak.
+ *
+ * For each candidate estimate we attempt to fetch the live HCP estimate so the
+ * resolver sees the full assigned_employees array. When the live fetch fails
+ * (e.g. the estimate was deleted upstream, or HCP rate-limits), we fall back
+ * to the locally-stored scheduledEmployeeId — preserving the previous, faster
+ * single-id behavior so backfill always makes forward progress.
  */
 export async function backfillEstimateSalespeople(tenantId: string): Promise<number> {
   const rows = await db
     .select({
       id: estimates.id,
+      externalId: estimates.externalId,
+      externalSource: estimates.externalSource,
       scheduledEmployeeId: estimates.scheduledEmployeeId,
     })
     .from(estimates)
     .where(and(
       eq(estimates.contractorId, tenantId),
-      isNotNull(estimates.scheduledEmployeeId),
       isNull(estimates.salespersonUserId),
     ));
 
   let updated = 0;
+  let viaHcp = 0;
+  let viaLocal = 0;
   for (const row of rows) {
-    const empId = row.scheduledEmployeeId;
-    if (!empId) continue;
-    const linked = await db
-      .select({ userId: userContractors.userId })
-      .from(employees)
-      .innerJoin(userContractors, eq(employees.userContractorId, userContractors.id))
-      .where(and(
-        eq(employees.contractorId, tenantId),
-        eq(employees.externalSource, 'housecall-pro'),
-        eq(employees.externalId, empId),
-      ))
-      .limit(1);
-    const userId = linked[0]?.userId;
+    let userId: string | null = null;
+
+    // Primary: fetch live HCP estimate so the resolver sees every assigned
+    // employee and can apply the most-recent-prior-estimate tiebreak.
+    if (row.externalId && row.externalSource === 'housecall-pro') {
+      try {
+        const resp = await housecallProService.getEstimate(tenantId, row.externalId);
+        if (resp.success && resp.data) {
+          userId = await resolveSalespersonForHcpEntity(tenantId, resp.data);
+          if (userId) viaHcp++;
+        }
+      } catch (err) {
+        log.warn(`[backfill-foundation] tenant ${tenantId}: getEstimate(${row.externalId}) failed`, err as Error);
+      }
+    }
+
+    // Fallback: route the locally-stored single scheduledEmployeeId through
+    // the same resolver. Single-candidate path is byte-for-byte identical to
+    // the previous direct lookup, so historical behavior is preserved when
+    // HCP fetch is unavailable.
+    if (!userId && row.scheduledEmployeeId) {
+      userId = await resolveSalespersonForHcpEntity(tenantId, {
+        assigned_employees: [{ id: row.scheduledEmployeeId }],
+      });
+      if (userId) viaLocal++;
+    }
+
     if (!userId) continue;
     await db
       .update(estimates)
@@ -158,7 +182,7 @@ export async function backfillEstimateSalespeople(tenantId: string): Promise<num
       .where(and(eq(estimates.id, row.id), eq(estimates.contractorId, tenantId)));
     updated++;
   }
-  log.info(`[backfill-foundation] tenant ${tenantId}: stamped salespersonUserId on ${updated}/${rows.length} estimates`);
+  log.info(`[backfill-foundation] tenant ${tenantId}: stamped salespersonUserId on ${updated}/${rows.length} estimates (viaHcp=${viaHcp}, viaLocal=${viaLocal})`);
   return updated;
 }
 
