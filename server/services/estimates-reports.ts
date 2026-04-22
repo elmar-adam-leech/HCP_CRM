@@ -446,10 +446,18 @@ export interface CloseRateRow {
   lost: number;
   open: number;
   closeRate: number;
+  decisionRate: number;
 }
 
 export interface CloseRateReport {
-  totals: { sent: number; won: number; lost: number; open: number; closeRate: number };
+  totals: {
+    sent: number;
+    won: number;
+    lost: number;
+    open: number;
+    closeRate: number;
+    decisionRate: number;
+  };
   rows: CloseRateRow[];
 }
 
@@ -510,26 +518,34 @@ async function getCloseRate(
   const r = result.rows[0];
   const rows: CloseRateRow[] = (r?.rows ?? []).map((g) => {
     const sent = num(g.sent);
+    const won = num(g.won);
+    const lost = num(g.lost);
+    const decided = won + lost;
     return {
       key: g.key,
       name: g.name,
       sent,
-      won: num(g.won),
-      lost: num(g.lost),
+      won,
+      lost,
       open: num(g.open),
-      closeRate: sent > 0 ? round1((num(g.won) / sent) * 100) : 0,
+      closeRate: sent > 0 ? round1((won / sent) * 100) : 0,
+      decisionRate: decided > 0 ? round1((won / decided) * 100) : 0,
     };
   });
   const totals = r?.totals;
   const tSent = num(totals?.sent);
+  const tWon = num(totals?.won);
+  const tLost = num(totals?.lost);
+  const tDecided = tWon + tLost;
   return {
     rows,
     totals: {
       sent: tSent,
-      won: num(totals?.won),
-      lost: num(totals?.lost),
+      won: tWon,
+      lost: tLost,
       open: num(totals?.open),
-      closeRate: tSent > 0 ? round1((num(totals?.won) / tSent) * 100) : 0,
+      closeRate: tSent > 0 ? round1((tWon / tSent) * 100) : 0,
+      decisionRate: tDecided > 0 ? round1((tWon / tDecided) * 100) : 0,
     },
   };
 }

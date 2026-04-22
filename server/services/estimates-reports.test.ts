@@ -113,5 +113,21 @@ d("estimates reports — option-row dedup", () => {
     expect(r.totals.won).toBe(1);
     expect(r.totals.lost).toBe(0);
     expect(r.totals.open).toBe(2);
+    // Close rate: 1/3 sent = 33.3%. Decision rate: 1/(1+0) = 100%.
+    expect(r.totals.closeRate).toBeCloseTo(33.3, 1);
+    expect(r.totals.decisionRate).toBe(100);
+  });
+
+  it("getCloseRateBySalesperson decisionRate is 0 when nothing is decided", async () => {
+    // Narrow the window to only include Estimate A (all 'sent'). It still has
+    // an HCP-deduplicated canonical row → 1 sent, 0 won, 0 lost.
+    const r = await getCloseRateBySalesperson(contractorId, {
+      startDate: new Date("2026-06-01T00:00:00Z"),
+      endDate: new Date("2026-06-02T00:00:00Z"),
+    });
+    expect(r.totals.sent).toBe(1);
+    expect(r.totals.won).toBe(0);
+    expect(r.totals.lost).toBe(0);
+    expect(r.totals.decisionRate).toBe(0);
   });
 });

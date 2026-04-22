@@ -24,14 +24,22 @@ interface CloseRateRow {
   lost: number;
   open: number;
   closeRate: number;
+  decisionRate: number;
 }
 
 interface CloseRateData {
   rows: CloseRateRow[];
-  totals: { sent: number; won: number; lost: number; open: number; closeRate: number };
+  totals: {
+    sent: number;
+    won: number;
+    lost: number;
+    open: number;
+    closeRate: number;
+    decisionRate: number;
+  };
 }
 
-type SortKey = "name" | "sent" | "won" | "lost" | "open" | "closeRate";
+type SortKey = "name" | "sent" | "won" | "lost" | "open" | "closeRate" | "decisionRate";
 
 function CloseRateTable({
   data,
@@ -77,6 +85,7 @@ function CloseRateTable({
               ["lost", "Lost", "right"],
               ["open", "Open", "right"],
               ["closeRate", "Close rate", "right"],
+              ["decisionRate", "Decision rate", "right"],
             ] as const).map(([key, label, align]) => (
               <TableHead key={key} className={align === "right" ? "text-right" : ""}>
                 <Button
@@ -101,6 +110,7 @@ function CloseRateTable({
               <TableCell className="text-right">{row.lost}</TableCell>
               <TableCell className="text-right">{row.open}</TableCell>
               <TableCell className="text-right">{formatPercent(row.closeRate)}</TableCell>
+              <TableCell className="text-right">{formatPercent(row.decisionRate)}</TableCell>
             </TableRow>
           ))}
         </TableBody>
@@ -117,7 +127,7 @@ export function CloseRateBySalespersonReport() {
   return (
     <ReportShell
       title="Close rate by salesperson"
-      description="Won as a percentage of all estimates sent. Open estimates count against the rate until they're decided."
+      description="Close rate is won out of all estimates sent — open estimates count against it. Decision rate is won out of estimates the customer actually decided (won + lost), ignoring open pipeline."
       isLoading={isLoading}
       isError={isError}
       isEmpty={isEmpty}
@@ -125,7 +135,7 @@ export function CloseRateBySalespersonReport() {
     >
       {data && (
         <>
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
             <Stat label="Sent" value={data.totals.sent.toString()} testId="stat-cr-sent" />
             <Stat label="Won" value={data.totals.won.toString()} testId="stat-cr-won" />
             <Stat label="Lost" value={data.totals.lost.toString()} testId="stat-cr-lost" />
@@ -133,6 +143,11 @@ export function CloseRateBySalespersonReport() {
               label="Close rate"
               value={formatPercent(data.totals.closeRate)}
               testId="stat-cr-rate"
+            />
+            <Stat
+              label="Decision rate"
+              value={formatPercent(data.totals.decisionRate)}
+              testId="stat-cr-decision-rate"
             />
           </div>
           <CloseRateTable
@@ -154,7 +169,7 @@ export function CloseRateBySourceReport() {
   return (
     <ReportShell
       title="Close rate by lead source"
-      description="Won as a percentage of all estimates sent, grouped by the originating lead's source. Open estimates count against the rate until they're decided."
+      description="Close rate is won out of all estimates sent — open estimates count against it. Decision rate is won out of estimates the customer actually decided (won + lost), ignoring open pipeline. Grouped by the originating lead's source."
       showLeadSource={false}
       isLoading={isLoading}
       isError={isError}
@@ -163,7 +178,7 @@ export function CloseRateBySourceReport() {
     >
       {data && (
         <>
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
             <Stat label="Sent" value={data.totals.sent.toString()} testId="stat-crs-sent" />
             <Stat label="Won" value={data.totals.won.toString()} testId="stat-crs-won" />
             <Stat label="Lost" value={data.totals.lost.toString()} testId="stat-crs-lost" />
@@ -171,6 +186,11 @@ export function CloseRateBySourceReport() {
               label="Close rate"
               value={formatPercent(data.totals.closeRate)}
               testId="stat-crs-rate"
+            />
+            <Stat
+              label="Decision rate"
+              value={formatPercent(data.totals.decisionRate)}
+              testId="stat-crs-decision-rate"
             />
           </div>
           <CloseRateTable data={data} testId="table-close-rate-source" groupLabel="Source" />
