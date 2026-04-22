@@ -19,6 +19,7 @@ import { type Request, type Response } from "express";
 import type { ViteDevServer } from "vite";
 import { storage } from "./storage";
 import type { BookingContractor } from "../client/src/prerender-entry";
+import { buildBrandColorCss } from "../shared/brand-color";
 
 type RenderBooking = (opts: {
   slug: string;
@@ -82,6 +83,16 @@ function buildPage(
     slug,
     contractor,
   })}</script>`;
+  // Inject the brand color as CSS variables in <head> so the first paint —
+  // including the SSR'd primary button — already shows the contractor's
+  // accent color, before the main stylesheet's :root defaults take effect.
+  const brandCss = buildBrandColorCss(contractor.brandColor);
+  if (brandCss) {
+    const styleTag = `<style id="__brand_color__">${brandCss}</style>`;
+    if (page.includes("</head>")) {
+      page = page.replace("</head>", `${styleTag}</head>`);
+    }
+  }
   page = page.replace(
     `<div id="root"></div>`,
     `<div id="root">${ssrHtml}</div>${bootstrap}`,
@@ -133,6 +144,7 @@ export function createBookingSsrHandler(opts: BookingSsrHandlerOptions) {
         bookingSlug: contractor.bookingSlug ?? slug,
         bookingRedirectUrl: contractor.bookingRedirectUrl ?? null,
         logoUrl: contractor.logoUrl ?? null,
+        brandColor: contractor.brandColor ?? null,
       };
 
       let template = await fs.readFile(opts.templatePath, "utf-8");

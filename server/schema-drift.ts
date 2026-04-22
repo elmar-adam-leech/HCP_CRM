@@ -281,6 +281,10 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       description: 'contractors.logo_url (company logo: https URL or base64 data URI)',
     },
     {
+      sql: `ALTER TABLE contractors ADD COLUMN IF NOT EXISTS brand_color text`,
+      description: 'contractors.brand_color (optional brand/accent hex color used to theme the public booking page)',
+    },
+    {
       sql: `ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled boolean NOT NULL DEFAULT false`,
       description: 'users.mfa_enabled (whether TOTP-based MFA is enabled)',
     },

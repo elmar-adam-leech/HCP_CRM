@@ -38,6 +38,7 @@ export interface BookingContractor {
   bookingSlug: string;
   bookingRedirectUrl: string | null;
   logoUrl: string | null;
+  brandColor: string | null;
 }
 
 /**

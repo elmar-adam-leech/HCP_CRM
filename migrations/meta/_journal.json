@@ -211,6 +211,13 @@
       "when": 1776825400000,
       "tag": "0029_estimate_status_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1776825500000,
+      "tag": "0030_contractor_brand_color",
+      "breakpoints": true
     }
   ]
 }

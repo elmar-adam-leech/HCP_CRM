@@ -293,6 +293,20 @@ export function registerSettingsRoutes(app: Express): void {
     res.json({ logoUrl: null });
   }));
 
+  app.patch("/api/contractor/brand-color", requireAdmin, asyncHandler(async (req, res) => {
+    const brandColorSchema = z.object({
+      brandColor: z.union([
+        z.string().regex(/^#[0-9a-fA-F]{6}$/, { message: "Brand color must be a 6-digit hex like #3366ff" }),
+        z.null(),
+      ]),
+    });
+    const parsed = parseBody(brandColorSchema, req, res);
+    if (!parsed) return;
+    const normalized = parsed.brandColor ? parsed.brandColor.toLowerCase() : null;
+    const updated = await storage.updateContractor(req.user.contractorId, { brandColor: normalized });
+    res.json({ brandColor: updated?.brandColor ?? null });
+  }));
+
   app.post("/api/contractor/logo/scan", requireAdmin, asyncHandler(async (req, res) => {
     const scanSchema = z.object({
       websiteUrl: z.string().url().refine(

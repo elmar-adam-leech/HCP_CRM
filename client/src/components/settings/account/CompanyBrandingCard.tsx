@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { apiRequest } from "@/lib/queryClient";
@@ -6,13 +6,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Building2, Upload, Search, X, Loader2 } from "lucide-react";
+import { Building2, Upload, Search, X, Loader2, Palette } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 
 interface ContractorData {
   logoUrl?: string | null;
+  brandColor?: string | null;
 }
+
+const DEFAULT_BRAND_COLOR = "#3b82f6";
+const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
 export function CompanyBrandingCard() {
   const { data: currentUser } = useCurrentUser();
@@ -29,7 +33,13 @@ export function CompanyBrandingCard() {
   const [uploadFileName, setUploadFileName] = useState<string | null>(null);
   const [websiteUrl, setWebsiteUrl] = useState("");
   const [candidates, setCandidates] = useState<string[]>([]);
+  const [brandColorDraft, setBrandColorDraft] = useState<string>(DEFAULT_BRAND_COLOR);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Hydrate the color draft when the contractor record loads or changes.
+  useEffect(() => {
+    setBrandColorDraft(contractor?.brandColor || DEFAULT_BRAND_COLOR);
+  }, [contractor?.brandColor]);
 
   const currentLogo = uploadPreview ?? contractor?.logoUrl ?? null;
 
@@ -62,6 +72,19 @@ export function CompanyBrandingCard() {
     onError: (err: unknown) => {
       const message = err instanceof Error ? err.message : "Unknown error";
       toast({ title: "Failed to remove logo", description: message, variant: "destructive" });
+    },
+  });
+
+  const brandColorMutation = useMutation({
+    mutationFn: (brandColor: string | null) =>
+      apiRequest("PATCH", "/api/contractor/brand-color", { brandColor }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/contractor"] });
+      toast({ title: "Brand color saved", description: "Your booking page will now use this color." });
+    },
+    onError: (err: unknown) => {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      toast({ title: "Failed to save brand color", description: message, variant: "destructive" });
     },
   });
 
@@ -261,6 +284,62 @@ export function CompanyBrandingCard() {
                 ))}
               </div>
             </div>
+          )}
+        </div>
+
+        <div className="space-y-3">
+          <Label className="text-sm font-medium flex items-center gap-2">
+            <Palette className="h-4 w-4" />
+            Brand color
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            Sets the accent color on your public booking page (primary button, focus rings, etc.).
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              type="color"
+              value={HEX_RE.test(brandColorDraft) ? brandColorDraft : DEFAULT_BRAND_COLOR}
+              onChange={(e) => setBrandColorDraft(e.target.value)}
+              className="h-9 w-12 rounded-md border bg-background cursor-pointer p-1"
+              data-testid="input-brand-color-picker"
+              aria-label="Brand color picker"
+            />
+            <Input
+              value={brandColorDraft}
+              onChange={(e) => setBrandColorDraft(e.target.value)}
+              placeholder="#3b82f6"
+              className="w-32 font-mono"
+              data-testid="input-brand-color-hex"
+            />
+            <Button
+              size="sm"
+              onClick={() => brandColorMutation.mutate(brandColorDraft.toLowerCase())}
+              disabled={
+                brandColorMutation.isPending
+                || !HEX_RE.test(brandColorDraft)
+                || brandColorDraft.toLowerCase() === (contractor?.brandColor || "").toLowerCase()
+              }
+              data-testid="button-save-brand-color"
+            >
+              {brandColorMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+              Save color
+            </Button>
+            {contractor?.brandColor && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive"
+                onClick={() => brandColorMutation.mutate(null)}
+                disabled={brandColorMutation.isPending}
+                data-testid="button-reset-brand-color"
+              >
+                <X className="h-3 w-3 mr-1" />
+                Reset to default
+              </Button>
+            )}
+          </div>
+          {!HEX_RE.test(brandColorDraft) && (
+            <p className="text-xs text-destructive">Enter a 6-digit hex color (e.g. #3b82f6).</p>
           )}
         </div>
       </CardContent>

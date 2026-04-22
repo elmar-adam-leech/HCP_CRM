@@ -142,6 +142,7 @@ export function registerPublicRoutes(app: Express): void {
         bookingSlug: contractor.bookingSlug,
         bookingRedirectUrl: contractor.bookingRedirectUrl || null,
         logoUrl: contractor.logoUrl || null,
+        brandColor: contractor.brandColor || null,
       }
     });
   }));

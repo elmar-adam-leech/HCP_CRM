@@ -16,6 +16,7 @@ type BookingBootstrap = {
     bookingSlug: string;
     bookingRedirectUrl: string | null;
     logoUrl: string | null;
+    brandColor: string | null;
   };
 };
 const bookingBootstrap = (window as unknown as {

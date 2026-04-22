@@ -18,6 +18,7 @@ export const contractors = pgTable("contractors", {
   dialpadActivitySyncEnabled: boolean("dialpad_activity_sync_enabled").default(true).notNull(), // Enable/disable automatic activity sync
   estimateArchiveDays: integer("estimate_archive_days"), // nullable — null = show all, N = only show estimates from last N days
   logoUrl: text("logo_url"), // Company logo: https URL or data:image/...;base64,... (nullable)
+  brandColor: text("brand_color"), // Optional brand/accent color (hex, e.g. "#3366ff") used to theme the public booking page
   hcpSendLeads: boolean("hcp_send_leads").default(true).notNull(), // Whether to push new leads to HCP
   hcpSyncSkipTags: text("hcp_sync_skip_tags").array().notNull().default(sql`'{}'`), // Lead tags that should skip HCP sync
   dataRetentionMonths: integer("data_retention_months"),

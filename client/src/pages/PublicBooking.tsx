@@ -16,6 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Calendar as CalendarIcon, Clock, User, Mail, Phone, MapPin, CheckCircle, Loader2, AlertCircle } from "lucide-react";
 import { AddressAutocomplete, AddressComponents } from "@/components/ui/AddressAutocomplete";
 import { useToast } from "@/hooks/use-toast";
+import { buildBrandColorCss } from "@shared/brand-color";
 
 const US_STATES = /\b(AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\b/;
 
@@ -57,6 +58,7 @@ interface ContractorInfo {
   bookingSlug: string;
   bookingRedirectUrl: string | null;
   logoUrl: string | null;
+  brandColor: string | null;
 }
 
 interface TimeSlot {
@@ -120,6 +122,28 @@ export default function PublicBooking() {
       const desc = document.querySelector('meta[name="description"]');
       if (desc) desc.setAttribute('content', `Schedule a free estimate with ${name}. Pick a date and time that works for you.`);
     }
+  }, [contractorData]);
+
+  // Apply the contractor's brand color by injecting a <style> tag that
+  // overrides the design-system primary/ring/sidebar-primary CSS variables.
+  // The SSR render already inlines this style for the very first paint;
+  // this effect keeps the theme in sync if the contractor data changes
+  // (e.g. SPA navigation) and is a no-op when no brand color is set.
+  useEffect(() => {
+    const css = buildBrandColorCss(contractorData?.contractor?.brandColor ?? null);
+    if (typeof document === 'undefined') return;
+    const STYLE_ID = '__brand_color__';
+    let styleEl = document.getElementById(STYLE_ID) as HTMLStyleElement | null;
+    if (!css) {
+      if (styleEl) styleEl.remove();
+      return;
+    }
+    if (!styleEl) {
+      styleEl = document.createElement('style');
+      styleEl.id = STYLE_ID;
+      document.head.appendChild(styleEl);
+    }
+    if (styleEl.textContent !== css) styleEl.textContent = css;
   }, [contractorData]);
 
   // Pre-warm the server-side availability cache for the next 7 days as soon
