@@ -10,6 +10,16 @@ import { maskEmail } from './utils/pii-redactor';
 
 const log = logger('GmailService');
 
+/**
+ * Strip CR (\r) and LF (\n) characters from a header value to prevent
+ * CRLF injection attacks.  An attacker who controls a header value could
+ * otherwise smuggle extra mail headers (e.g. Bcc, Reply-To) into the raw
+ * RFC 822 message that is handed directly to the Gmail API.
+ */
+function sanitizeHeaderValue(value: string): string {
+  return value.replace(/[\r\n]/g, '');
+}
+
 const ENCRYPTION_ALGORITHM = 'aes-256-gcm';
 const STATE_EXPIRATION_MINUTES = 10;
 
@@ -269,23 +279,28 @@ export class GmailService {
     try {
       const gmail = await this.createGmailClient(options.refreshToken);
       
-      // Format the From header with display name if provided
+      // Format the From header with display name if provided.
+      // Sanitize all user-supplied values to prevent CRLF header injection.
+      const safeToAddress = sanitizeHeaderValue(options.to);
+      const safeSubject = sanitizeHeaderValue(options.subject);
       let fromHeader = '';
       if (options.fromEmail) {
+        const safeFromEmail = sanitizeHeaderValue(options.fromEmail);
         if (options.fromName) {
           // Quote the display name to properly handle special characters like "@"
           // Format as "Display Name" <email@domain.com>
-          fromHeader = `From: "${options.fromName}" <${options.fromEmail}>`;
+          const safeFromName = sanitizeHeaderValue(options.fromName);
+          fromHeader = `From: "${safeFromName}" <${safeFromEmail}>`;
         } else {
-          fromHeader = `From: ${options.fromEmail}`;
+          fromHeader = `From: ${safeFromEmail}`;
         }
       }
       
       // Create the email message with HTML support
       const headers = [
-        `To: ${options.to}`,
+        `To: ${safeToAddress}`,
         fromHeader,
-        `Subject: ${options.subject}`,
+        `Subject: ${safeSubject}`,
         'Content-Type: text/html; charset=utf-8',
       ].filter(Boolean).join('\r\n');
       

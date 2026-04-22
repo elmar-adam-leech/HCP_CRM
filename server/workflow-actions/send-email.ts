@@ -48,6 +48,29 @@ export async function handleSendEmail(
       };
     }
 
+    // Validate that the resolved recipient is a syntactically valid email
+    // address and contains no CRLF characters that could be used for header
+    // injection.  The service layer strips CRLF as well, but rejecting here
+    // makes the abuse visible in the workflow execution log.
+    const crlfPattern = /[\r\n]/;
+    if (crlfPattern.test(processedTo) || crlfPattern.test(processedSubject) || (processedFromEmail && crlfPattern.test(processedFromEmail))) {
+      return {
+        success: false,
+        error: 'Email header values must not contain newline characters',
+      };
+    }
+    // Validate each recipient in a comma-separated list (the contact-lookup
+    // code below already splits on comma, so multi-recipient sends are valid).
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const recipients = processedTo.split(',').map((e: string) => e.trim()).filter(Boolean);
+    const invalidRecipient = recipients.find((addr) => !emailPattern.test(addr));
+    if (invalidRecipient) {
+      return {
+        success: false,
+        error: `Invalid recipient email address: ${invalidRecipient}`,
+      };
+    }
+
     const creator = await storage.getUser(context.workflowCreatorId);
     if (!creator || creator.contractorId !== context.contractorId) {
       return { success: false, error: 'Workflow creator not found' };

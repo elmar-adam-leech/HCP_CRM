@@ -143,15 +143,19 @@ export function registerMessagingRoutes(app: Express): void {
   }));
 
   app.post("/api/messages/send-email", asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const noNewlines = (val: string) => !/[\r\n]/.test(val);
     const emailBodySchema = z.object({
-      to: z.string().email({ message: "A valid recipient email address is required" }),
-      subject: z.string().min(1, { message: "Subject is required" }),
+      to: z.string().email({ message: "A valid recipient email address is required" })
+        .refine(noNewlines, { message: "Recipient address must not contain newline characters" }),
+      subject: z.string().min(1, { message: "Subject is required" })
+        .refine(noNewlines, { message: "Subject must not contain newline characters" }),
       content: z.string().min(1, { message: "Email body is required" }),
       contactId: z.string().optional(),
       leadId: z.string().optional(),
       customerId: z.string().optional(),
       estimateId: z.string().optional(),
-      fromAddress: z.string().email().optional(),
+      fromAddress: z.string().email().optional()
+        .refine((v) => v == null || noNewlines(v), { message: "From address must not contain newline characters" }),
     });
 
     const parsed = parseBody(emailBodySchema, req, res);
