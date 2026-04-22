@@ -2,7 +2,9 @@ import { storage } from "../storage";
 import { BackgroundJob } from "./background-job";
 import { providerService } from "../providers/provider-service";
 import { gmailService } from "../gmail-service";
-import type { SalesProcessTaskInstance, SalesProcessStep } from "@shared/schema";
+import { db } from "../db";
+import { eq } from "drizzle-orm";
+import { salesProcessSteps, type SalesProcessTaskInstance, type SalesProcessStep } from "@shared/schema";
 import { logger } from "../utils/logger";
 
 const log = logger("SalesProcessCron");
@@ -31,16 +33,44 @@ function renderTemplate(template: string, vars: Record<string, string>): string 
     .replace(/\{(\w+)\}/g, (_match, key) => vars[key] ?? '');
 }
 
-async function buildVariablesForLead(contractorId: string, leadId: string): Promise<{
+async function buildVariablesForInstance(instance: SalesProcessTaskInstance): Promise<{
   contactId: string | null;
   email: string | null;
   phone: string | null;
   vars: Record<string, string>;
 }> {
-  const lead = await storage.getLead(leadId, contractorId);
-  if (!lead) return { contactId: null, email: null, phone: null, vars: {} };
-  const contact = await storage.getContact(lead.contactId, contractorId);
-  if (!contact) return { contactId: lead.contactId, email: null, phone: null, vars: {} };
+  const empty = { contactId: null, email: null, phone: null, vars: {} };
+  // Per-entity context. We compute only the fields that the template variable
+  // surface needs (this is intentionally a small, opinionated map rather than
+  // the full workflow variable extractor — sales-process templates are short
+  // and the test surface needs to stay deterministic). Both branches always
+  // resolve through the same downstream contact-lookup so contact-level
+  // variables behave identically regardless of trigger entity.
+  let contactId: string | null = null;
+  let leadSource: string | null = null;
+  let estimateNumber: string | null = null;
+  let estimateTitle: string | null = null;
+  let estimateAmount: string | null = null;
+  let estimateStatus: string | null = null;
+  if (instance.leadId) {
+    const lead = await storage.getLead(instance.leadId, instance.contractorId);
+    if (!lead) return empty;
+    contactId = lead.contactId;
+    leadSource = lead.source ?? null;
+  } else if (instance.estimateId) {
+    const estimate = await storage.getEstimate(instance.estimateId, instance.contractorId);
+    if (!estimate) return empty;
+    contactId = estimate.contactId;
+    estimateNumber = (estimate as { estimateNumber?: string | null }).estimateNumber ?? null;
+    estimateTitle = estimate.title ?? null;
+    estimateAmount = estimate.amount != null ? String(estimate.amount) : null;
+    estimateStatus = estimate.status ?? null;
+  } else {
+    return empty;
+  }
+  if (!contactId) return empty;
+  const contact = await storage.getContact(contactId, instance.contractorId);
+  if (!contact) return { contactId, email: null, phone: null, vars: {} };
   const fullName = contact.name ?? '';
   const [first, ...rest] = fullName.split(/\s+/);
   return {
@@ -53,19 +83,27 @@ async function buildVariablesForLead(contractorId: string, leadId: string): Prom
       full_name: fullName,
       email: contact.emails?.[0] ?? '',
       phone: contact.phones?.[0] ?? '',
-      // Per spec: lead_source is a first-class template var so managers can
-      // write "Thanks for reaching out via {{lead_source}}!".
-      lead_source: lead.source ?? '',
+      // Entity-specific vars: blank when the trigger entity does not produce
+      // them, so unknown placeholders render as empty strings rather than
+      // "{first_name}" leaking through.
+      lead_source: leadSource ?? '',
+      estimate_number: estimateNumber ?? '',
+      estimate_title: estimateTitle ?? '',
+      estimate_amount: estimateAmount ?? '',
+      estimate_status: estimateStatus ?? '',
     },
   };
 }
 
-// Look up the step for an instance via the by-process fetch.
+// Look up the step for an instance directly by its stepId — we no longer
+// assume one cadence per tenant.
 async function resolveStepForInstance(
   instance: SalesProcessTaskInstance,
 ): Promise<SalesProcessStep | null> {
-  const { steps } = await storage.getSalesProcessWithSteps(instance.contractorId);
-  return steps.find(s => s.id === instance.stepId) ?? null;
+  const r = await db.select().from(salesProcessSteps)
+    .where(eq(salesProcessSteps.id, instance.stepId))
+    .limit(1);
+  return r[0] ?? null;
 }
 
 async function sendAutoTask(instance: SalesProcessTaskInstance): Promise<{ ok: boolean; error?: string }> {
@@ -80,10 +118,7 @@ async function sendAutoTask(instance: SalesProcessTaskInstance): Promise<{ ok: b
     return { ok: false, error: 'Step has no message template' };
   }
 
-  const { contactId, email, phone, vars } = await buildVariablesForLead(
-    instance.contractorId,
-    instance.leadId,
-  );
+  const { contactId, email, phone, vars } = await buildVariablesForInstance(instance);
   const message = renderTemplate(step.messageTemplate, vars);
 
   if (instance.actionType === 'text') {
@@ -198,7 +233,7 @@ export async function runDueAutoTasksOnce(
         const nextDueAt = new Date(now.getTime() + delayMin * 60_000);
         await storage.rescheduleTaskForRetry(inst.id, inst.contractorId, nextDueAt);
         skipped += 1;
-        log.info(`sales_process instance_retry_scheduled tenantId=${inst.contractorId} leadId=${inst.leadId} stepId=${inst.stepId} instanceId=${inst.id} attempt=${liveAttempt} delayMin=${delayMin} reason=${result.error}`);
+        log.info(`sales_process instance_retry_scheduled tenantId=${inst.contractorId} entity=${inst.leadId ? `lead:${inst.leadId}` : `estimate:${inst.estimateId}`} stepId=${inst.stepId} instanceId=${inst.id} attempt=${liveAttempt} delayMin=${delayMin} reason=${result.error}`);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

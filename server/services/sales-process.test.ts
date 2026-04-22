@@ -3,11 +3,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../storage', () => {
   const storage: any = {
     getSalesProcessWithSteps: vi.fn(),
-    countTaskInstancesForLead: vi.fn(),
+    listCadences: vi.fn(),
+    getCadenceWithSteps: vi.fn(),
+    getSalesProcessSteps: vi.fn(),
+    countTaskInstancesForEntity: vi.fn(),
     bulkInsertTaskInstances: vi.fn(),
     getOpenLeadsForBackfill: vi.fn(),
     skipPendingTasksForLead: vi.fn(),
+    getLead: vi.fn(),
+    getEstimate: vi.fn(),
     getLeadsByContact: vi.fn(),
+    getEstimatesByContact: vi.fn(),
     listTaskInstances: vi.fn(),
     markTaskCompleted: vi.fn(),
   };
@@ -21,12 +27,13 @@ import {
   materializeForLead,
   backfillOpenLeads,
   onLeadStatusChanged,
+  onEstimateStatusChanged,
   onActivityCreated,
 } from './sales-process';
 import { backoffMinutesAfterAttempt } from './sales-process-cron';
 
 const tenantId = 'tenant-1';
-const baseProcess = { id: 'p1', contractorId: tenantId, name: 'Default', active: true } as any;
+const baseProcess = { id: 'p1', contractorId: tenantId, name: 'Default', active: true, triggerType: 'lead_created', targetStatus: null, entityType: 'lead' } as any;
 const steps = [
   { id: 's1', processId: 'p1', dayOffset: 1, actionType: 'call', mode: 'manual' },
   { id: 's2', processId: 'p1', dayOffset: 4, actionType: 'text', mode: 'auto' },
@@ -45,6 +52,8 @@ function makeLead(overrides: Partial<any> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: no estimates for any contact. Specific tests override.
+  (storage.getEstimatesByContact as any).mockResolvedValue([]);
 });
 
 describe('isTerminalLeadStatus', () => {
@@ -62,9 +71,12 @@ describe('isTerminalLeadStatus', () => {
 });
 
 describe('materializeForLead', () => {
+  beforeEach(() => {
+    (storage.listCadences as any).mockResolvedValue([baseProcess]);
+    (storage.getSalesProcessSteps as any).mockResolvedValue(steps);
+  });
   it('materializes one instance per step at lead.createdAt + dayOffset preserving time-of-day', async () => {
-    (storage.getSalesProcessWithSteps as any).mockResolvedValue({ process: baseProcess, steps });
-    (storage.countTaskInstancesForLead as any).mockResolvedValue(0);
+    (storage.countTaskInstancesForEntity as any).mockResolvedValue(0);
     (storage.bulkInsertTaskInstances as any).mockImplementation((rows: any[]) =>
       Promise.resolve(rows.map((r, i) => ({ id: `i${i}`, ...r }))),
     );
@@ -79,16 +91,13 @@ describe('materializeForLead', () => {
   });
 
   it('no-ops when process is inactive', async () => {
-    (storage.getSalesProcessWithSteps as any).mockResolvedValue({
-      process: { ...baseProcess, active: false }, steps,
-    });
+    (storage.listCadences as any).mockResolvedValue([{ ...baseProcess, active: false }]);
     expect(await materializeForLead(makeLead())).toBe(0);
     expect(storage.bulkInsertTaskInstances).not.toHaveBeenCalled();
   });
 
   it('no-ops when lead is in a terminal status', async () => {
-    (storage.getSalesProcessWithSteps as any).mockResolvedValue({ process: baseProcess, steps });
-    (storage.countTaskInstancesForLead as any).mockResolvedValue(0);
+    (storage.countTaskInstancesForEntity as any).mockResolvedValue(0);
     expect(await materializeForLead(makeLead({ status: 'converted' }))).toBe(0);
     expect(await materializeForLead(makeLead({ status: 'disqualified' }))).toBe(0);
     expect(await materializeForLead(makeLead({ status: 'lost' }))).toBe(0);
@@ -96,8 +105,7 @@ describe('materializeForLead', () => {
   });
 
   it('no-ops if instances already exist (idempotent against duplicate hooks)', async () => {
-    (storage.getSalesProcessWithSteps as any).mockResolvedValue({ process: baseProcess, steps });
-    (storage.countTaskInstancesForLead as any).mockResolvedValue(3);
+    (storage.countTaskInstancesForEntity as any).mockResolvedValue(3);
     expect(await materializeForLead(makeLead())).toBe(0);
     expect(storage.bulkInsertTaskInstances).not.toHaveBeenCalled();
   });
@@ -109,7 +117,7 @@ describe('backfillOpenLeads', () => {
     const leadA = makeLead({ id: 'A' });
     const leadB = makeLead({ id: 'B' });
     (storage.getOpenLeadsForBackfill as any).mockResolvedValue([leadA, leadB]);
-    (storage.countTaskInstancesForLead as any)
+    (storage.countTaskInstancesForEntity as any)
       .mockResolvedValueOnce(0)  // A
       .mockResolvedValueOnce(2); // B already has rows
     (storage.bulkInsertTaskInstances as any).mockImplementation((rows: any[]) =>
@@ -130,6 +138,15 @@ describe('backfillOpenLeads', () => {
 });
 
 describe('onLeadStatusChanged', () => {
+  beforeEach(() => {
+    // Default: no matching status-changed cadences, so non-terminal
+    // transitions are no-ops.
+    (storage.listCadences as any).mockResolvedValue([]);
+    (storage.getLead as any).mockResolvedValue({
+      id: 'lead-1', contractorId: tenantId, status: 'contacted',
+      createdAt: new Date('2026-04-01T00:00:00Z'),
+    });
+  });
   it('skips pending tasks when transitioning into a terminal status', async () => {
     await onLeadStatusChanged('lead-1', tenantId, 'converted', 'contacted');
     expect(storage.skipPendingTasksForLead).toHaveBeenCalledWith(
@@ -146,9 +163,91 @@ describe('onLeadStatusChanged', () => {
     await onLeadStatusChanged('lead-1', tenantId, 'converted', 'converted');
     expect(storage.skipPendingTasksForLead).not.toHaveBeenCalled();
   });
-  it('does nothing when transitioning into a non-terminal status', async () => {
+  it('does nothing when transitioning into a non-terminal status with no matching cadence', async () => {
     await onLeadStatusChanged('lead-1', tenantId, 'contacted', 'new');
     expect(storage.skipPendingTasksForLead).not.toHaveBeenCalled();
+    expect(storage.bulkInsertTaskInstances).not.toHaveBeenCalled();
+  });
+  it('enrolls the lead into a matching lead_status_changed cadence', async () => {
+    (storage.listCadences as any).mockResolvedValue([
+      { id: 'p2', contractorId: tenantId, name: 'Post-qualified', active: true,
+        triggerType: 'lead_status_changed', targetStatus: 'qualified', entityType: 'lead' },
+    ]);
+    (storage.getSalesProcessSteps as any).mockResolvedValue([
+      { id: 's-q1', dayOffset: 1, actionType: 'call', mode: 'manual' },
+    ]);
+    (storage.countTaskInstancesForEntity as any).mockResolvedValue(0);
+    (storage.bulkInsertTaskInstances as any).mockImplementation((rows: any[]) =>
+      Promise.resolve(rows.map((r, i) => ({ id: `i${i}`, ...r }))));
+    (storage.getLead as any).mockResolvedValue({
+      id: 'lead-1', contractorId: tenantId, status: 'qualified',
+      createdAt: new Date('2026-04-01T00:00:00Z'),
+    });
+    await onLeadStatusChanged('lead-1', tenantId, 'qualified', 'contacted');
+    expect(storage.bulkInsertTaskInstances).toHaveBeenCalledTimes(1);
+    const rows = (storage.bulkInsertTaskInstances as any).mock.calls[0][0];
+    expect(rows[0].leadId).toBe('lead-1');
+    expect(rows[0].estimateId).toBeNull();
+  });
+});
+
+describe('onEstimateStatusChanged', () => {
+  const estimateCadence = {
+    id: 'p-est', contractorId: tenantId, name: 'Approved estimates', active: true,
+    triggerType: 'estimate_status_changed', targetStatus: 'approved', entityType: 'estimate',
+  } as any;
+  const estimateSteps = [
+    { id: 'es1', dayOffset: 1, actionType: 'call', mode: 'manual' },
+    { id: 'es2', dayOffset: 3, actionType: 'email', mode: 'auto', messageTemplate: 'Thanks!' },
+  ] as any[];
+
+  beforeEach(() => {
+    (storage.listCadences as any).mockResolvedValue([estimateCadence]);
+    (storage.getSalesProcessSteps as any).mockResolvedValue(estimateSteps);
+    (storage.getEstimate as any).mockResolvedValue({
+      id: 'est-1', contractorId: tenantId, status: 'approved', contactId: 'c1',
+    });
+    (storage.countTaskInstancesForEntity as any).mockResolvedValue(0);
+    (storage.bulkInsertTaskInstances as any).mockImplementation((rows: any[]) =>
+      Promise.resolve(rows.map((r, i) => ({ id: `i${i}`, ...r }))),
+    );
+  });
+
+  it('enrolls the estimate when status matches an active cadence', async () => {
+    await onEstimateStatusChanged('est-1', tenantId, 'approved', 'sent');
+    expect(storage.bulkInsertTaskInstances).toHaveBeenCalledTimes(1);
+    const rows = (storage.bulkInsertTaskInstances as any).mock.calls[0][0];
+    expect(rows).toHaveLength(2);
+    expect(rows[0].estimateId).toBe('est-1');
+    expect(rows[0].leadId).toBeNull();
+  });
+
+  it('is a no-op when the new status does not match any cadence target', async () => {
+    await onEstimateStatusChanged('est-1', tenantId, 'in_progress', 'sent');
+    expect(storage.bulkInsertTaskInstances).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when status did not actually change', async () => {
+    await onEstimateStatusChanged('est-1', tenantId, 'approved', 'approved');
+    expect(storage.bulkInsertTaskInstances).not.toHaveBeenCalled();
+    expect(storage.getEstimate).not.toHaveBeenCalled();
+  });
+
+  it('refuses to enroll a terminal estimate', async () => {
+    (storage.getEstimate as any).mockResolvedValue({
+      id: 'est-1', contractorId: tenantId, status: 'rejected', contactId: 'c1',
+    });
+    (storage.listCadences as any).mockResolvedValue([
+      { ...estimateCadence, targetStatus: 'rejected' },
+    ]);
+    await onEstimateStatusChanged('est-1', tenantId, 'rejected', 'in_progress');
+    expect(storage.bulkInsertTaskInstances).not.toHaveBeenCalled();
+  });
+
+  it('suppresses duplicate enrollment when instances already exist for this cadence/estimate', async () => {
+    (storage.countTaskInstancesForEntity as any).mockResolvedValue(2);
+    await onEstimateStatusChanged('est-1', tenantId, 'approved', 'sent');
+    expect(storage.bulkInsertTaskInstances).not.toHaveBeenCalled();
   });
 });
 

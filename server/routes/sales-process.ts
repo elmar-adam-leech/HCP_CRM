@@ -3,8 +3,9 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { requireManagerOrAdmin, type AuthedRequest } from "../auth-service";
 import { asyncHandler } from "../utils/async-handler";
-import { backfillOpenLeads } from "../services/sales-process";
+import { backfillOpenLeads, backfillForCadence } from "../services/sales-process";
 import { runDueAutoTasksOnce } from "../services/sales-process-cron";
+import { createCadenceSchema, entityTypeForTrigger, type SalesProcessTriggerType } from "@shared/schema";
 
 const stepInputSchema = z.object({
   // dayOffset is "days since lead created"; per spec it must be a positive
@@ -60,9 +61,125 @@ const upsertProcessSchema = z.object({
 
 export function registerSalesProcessRoutes(app: Express): void {
   // GET — anyone in the tenant can read the cadence; managers edit.
+  // BACK-COMPAT: returns the canonical `lead_created` cadence + steps.
   app.get("/api/sales-process", asyncHandler(async (req: AuthedRequest, res: Response) => {
     const data = await storage.getSalesProcessWithSteps(req.user.contractorId);
     res.json(data);
+  }));
+
+  // List every cadence configured for the tenant.
+  app.get("/api/sales-process/cadences", asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const cadences = await storage.listCadences(req.user.contractorId);
+    res.json(cadences);
+  }));
+
+  // Create a new cadence. The discriminated schema enforces that `lead_created`
+  // never carries a target_status and that *_status_changed always does.
+  app.post("/api/sales-process/cadences", requireManagerOrAdmin, asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const parsed = createCadenceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid cadence', details: parsed.error.flatten() });
+      return;
+    }
+    const trigger = parsed.data.triggerType as SalesProcessTriggerType;
+    const targetStatus = trigger === 'lead_created' ? null : (parsed.data as { targetStatus: string }).targetStatus;
+    const entityType = entityTypeForTrigger(trigger);
+    const defaultName = trigger === 'lead_created'
+      ? 'New leads'
+      : trigger === 'lead_status_changed'
+        ? `Lead status → ${targetStatus}`
+        : `Estimate status → ${targetStatus}`;
+    try {
+      const cadence = await storage.createCadence({
+        contractorId: req.user.contractorId,
+        name: parsed.data.name?.trim() || defaultName,
+        triggerType: trigger,
+        targetStatus,
+        entityType,
+        active: parsed.data.active ?? false,
+      });
+      res.status(201).json(cadence);
+    } catch (err: unknown) {
+      // Unique-violation on (contractor_id, trigger_type, COALESCE(target_status, '')) → 409.
+      const code = (err as { code?: string }).code;
+      if (code === '23505') {
+        res.status(409).json({ error: 'A cadence already exists for that trigger.' });
+        return;
+      }
+      throw err;
+    }
+  }));
+
+  app.get("/api/sales-process/cadences/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const data = await storage.getCadenceWithSteps(req.params.id, req.user.contractorId);
+    if (!data) {
+      res.status(404).json({ error: 'Cadence not found' });
+      return;
+    }
+    res.json(data);
+  }));
+
+  app.put("/api/sales-process/cadences/:id", requireManagerOrAdmin, asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const parsed = upsertProcessSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid cadence', details: parsed.error.flatten() });
+      return;
+    }
+    const normalizedSteps = parsed.data.steps.map((s, i) => ({ ...s, displayOrder: i }));
+    const result = await storage.upsertCadence(req.params.id, req.user.contractorId, {
+      name: parsed.data.name,
+      active: parsed.data.active,
+      steps: normalizedSteps,
+    });
+    if (!result) {
+      res.status(404).json({ error: 'Cadence not found' });
+      return;
+    }
+    const becameNonEmpty = !result.wasActivated
+      && result.process.active
+      && result.previousStepCount === 0
+      && result.steps.length > 0;
+    let backfill = { leadsTouched: 0, tasksCreated: 0 };
+    let backfillStarted = false;
+    if (result.wasActivated || becameNonEmpty) {
+      // Same scaling contract as the legacy endpoint: small tenants get a
+      // synchronous backfill so the toast shows real numbers; larger tenants
+      // detach to avoid blocking the request.
+      const tenantId = req.user.contractorId;
+      // Entity-aware sizing: estimate cadences should not be sized by lead
+      // count and vice versa. The "open" set for a cadence is exactly what
+      // the matching backfill helper would touch.
+      const openCount = result.process.entityType === 'estimate' && result.process.targetStatus
+        ? await storage.countOpenEstimatesForBackfill(tenantId, result.process.targetStatus)
+        : await storage.countOpenLeadsForBackfill(tenantId);
+      const SYNC_THRESHOLD = 100;
+      if (openCount <= SYNC_THRESHOLD) {
+        backfill = await backfillForCadence(result.process.id, tenantId);
+      } else {
+        backfillStarted = true;
+        void backfillForCadence(result.process.id, tenantId).catch((err) => {
+          console.error(`[SalesProcess] async backfill failed tenantId=${tenantId} cadenceId=${result.process.id}`, err);
+        });
+      }
+    }
+    res.json({
+      process: result.process,
+      steps: result.steps,
+      removedStepIds: result.removedStepIds,
+      changedStepIds: result.changedStepIds,
+      wasActivated: result.wasActivated,
+      backfill,
+      backfillStarted,
+    });
+  }));
+
+  app.delete("/api/sales-process/cadences/:id", requireManagerOrAdmin, asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const ok = await storage.deleteCadence(req.params.id, req.user.contractorId);
+    if (!ok) {
+      res.status(404).json({ error: 'Cadence not found' });
+      return;
+    }
+    res.json({ ok: true });
   }));
 
   // PUT — replace the whole process + steps. Returns backfill counts when
@@ -135,6 +252,7 @@ export function registerSalesProcessRoutes(app: Express): void {
   // round trip.
   app.get("/api/sales-process/tasks", asyncHandler(async (req: AuthedRequest, res: Response) => {
     const leadId = typeof req.query.leadId === 'string' ? req.query.leadId : undefined;
+    const estimateId = typeof req.query.estimateId === 'string' ? req.query.estimateId : undefined;
     const contactId = typeof req.query.contactId === 'string' ? req.query.contactId : undefined;
     const from = typeof req.query.from === 'string' ? new Date(req.query.from) : undefined;
     const to = typeof req.query.to === 'string' ? new Date(req.query.to) : undefined;
@@ -152,6 +270,18 @@ export function registerSalesProcessRoutes(app: Express): void {
         .filter((s): s is Status => (validStatuses as readonly string[]).includes(s));
       if (parsed.length > 0) statuses = parsed;
     }
+    // ?withEstimate=1 returns the estimate-anchored equivalent of withLead=1.
+    if (req.query.withEstimate === '1' || req.query.withEstimate === 'true') {
+      const tasks = await storage.listEstimateTaskInstancesWithSummary(req.user.contractorId, {
+        estimateId,
+        contactId,
+        statuses,
+        from: fromDate,
+        to: toDate,
+      });
+      res.json(tasks);
+      return;
+    }
     if (req.query.withLead === '1' || req.query.withLead === 'true') {
       const tasks = await storage.listTaskInstancesWithLeadSummary(req.user.contractorId, {
         leadId,
@@ -166,6 +296,7 @@ export function registerSalesProcessRoutes(app: Express): void {
     const tasks = await storage.listTaskInstances(req.user.contractorId, {
       status: statuses && statuses.length === 1 ? statuses[0] : undefined,
       leadId,
+      estimateId,
       from: fromDate,
       to: toDate,
     });

@@ -1,17 +1,20 @@
 import {
   contacts,
   leads,
+  estimates,
   salesProcesses,
   salesProcessSteps,
   salesProcessTaskInstances,
   type Lead,
+  type Estimate,
   type SalesProcess,
   type SalesProcessStep,
   type SalesProcessTaskInstance,
   type InsertSalesProcessTaskInstance,
 } from "@shared/schema";
+import { leadStatusEnum, estimateStatusEnum } from "@shared/schema/enums";
 import { db } from "../db";
-import { and, asc, eq, gte, inArray, isNull, lte, notInArray, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, isNotNull, lte, notInArray, sql } from "drizzle-orm";
 
 export interface TaskInstanceWithLead extends SalesProcessTaskInstance {
   lead: {
@@ -26,18 +29,106 @@ export interface TaskInstanceWithLead extends SalesProcessTaskInstance {
   };
 }
 
+export interface TaskInstanceWithEstimate extends SalesProcessTaskInstance {
+  estimate: {
+    id: string;
+    contactId: string;
+    status: string;
+    title: string | null;
+    estimateNumber: string | null;
+    name: string;
+    email: string | null;
+    phone: string | null;
+  };
+}
+
+type LeadStatus = (typeof leadStatusEnum.enumValues)[number];
+type EstimateStatus = (typeof estimateStatusEnum.enumValues)[number];
+const DEFAULT_LEAD_TERMINAL_STATUSES: LeadStatus[] = ['converted', 'disqualified', 'lost'];
+
+/**
+ * Returns the canonical "lead_created" cadence for the tenant, creating it
+ * if missing. Back-compat shim for the legacy single-cadence API and UI
+ * paths that haven't been updated yet (Follow-ups page, lead detail).
+ */
 async function getOrCreateSalesProcess(contractorId: string): Promise<SalesProcess> {
   const existing = await db.select().from(salesProcesses)
-    .where(eq(salesProcesses.contractorId, contractorId))
+    .where(and(
+      eq(salesProcesses.contractorId, contractorId),
+      eq(salesProcesses.triggerType, 'lead_created'),
+      isNull(salesProcesses.archivedAt),
+    ))
     .limit(1);
   if (existing[0]) return existing[0];
-  const created = await db.insert(salesProcesses).values({ contractorId }).returning();
+  const created = await db.insert(salesProcesses).values({
+    contractorId,
+    triggerType: 'lead_created',
+    entityType: 'lead',
+    targetStatus: null,
+    name: 'New leads',
+  }).returning();
   return created[0];
 }
 
+async function listCadences(contractorId: string): Promise<SalesProcess[]> {
+  return db.select().from(salesProcesses)
+    .where(and(
+      eq(salesProcesses.contractorId, contractorId),
+      isNull(salesProcesses.archivedAt),
+    ))
+    .orderBy(asc(salesProcesses.createdAt));
+}
+
+async function getCadenceById(id: string, contractorId: string): Promise<SalesProcess | undefined> {
+  const r = await db.select().from(salesProcesses)
+    .where(and(
+      eq(salesProcesses.id, id),
+      eq(salesProcesses.contractorId, contractorId),
+      isNull(salesProcesses.archivedAt),
+    ))
+    .limit(1);
+  return r[0];
+}
+
+async function createCadence(input: {
+  contractorId: string;
+  name: string;
+  triggerType: string;
+  targetStatus: string | null;
+  entityType: string;
+  active?: boolean;
+}): Promise<SalesProcess> {
+  const created = await db.insert(salesProcesses).values({
+    contractorId: input.contractorId,
+    name: input.name,
+    triggerType: input.triggerType,
+    targetStatus: input.targetStatus,
+    entityType: input.entityType,
+    active: input.active ?? false,
+  }).returning();
+  return created[0];
+}
+
+async function deleteCadence(id: string, contractorId: string): Promise<boolean> {
+  // Soft-delete. Hard-deleting the cadence would cascade to steps, but
+  // sales_process_task_instances.step_id is ON DELETE RESTRICT, so any
+  // historical task would block the delete with an FK violation. Marking
+  // the cadence archived (and forcing active=false so the cron stops
+  // creating new instances) preserves history and lets the user re-create
+  // a cadence with the same trigger/target_status pair (the unique index
+  // is partial on archived_at IS NULL).
+  const result = await db.update(salesProcesses)
+    .set({ archivedAt: new Date(), active: false, updatedAt: new Date() })
+    .where(and(
+      eq(salesProcesses.id, id),
+      eq(salesProcesses.contractorId, contractorId),
+      isNull(salesProcesses.archivedAt),
+    ))
+    .returning();
+  return result.length > 0;
+}
+
 async function getSalesProcessSteps(salesProcessId: string): Promise<SalesProcessStep[]> {
-  // Soft-deleted (archived) steps are filtered out everywhere — they only
-  // remain in the DB to satisfy the FK from historical task instances.
   return db.select().from(salesProcessSteps)
     .where(and(
       eq(salesProcessSteps.salesProcessId, salesProcessId),
@@ -51,8 +142,19 @@ export interface SalesProcessWithSteps {
   steps: SalesProcessStep[];
 }
 
+/**
+ * BACK-COMPAT: returns the legacy "lead_created" cadence + steps for the
+ * tenant. New multi-cadence callers should use `getCadenceWithSteps(id)`.
+ */
 async function getSalesProcessWithSteps(contractorId: string): Promise<SalesProcessWithSteps> {
   const process = await getOrCreateSalesProcess(contractorId);
+  const steps = await getSalesProcessSteps(process.id);
+  return { process, steps };
+}
+
+async function getCadenceWithSteps(id: string, contractorId: string): Promise<SalesProcessWithSteps | undefined> {
+  const process = await getCadenceById(id, contractorId);
+  if (!process) return undefined;
   const steps = await getSalesProcessSteps(process.id);
   return { process, steps };
 }
@@ -68,62 +170,45 @@ interface UpsertStepInput {
 interface UpsertProcessResult {
   process: SalesProcess;
   steps: SalesProcessStep[];
-  /** Steps removed during this PUT — caller should mark their pending tasks skipped. */
   removedStepIds: string[];
-  /** Steps that were added or whose dayOffset/actionType/mode meaningfully changed; caller may re-materialize for open leads. */
   changedStepIds: string[];
   wasActivated: boolean;
-  /**
-   * Number of LIVE (non-archived) steps the process had before this upsert.
-   * Lets the route layer detect the "first non-empty step list on an
-   * already-active process" backfill trigger.
-   */
   previousStepCount: number;
 }
 
-async function upsertSalesProcess(
+/**
+ * Replace a cadence's steps + name/active flag. Operates on a specific
+ * cadence id — multi-cadence aware.
+ */
+async function upsertCadence(
+  cadenceId: string,
   contractorId: string,
   input: { name?: string; active: boolean; steps: UpsertStepInput[] },
-): Promise<UpsertProcessResult> {
+): Promise<UpsertProcessResult | undefined> {
   return db.transaction(async (tx) => {
     const existingRow = await tx.select().from(salesProcesses)
-      .where(eq(salesProcesses.contractorId, contractorId))
+      .where(and(eq(salesProcesses.id, cadenceId), eq(salesProcesses.contractorId, contractorId)))
       .limit(1);
     const existing = existingRow[0];
+    if (!existing) return undefined;
 
-    let process: SalesProcess;
-    if (existing) {
-      const updated = await tx.update(salesProcesses)
-        .set({
-          name: input.name ?? existing.name,
-          active: input.active,
-          updatedAt: new Date(),
-        })
-        .where(eq(salesProcesses.id, existing.id))
-        .returning();
-      process = updated[0];
-    } else {
-      const created = await tx.insert(salesProcesses).values({
-        contractorId,
-        name: input.name ?? "Default sales process",
+    const updated = await tx.update(salesProcesses)
+      .set({
+        name: input.name ?? existing.name,
         active: input.active,
-      }).returning();
-      process = created[0];
-    }
+        updatedAt: new Date(),
+      })
+      .where(eq(salesProcesses.id, existing.id))
+      .returning();
+    const process = updated[0];
+    const wasActivated = !existing.active && input.active;
 
-    const wasActivated = (!existing || !existing.active) && input.active;
-
-    // Only consider non-archived (live) steps as candidates for matching.
-    // Archived steps are deliberately ignored so the same (day, action) can
-    // be re-added; they remain in the DB only to satisfy historical FK refs.
     const existingSteps = await tx.select().from(salesProcessSteps)
       .where(and(
         eq(salesProcessSteps.salesProcessId, process.id),
         isNull(salesProcessSteps.archivedAt),
       ));
 
-    // Match existing steps to incoming steps by (dayOffset, actionType) — that
-    // is the natural identity of a step. Anything left over is removed.
     const incomingKeys = new Set(input.steps.map(s => `${s.dayOffset}|${s.actionType}`));
     const existingByKey = new Map(existingSteps.map(s => [`${s.dayOffset}|${s.actionType}`, s]));
 
@@ -143,18 +228,14 @@ async function upsertSalesProcess(
       if (ex) {
         const modeChanged = ex.mode !== s.mode;
         const tplChanged = (ex.messageTemplate ?? null) !== (s.messageTemplate ?? null);
-        const updated = await tx.update(salesProcessSteps).set({
+        const updatedRow = await tx.update(salesProcessSteps).set({
           mode: s.mode,
           messageTemplate: s.messageTemplate ?? null,
           displayOrder: s.displayOrder,
           updatedAt: new Date(),
         }).where(eq(salesProcessSteps.id, ex.id)).returning();
-        finalSteps.push(updated[0]);
+        finalSteps.push(updatedRow[0]);
         if (modeChanged || tplChanged) changedStepIds.push(ex.id);
-        // When a step's mode flips (e.g. auto→manual after the manager
-        // realizes auto-sends are misfiring), propagate to all PENDING
-        // instances. Otherwise the cron's claim filter (mode='auto') would
-        // continue dispatching outbound messages from the old config.
         if (modeChanged) {
           await tx.update(salesProcessTaskInstances).set({ mode: s.mode })
             .where(and(
@@ -176,11 +257,6 @@ async function upsertSalesProcess(
       }
     }
 
-    // Removed steps: skip their pending instances and SOFT-DELETE the step
-    // row (set archived_at). We don't hard-delete because historical task
-    // instances FK-restrict-reference the row; the partial unique index on
-    // (process, day, action) WHERE archived_at IS NULL keeps the
-    // (day, action) slot free so the manager can re-add the same step.
     if (removedStepIds.length > 0) {
       const skipped = await tx.update(salesProcessTaskInstances).set({
         status: 'skipped',
@@ -190,10 +266,8 @@ async function upsertSalesProcess(
         inArray(salesProcessTaskInstances.stepId, removedStepIds),
         eq(salesProcessTaskInstances.status, 'pending'),
       )).returning();
-      // Per-instance structured log for the bulk step-deletion skip path
-      // (observability spec: every lifecycle transition gets a single line).
       for (const inst of skipped) {
-        console.log(`[SalesProcess] sales_process instance_skipped tenantId=${inst.contractorId} leadId=${inst.leadId} stepId=${inst.stepId} instanceId=${inst.id} reason=step_deleted completedBy=system`);
+        console.log(`[SalesProcess] sales_process instance_skipped tenantId=${inst.contractorId} entity=${inst.leadId ? `lead:${inst.leadId}` : `estimate:${inst.estimateId}`} stepId=${inst.stepId} instanceId=${inst.id} reason=step_deleted completedBy=system`);
       }
       await tx.update(salesProcessSteps).set({
         archivedAt: new Date(),
@@ -207,12 +281,23 @@ async function upsertSalesProcess(
       removedStepIds,
       changedStepIds,
       wasActivated,
-      // Number of LIVE (non-archived) steps the process had BEFORE this
-      // upsert. Lets the route layer detect the "first non-empty step list
-      // on an already-active process" backfill trigger.
       previousStepCount: existingSteps.length,
     };
   });
+}
+
+/**
+ * BACK-COMPAT shim: replaces steps for the tenant's `lead_created` cadence.
+ * Used by the legacy PUT /api/sales-process route.
+ */
+async function upsertSalesProcess(
+  contractorId: string,
+  input: { name?: string; active: boolean; steps: UpsertStepInput[] },
+): Promise<UpsertProcessResult> {
+  const process = await getOrCreateSalesProcess(contractorId);
+  const result = await upsertCadence(process.id, contractorId, input);
+  if (!result) throw new Error('Failed to upsert default sales process');
+  return result;
 }
 
 async function listTaskInstances(
@@ -221,11 +306,13 @@ async function listTaskInstances(
     from?: Date;
     to?: Date;
     leadId?: string;
+    estimateId?: string;
     status?: 'pending' | 'completed' | 'skipped' | 'failed';
   } = {},
 ): Promise<SalesProcessTaskInstance[]> {
   const conds = [eq(salesProcessTaskInstances.contractorId, contractorId)];
   if (options.leadId) conds.push(eq(salesProcessTaskInstances.leadId, options.leadId));
+  if (options.estimateId) conds.push(eq(salesProcessTaskInstances.estimateId, options.estimateId));
   if (options.status) conds.push(eq(salesProcessTaskInstances.status, options.status));
   if (options.from) conds.push(gte(salesProcessTaskInstances.dueAt, options.from));
   if (options.to) conds.push(lte(salesProcessTaskInstances.dueAt, options.to));
@@ -244,7 +331,14 @@ async function listTaskInstancesWithLeadSummary(
     statuses?: Array<'pending' | 'completed' | 'skipped' | 'failed'>;
   } = {},
 ): Promise<TaskInstanceWithLead[]> {
-  const conds = [eq(salesProcessTaskInstances.contractorId, contractorId)];
+  // This back-compat join is lead-only by construction (innerJoin on
+  // leads). Estimate-based tasks are filtered out — the legacy Follow-ups
+  // page consumes this and only renders lead rows. New surfaces should
+  // use listTaskInstances and join in the entity themselves.
+  const conds = [
+    eq(salesProcessTaskInstances.contractorId, contractorId),
+    isNotNull(salesProcessTaskInstances.leadId),
+  ];
   if (options.leadId) conds.push(eq(salesProcessTaskInstances.leadId, options.leadId));
   if (options.contactId) conds.push(eq(leads.contactId, options.contactId));
   if (options.statuses && options.statuses.length > 0) {
@@ -278,10 +372,58 @@ async function listTaskInstancesWithLeadSummary(
   }));
 }
 
-async function countCompletedTasksSince(
+async function listEstimateTaskInstancesWithSummary(
   contractorId: string,
-  since: Date,
-): Promise<number> {
+  options: {
+    from?: Date;
+    to?: Date;
+    estimateId?: string;
+    contactId?: string;
+    statuses?: Array<'pending' | 'completed' | 'skipped' | 'failed'>;
+  } = {},
+): Promise<TaskInstanceWithEstimate[]> {
+  // Symmetrical to listTaskInstancesWithLeadSummary, but joining estimates +
+  // contacts so the Follow-ups view can render estimate-anchored manual
+  // tasks (e.g. "follow up after Approved estimate") with the same
+  // affordances — manual completion, recipient context, due-date grouping.
+  const conds = [
+    eq(salesProcessTaskInstances.contractorId, contractorId),
+    isNotNull(salesProcessTaskInstances.estimateId),
+  ];
+  if (options.estimateId) conds.push(eq(salesProcessTaskInstances.estimateId, options.estimateId));
+  if (options.contactId) conds.push(eq(estimates.contactId, options.contactId));
+  if (options.statuses && options.statuses.length > 0) {
+    conds.push(inArray(salesProcessTaskInstances.status, options.statuses));
+  }
+  if (options.from) conds.push(gte(salesProcessTaskInstances.dueAt, options.from));
+  if (options.to) conds.push(lte(salesProcessTaskInstances.dueAt, options.to));
+  const rows = await db
+    .select({
+      task: salesProcessTaskInstances,
+      estimate: estimates,
+      contact: contacts,
+    })
+    .from(salesProcessTaskInstances)
+    .innerJoin(estimates, eq(estimates.id, salesProcessTaskInstances.estimateId))
+    .leftJoin(contacts, eq(contacts.id, estimates.contactId))
+    .where(and(...conds))
+    .orderBy(asc(salesProcessTaskInstances.dueAt));
+  return rows.map((r) => ({
+    ...r.task,
+    estimate: {
+      id: r.estimate.id,
+      contactId: r.estimate.contactId,
+      status: r.estimate.status,
+      title: r.estimate.title ?? null,
+      estimateNumber: (r.estimate as { estimateNumber?: string | null }).estimateNumber ?? null,
+      name: r.contact?.name ?? '',
+      email: r.contact?.emails?.[0] ?? null,
+      phone: r.contact?.phones?.[0] ?? null,
+    },
+  }));
+}
+
+async function countCompletedTasksSince(contractorId: string, since: Date): Promise<number> {
   const r = await db
     .select({ c: sql<number>`count(*)::int` })
     .from(salesProcessTaskInstances)
@@ -293,11 +435,6 @@ async function countCompletedTasksSince(
   return r[0]?.c ?? 0;
 }
 
-/**
- * Move a failed task back to pending so the cron will retry it on the next
- * tick. Resets attemptCount and clears failureReason. Only operates on
- * `failed` rows — no-op if the task has been completed/skipped/etc.
- */
 async function retryFailedTask(
   id: string,
   contractorId: string,
@@ -315,7 +452,7 @@ async function retryFailedTask(
     eq(salesProcessTaskInstances.status, 'failed'),
   )).returning();
   if (r[0]) {
-    console.log(`[SalesProcess] sales_process instance_retry_requested tenantId=${r[0].contractorId} leadId=${r[0].leadId} stepId=${r[0].stepId} instanceId=${r[0].id}`);
+    console.log(`[SalesProcess] sales_process instance_retry_requested tenantId=${r[0].contractorId} entity=${r[0].leadId ? `lead:${r[0].leadId}` : `estimate:${r[0].estimateId}`} stepId=${r[0].stepId} instanceId=${r[0].id}`);
   }
   return r[0];
 }
@@ -330,12 +467,6 @@ async function getTaskInstance(id: string, contractorId: string): Promise<SalesP
   return r[0];
 }
 
-/**
- * Insert task instance rows. Accepts an optional `executor` (a Drizzle
- * transaction handle) so the caller can stitch this insert into a larger
- * transaction — used by createLead so lead-insert + task-materialization
- * commit/rollback together.
- */
 async function bulkInsertTaskInstances(
   rows: InsertSalesProcessTaskInstance[],
   executor: DbExecutor = db,
@@ -344,40 +475,110 @@ async function bulkInsertTaskInstances(
   return executor.insert(salesProcessTaskInstances).values(rows).returning();
 }
 
-// `db` itself OR a Drizzle transaction handle obtained via db.transaction(tx => ...).
-// Both expose the same query API (insert/select/update); the union lets storage
-// helpers participate in callers' transactions when supplied with `tx`.
 type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-/**
- * Open leads = not in a terminal status and not archived. Used by the
- * backfill pass when a manager activates the cadence so existing in-flight
- * leads pick it up.
- */
-async function getOpenLeadsForBackfill(contractorId: string): Promise<Lead[]> {
-  return db.select().from(leads).where(and(
+async function getOpenLeadsForBackfill(contractorId: string, status?: string): Promise<Lead[]> {
+  const conds = [
     eq(leads.contractorId, contractorId),
     eq(leads.archived, false),
-    notInArray(leads.status, ['converted', 'disqualified', 'lost']),
+    notInArray(leads.status, DEFAULT_LEAD_TERMINAL_STATUSES),
+  ];
+  if (status) {
+    if (!(leadStatusEnum.enumValues as readonly string[]).includes(status)) {
+      return [];
+    }
+    conds.push(eq(leads.status, status as LeadStatus));
+  }
+  return db.select().from(leads).where(and(...conds));
+}
+
+// Mirrors TERMINAL_ESTIMATE_STATUSES in the service layer. We exclude these
+// even when the cadence's targetStatus matches one (e.g. an over-eager
+// "estimate rejected" cadence) — terminal estimates by definition have no
+// further engagement to schedule against, and including them would be both
+// wasteful (insert + immediate skip via the cron's terminal short-circuit)
+// and noisy on the activation toast.
+const ESTIMATE_TERMINAL_STATUSES: readonly EstimateStatus[] = ['rejected'];
+
+async function getEstimatesByContact(contactId: string, contractorId: string): Promise<Estimate[]> {
+  return db.select().from(estimates).where(and(
+    eq(estimates.contactId, contactId),
+    eq(estimates.contractorId, contractorId),
   ));
 }
 
-/**
- * Cheap COUNT(*) used by the activation route to decide whether to run
- * backfill synchronously (small tenants) or detach into the background
- * (large tenants). Avoids materializing the full Lead[] just to size it.
- */
+async function getOpenEstimatesForBackfill(contractorId: string, status: string): Promise<Estimate[]> {
+  if (!(estimateStatusEnum.enumValues as readonly string[]).includes(status)) return [];
+  const typed = status as EstimateStatus;
+  // Defensive: if the cadence's target status is itself terminal, never
+  // backfill (the service layer also short-circuits, but this keeps the
+  // query honest for direct callers).
+  if (ESTIMATE_TERMINAL_STATUSES.includes(typed)) return [];
+  return db.select().from(estimates).where(and(
+    eq(estimates.contractorId, contractorId),
+    eq(estimates.status, typed),
+  ));
+}
+
+async function countOpenEstimatesForBackfill(contractorId: string, status: string): Promise<number> {
+  if (!(estimateStatusEnum.enumValues as readonly string[]).includes(status)) return 0;
+  const typed = status as EstimateStatus;
+  if (ESTIMATE_TERMINAL_STATUSES.includes(typed)) return 0;
+  const r = await db.select({ c: sql<number>`count(*)::int` })
+    .from(estimates)
+    .where(and(
+      eq(estimates.contractorId, contractorId),
+      eq(estimates.status, typed),
+    ));
+  return r[0]?.c ?? 0;
+}
+
 async function countOpenLeadsForBackfill(contractorId: string): Promise<number> {
   const r = await db.select({ c: sql<number>`count(*)::int` })
     .from(leads)
     .where(and(
       eq(leads.contractorId, contractorId),
       eq(leads.archived, false),
-      notInArray(leads.status, ['converted', 'disqualified', 'lost']),
+      notInArray(leads.status, DEFAULT_LEAD_TERMINAL_STATUSES),
     ));
   return r[0]?.c ?? 0;
 }
 
+/**
+ * Count task instances already created for a given (cadence, entity)
+ * pair. Used to suppress duplicate enrollment per spec (one cadence enrolls
+ * a given entity at most once unless explicitly reset).
+ */
+async function countTaskInstancesForEntity(
+  processId: string,
+  entityType: 'lead' | 'estimate',
+  entityId: string,
+  contractorId: string,
+): Promise<number> {
+  const entityCond = entityType === 'lead'
+    ? eq(salesProcessTaskInstances.leadId, entityId)
+    : eq(salesProcessTaskInstances.estimateId, entityId);
+  // Match on stepId IN (steps of this cadence) — task instances don't carry
+  // processId directly so we join through steps.
+  const stepRows = await db.select({ id: salesProcessSteps.id })
+    .from(salesProcessSteps)
+    .where(eq(salesProcessSteps.salesProcessId, processId));
+  if (stepRows.length === 0) return 0;
+  const stepIds = stepRows.map(s => s.id);
+  const r = await db.select({ c: sql<number>`count(*)::int` })
+    .from(salesProcessTaskInstances)
+    .where(and(
+      entityCond,
+      eq(salesProcessTaskInstances.contractorId, contractorId),
+      inArray(salesProcessTaskInstances.stepId, stepIds),
+    ));
+  return r[0]?.c ?? 0;
+}
+
+/**
+ * BACK-COMPAT: total task count for a lead across ALL cadences. Used by
+ * the legacy createLead path and the test suite.
+ */
 async function countTaskInstancesForLead(leadId: string, contractorId: string): Promise<number> {
   const r = await db.select({ c: sql<number>`count(*)::int` })
     .from(salesProcessTaskInstances)
@@ -394,7 +595,6 @@ async function markTaskCompleted(
   reason: 'manual' | 'activity_logged' | 'auto_sent',
   completedBy?: string | null,
 ): Promise<SalesProcessTaskInstance | undefined> {
-  // Atomic flip: only succeeds when status is still pending.
   const r = await db.update(salesProcessTaskInstances).set({
     status: 'completed',
     completionReason: reason,
@@ -406,8 +606,7 @@ async function markTaskCompleted(
     eq(salesProcessTaskInstances.status, 'pending'),
   )).returning();
   if (r[0]) {
-    // Single-line structured log per task #506 observability requirement.
-    console.log(`[SalesProcess] sales_process instance_completed tenantId=${r[0].contractorId} leadId=${r[0].leadId} stepId=${r[0].stepId} instanceId=${r[0].id} reason=${reason} completedBy=${completedBy ?? 'system'}`);
+    console.log(`[SalesProcess] sales_process instance_completed tenantId=${r[0].contractorId} entity=${r[0].leadId ? `lead:${r[0].leadId}` : `estimate:${r[0].estimateId}`} stepId=${r[0].stepId} instanceId=${r[0].id} reason=${reason} completedBy=${completedBy ?? 'system'}`);
   }
   return r[0];
 }
@@ -429,7 +628,7 @@ async function markTaskSkipped(
     eq(salesProcessTaskInstances.status, 'pending'),
   )).returning();
   if (r[0]) {
-    console.log(`[SalesProcess] sales_process instance_skipped tenantId=${r[0].contractorId} leadId=${r[0].leadId} stepId=${r[0].stepId} instanceId=${r[0].id} reason=${reason} completedBy=${completedBy ?? 'system'}`);
+    console.log(`[SalesProcess] sales_process instance_skipped tenantId=${r[0].contractorId} entity=${r[0].leadId ? `lead:${r[0].leadId}` : `estimate:${r[0].estimateId}`} stepId=${r[0].stepId} instanceId=${r[0].id} reason=${reason} completedBy=${completedBy ?? 'system'}`);
   }
   return r[0];
 }
@@ -439,11 +638,6 @@ async function markTaskFailed(
   contractorId: string,
   failureReason: string,
 ): Promise<SalesProcessTaskInstance | undefined> {
-  // Guard `status='pending'` so a concurrent manual complete/skip racing
-  // with the cron's failure path can't be overwritten — terminal states
-  // are immutable. Without this guard, a rep clicking "Complete" at the
-  // exact moment the cron's send permanently fails could see their
-  // completed task silently flipped to 'failed'.
   const r = await db.update(salesProcessTaskInstances).set({
     status: 'failed',
     failureReason,
@@ -454,7 +648,7 @@ async function markTaskFailed(
     eq(salesProcessTaskInstances.status, 'pending'),
   )).returning();
   if (r[0]) {
-    console.log(`[SalesProcess] sales_process instance_failed tenantId=${r[0].contractorId} leadId=${r[0].leadId} stepId=${r[0].stepId} instanceId=${r[0].id} reason=${failureReason} attempts=${r[0].attemptCount}`);
+    console.log(`[SalesProcess] sales_process instance_failed tenantId=${r[0].contractorId} entity=${r[0].leadId ? `lead:${r[0].leadId}` : `estimate:${r[0].estimateId}`} stepId=${r[0].stepId} instanceId=${r[0].id} reason=${failureReason} attempts=${r[0].attemptCount}`);
   }
   return r[0];
 }
@@ -468,11 +662,6 @@ async function incrementAttemptCount(id: string, contractorId: string): Promise<
   ));
 }
 
-/**
- * Push a soft-failed task's dueAt forward by `delayMs` so the cron's next
- * tick won't immediately reclaim it. Implements exponential backoff between
- * retries (caller computes the delay).
- */
 async function rescheduleTaskForRetry(
   id: string,
   contractorId: string,
@@ -492,9 +681,6 @@ async function skipPendingTasksForLead(
   contractorId: string,
   reason: 'lead_status_changed' | 'step_deleted',
 ): Promise<number> {
-  // Use returning(*) so we can emit one structured log per skipped
-  // instance — required by the observability spec for bulk skip paths
-  // (lead status change → terminal, step deletion).
   const r = await db.update(salesProcessTaskInstances).set({
     status: 'skipped',
     completionReason: reason,
@@ -510,26 +696,11 @@ async function skipPendingTasksForLead(
   return r.length;
 }
 
-/**
- * Atomically claim up to `limit` due auto-mode pending instances for the
- * cron worker. Flips them to a transient state so a parallel tick cannot
- * pick up the same row. We keep them as `pending` but bump attemptCount in
- * a single UPDATE ... RETURNING — the cron then sends and finalizes.
- */
-/**
- * Atomically claim due auto tasks. When `contractorId` is provided the
- * claim is strictly tenant-scoped (used by the manager-triggered
- * /run-now endpoint to avoid dispatching another tenant's tasks). When
- * omitted, the unattended cron picks up due rows across all tenants.
- */
 async function claimDueAutoTasks(
   now: Date,
   limit: number,
   contractorId?: string,
 ): Promise<SalesProcessTaskInstance[]> {
-  // Postgres-specific: use a CTE to lock rows and bump attemptCount in one
-  // statement. No `FOR UPDATE SKIP LOCKED` ergonomics in drizzle yet, so we
-  // emit raw SQL.
   const tenantFilter = contractorId
     ? sql`AND contractor_id = ${contractorId}`
     : sql``;
@@ -558,15 +729,26 @@ export const salesProcessMethods = {
   getSalesProcessSteps,
   getSalesProcessWithSteps,
   upsertSalesProcess,
+  listCadences,
+  getCadenceById,
+  createCadence,
+  deleteCadence,
+  getCadenceWithSteps,
+  upsertCadence,
   listTaskInstances,
   listTaskInstancesWithLeadSummary,
+  listEstimateTaskInstancesWithSummary,
   countCompletedTasksSince,
   retryFailedTask,
   getTaskInstance,
   bulkInsertTaskInstances,
   getOpenLeadsForBackfill,
+  getOpenEstimatesForBackfill,
+  getEstimatesByContact,
   countOpenLeadsForBackfill,
+  countOpenEstimatesForBackfill,
   countTaskInstancesForLead,
+  countTaskInstancesForEntity,
   markTaskCompleted,
   markTaskSkipped,
   markTaskFailed,

@@ -26,6 +26,19 @@ export interface TaskInstanceWithLead extends SalesProcessTaskInstance {
   };
 }
 
+export interface TaskInstanceWithEstimate extends SalesProcessTaskInstance {
+  estimate: {
+    id: string;
+    contactId: string;
+    status: string;
+    title: string | null;
+    estimateNumber: string | null;
+    name: string;
+    email: string | null;
+    phone: string | null;
+  };
+}
+
 function startOfToday(): Date {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
@@ -151,6 +164,26 @@ export function SalesProcessFollowUpView({
       url.searchParams.set("to", toDate.toISOString());
       const res = await fetch(url.pathname + url.search, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch sales-process tasks");
+      return res.json();
+    },
+  });
+
+  // Estimate-anchored manual tasks (e.g. "follow up after Approved
+  // estimate"). Fetched in parallel with the lead-anchored query so the
+  // page renders both lists in one round-trip without re-running.
+  const { data: estimateTasks = [] } = useQuery<TaskInstanceWithEstimate[]>({
+    queryKey: [
+      "/api/sales-process/tasks",
+      { withEstimate: 1, status: "pending,failed", from: fromDate.toISOString(), to: toDate.toISOString() },
+    ],
+    queryFn: async () => {
+      const url = new URL("/api/sales-process/tasks", window.location.origin);
+      url.searchParams.set("withEstimate", "1");
+      url.searchParams.set("status", "pending,failed");
+      url.searchParams.set("from", fromDate.toISOString());
+      url.searchParams.set("to", toDate.toISOString());
+      const res = await fetch(url.pathname + url.search, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch sales-process estimate tasks");
       return res.json();
     },
   });
@@ -367,6 +400,63 @@ export function SalesProcessFollowUpView({
               ))}
             </div>
           )}
+        </section>
+      )}
+
+      {estimateTasks.length > 0 && (
+        <section className="space-y-2" data-testid="section-estimate-tasks">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold uppercase tracking-wide">Estimate follow-ups</h2>
+            <Badge variant="secondary" className="text-xs">{estimateTasks.length}</Badge>
+          </div>
+          <div className="space-y-2">
+            {estimateTasks.map((t) => {
+              const step = stepsById.get(t.stepId);
+              const Icon = actionIcon(t.actionType);
+              const dueLabel = new Date(t.dueAt).toLocaleDateString(undefined, {
+                month: "short", day: "numeric",
+              });
+              return (
+                <Card key={t.id} data-testid={`card-estimate-task-${t.id}`}>
+                  <CardContent className="p-3 flex items-center gap-3 flex-wrap">
+                    <Icon className="h-4 w-4 text-muted-foreground" />
+                    <div className="flex flex-col min-w-0">
+                      <button
+                        className="text-sm font-medium text-left hover:underline"
+                        onClick={() => onOpenLead(t.estimate.contactId)}
+                        data-testid={`button-open-contact-${t.id}`}
+                      >
+                        {t.estimate.name || "(no name)"}
+                      </button>
+                      <span className="text-xs text-muted-foreground">
+                        {t.estimate.estimateNumber
+                          ? `Estimate #${t.estimate.estimateNumber}`
+                          : (t.estimate.title ?? "Estimate")} · {t.estimate.status}
+                      </span>
+                    </div>
+                    <Badge variant="outline" className="text-xs ml-auto">
+                      {step ? `Day ${step.dayOffset} ${step.actionType}` : t.actionType}
+                    </Badge>
+                    <Badge variant="secondary" className="text-xs">{dueLabel}</Badge>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      data-testid={`button-complete-estimate-task-${t.id}`}
+                      onClick={async () => {
+                        await fetch(`/api/sales-process/tasks/${t.id}/complete`, {
+                          method: "POST",
+                          credentials: "include",
+                        });
+                        queryClient.invalidateQueries({ queryKey: ["/api/sales-process/tasks"] });
+                      }}
+                    >
+                      Mark complete
+                    </Button>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
         </section>
       )}
 

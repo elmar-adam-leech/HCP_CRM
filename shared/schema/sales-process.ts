@@ -5,6 +5,8 @@ import { z } from "zod";
 import { contractors } from "./settings";
 import { users } from "./users";
 import { leads } from "./leads";
+import { estimates } from "./estimates";
+import { leadStatusEnum, estimateStatusEnum } from "./enums";
 
 export const salesProcessActionTypeEnum = pgEnum("sales_process_action_type", ["call", "text", "email"]);
 export const salesProcessStepModeEnum = pgEnum("sales_process_step_mode", ["manual", "auto"]);
@@ -17,18 +19,32 @@ export const salesProcessCompletionReasonEnum = pgEnum("sales_process_completion
   "step_deleted",
 ]);
 
-// One row per tenant today (enforced by unique index). Schema is tenant-scoped
-// to keep the door open for per-source / per-service variants later without a
-// migration — we'd just relax the unique index.
+// Multi-cadence: a tenant can have many cadences, each scoped to a trigger.
+// `trigger_type` decides what fires enrollment; `target_status` narrows the
+// fire condition for *_status_changed triggers (null for `lead_created`).
+// `entity_type` is derived from the trigger (lead vs estimate) but persisted
+// for fast filtering and UI grouping.
 export const salesProcesses = pgTable("sales_processes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   contractorId: varchar("contractor_id").notNull().references(() => contractors.id, { onDelete: "cascade" }),
   name: text("name").notNull().default("Default sales process"),
   active: boolean("active").notNull().default(false),
+  triggerType: text("trigger_type").notNull().default("lead_created"),
+  targetStatus: text("target_status"),
+  entityType: text("entity_type").notNull().default("lead"),
+  // Soft-delete column. We never hard-delete cadences because task_instances
+  // reference steps with ON DELETE RESTRICT and we want historical tasks to
+  // remain navigable after an admin "deletes" a cadence in the UI.
+  archivedAt: timestamp("archived_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
-  contractorUnique: uniqueIndex("sales_processes_contractor_unique").on(table.contractorId),
+  // One *active* cadence per (tenant, trigger, target_status). Archived rows
+  // are excluded so re-creating a cadence after a delete works.
+  triggerUnique: uniqueIndex("sales_processes_trigger_unique")
+    .on(table.contractorId, table.triggerType, sql`COALESCE(${table.targetStatus}, '')`)
+    .where(sql`archived_at IS NULL`),
+  contractorIdx: index("sales_processes_contractor_idx").on(table.contractorId),
 }));
 
 export const salesProcessSteps = pgTable("sales_process_steps", {
@@ -39,11 +55,6 @@ export const salesProcessSteps = pgTable("sales_process_steps", {
   mode: salesProcessStepModeEnum("mode").notNull().default("manual"),
   messageTemplate: text("message_template"),
   displayOrder: integer("display_order").notNull().default(0),
-  // Soft-delete: when a manager removes a step, we keep the row (because
-  // historical task instances FK-restrict-reference it) but set archivedAt
-  // so the cadence engine, the API, and the UI ignore it. The unique index
-  // is partial on (archivedAt IS NULL) so the same (day, action) can be
-  // re-added later without colliding with the archived ghost.
   archivedAt: timestamp("archived_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -54,12 +65,14 @@ export const salesProcessSteps = pgTable("sales_process_steps", {
     .where(sql`archived_at IS NULL`),
 }));
 
+// Task instances now belong to either a lead OR an estimate. Exactly one of
+// (lead_id, estimate_id) must be set; we enforce this in the materialization
+// layer plus partial unique indexes per-entity to suppress double-enrollment.
 export const salesProcessTaskInstances = pgTable("sales_process_task_instances", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   contractorId: varchar("contractor_id").notNull().references(() => contractors.id, { onDelete: "cascade" }),
-  leadId: varchar("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
-  // Restrict so deleting a step preserves history. We mark pending instances
-  // skipped before deleting the step (see PUT /api/sales-process logic).
+  leadId: varchar("lead_id").references(() => leads.id, { onDelete: "cascade" }),
+  estimateId: varchar("estimate_id").references(() => estimates.id, { onDelete: "cascade" }),
   stepId: varchar("step_id").notNull().references(() => salesProcessSteps.id, { onDelete: "restrict" }),
   actionType: salesProcessActionTypeEnum("action_type").notNull(),
   mode: salesProcessStepModeEnum("mode").notNull(),
@@ -76,6 +89,22 @@ export const salesProcessTaskInstances = pgTable("sales_process_task_instances",
     .on(table.contractorId, table.status, table.dueAt),
   leadStatusIdx: index("sales_process_task_instances_lead_status_idx")
     .on(table.leadId, table.status),
+  estimateStatusIdx: index("sales_process_task_instances_estimate_status_idx")
+    .on(table.estimateId, table.status),
+  // Hard guarantee at the DB level: every row points at exactly one entity.
+  // Materialization code already enforces this in JS, but a CHECK closes the
+  // door on stray inserts/migrations introducing half-set rows.
+  entityXor: sql`CONSTRAINT sales_process_task_instances_entity_xor CHECK ((lead_id IS NULL) <> (estimate_id IS NULL))`,
+  // Partial unique indexes implementing the "one row per (cadence_step,
+  // entity)" rule. countTaskInstancesForEntity() gives a fast early-exit;
+  // these indexes are the race-proof backstop when concurrent hooks (e.g.
+  // a webhook firing while a backfill is mid-loop) try to double-enroll.
+  leadStepUnique: uniqueIndex("sales_process_task_instances_lead_step_unique")
+    .on(table.stepId, table.leadId)
+    .where(sql`lead_id IS NOT NULL`),
+  estimateStepUnique: uniqueIndex("sales_process_task_instances_estimate_step_unique")
+    .on(table.stepId, table.estimateId)
+    .where(sql`estimate_id IS NOT NULL`),
 }));
 
 export const insertSalesProcessSchema = createInsertSchema(salesProcesses).omit({
@@ -100,3 +129,36 @@ export const insertSalesProcessTaskInstanceSchema = createInsertSchema(salesProc
 });
 export type InsertSalesProcessTaskInstance = z.infer<typeof insertSalesProcessTaskInstanceSchema>;
 export type SalesProcessTaskInstance = typeof salesProcessTaskInstances.$inferSelect;
+
+export const SALES_PROCESS_TRIGGER_TYPES = ["lead_created", "lead_status_changed", "estimate_status_changed"] as const;
+export type SalesProcessTriggerType = typeof SALES_PROCESS_TRIGGER_TYPES[number];
+
+export const SALES_PROCESS_ENTITY_TYPES = ["lead", "estimate"] as const;
+export type SalesProcessEntityType = typeof SALES_PROCESS_ENTITY_TYPES[number];
+
+export function entityTypeForTrigger(trigger: SalesProcessTriggerType): SalesProcessEntityType {
+  return trigger === "estimate_status_changed" ? "estimate" : "lead";
+}
+
+// Discriminated create payload: target_status is required for status-change
+// triggers and forbidden for lead_created.
+export const createCadenceSchema = z.discriminatedUnion("triggerType", [
+  z.object({
+    triggerType: z.literal("lead_created"),
+    name: z.string().trim().min(1).max(200).optional(),
+    active: z.boolean().optional(),
+  }),
+  z.object({
+    triggerType: z.literal("lead_status_changed"),
+    targetStatus: z.enum(leadStatusEnum.enumValues),
+    name: z.string().trim().min(1).max(200).optional(),
+    active: z.boolean().optional(),
+  }),
+  z.object({
+    triggerType: z.literal("estimate_status_changed"),
+    targetStatus: z.enum(estimateStatusEnum.enumValues),
+    name: z.string().trim().min(1).max(200).optional(),
+    active: z.boolean().optional(),
+  }),
+]);
+export type CreateCadenceInput = z.infer<typeof createCadenceSchema>;

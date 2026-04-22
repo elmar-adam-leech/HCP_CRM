@@ -9,7 +9,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { Plus, Trash2, ArrowUp, ArrowDown, Phone, MessageSquare, Mail, CalendarDays, Zap, ListTodo, Check, ChevronsUpDown, X } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
+import { Plus, Trash2, ArrowUp, ArrowDown, Phone, MessageSquare, Mail, CalendarDays, Zap, ListTodo, Check, ChevronsUpDown, X, Workflow } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -19,6 +21,10 @@ import type { Contact, SalesProcess, SalesProcessStep } from "@shared/schema";
 
 type ActionType = 'call' | 'text' | 'email';
 type StepMode = 'manual' | 'auto';
+type TriggerType = 'lead_created' | 'lead_status_changed' | 'estimate_status_changed';
+
+const LEAD_STATUSES = ['new', 'contacted', 'qualified', 'converted', 'disqualified', 'lost'] as const;
+const ESTIMATE_STATUSES = ['sent', 'scheduled', 'in_progress', 'approved', 'rejected'] as const;
 
 interface StepDraft {
   key: string;
@@ -28,17 +34,20 @@ interface StepDraft {
   messageTemplate: string;
 }
 
-interface ProcessResponse {
-  process: SalesProcess;
+interface CadenceListItem extends SalesProcess {
+  triggerType: TriggerType;
+  targetStatus: string | null;
+  entityType: 'lead' | 'estimate';
+}
+
+interface CadenceResponse {
+  process: CadenceListItem;
   steps: SalesProcessStep[];
 }
 
 const ACTION_ICON: Record<ActionType, typeof Phone> = { call: Phone, text: MessageSquare, email: Mail };
 
-function newKey() {
-  return Math.random().toString(36).slice(2);
-}
-
+function newKey() { return Math.random().toString(36).slice(2); }
 function toDraft(step: SalesProcessStep): StepDraft {
   return {
     key: step.id,
@@ -49,30 +58,276 @@ function toDraft(step: SalesProcessStep): StepDraft {
   };
 }
 
+function describeTrigger(c: Pick<CadenceListItem, 'triggerType' | 'targetStatus'>): string {
+  if (c.triggerType === 'lead_created') return 'When a new lead is created';
+  if (c.triggerType === 'lead_status_changed') return `When a lead's status changes to ${c.targetStatus}`;
+  return `When an estimate's status changes to ${c.targetStatus}`;
+}
+
 export function SalesProcessTab() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const { data, isLoading } = useQuery<ProcessResponse>({ queryKey: ['/api/sales-process'] });
+  const { data: cadences = [], isLoading: isLoadingList } = useQuery<CadenceListItem[]>({
+    queryKey: ['/api/sales-process/cadences'],
+  });
 
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [showNewDialog, setShowNewDialog] = useState(false);
+
+  // Auto-select first cadence (or stay in sync if the selected cadence is deleted).
+  useEffect(() => {
+    if (cadences.length === 0) {
+      setSelectedId(null);
+      return;
+    }
+    if (!selectedId || !cadences.find(c => c.id === selectedId)) {
+      setSelectedId(cadences[0].id);
+    }
+  }, [cadences, selectedId]);
+
+  const createMutation = useMutation({
+    mutationFn: async (input: { triggerType: TriggerType; targetStatus: string | null; name: string }) => {
+      const body: Record<string, unknown> = { triggerType: input.triggerType, name: input.name || undefined };
+      if (input.triggerType !== 'lead_created') body.targetStatus = input.targetStatus;
+      const res = await apiRequest('POST', '/api/sales-process/cadences', body);
+      return res.json() as Promise<CadenceListItem>;
+    },
+    onSuccess: (cadence) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/sales-process/cadences'] });
+      setSelectedId(cadence.id);
+      setShowNewDialog(false);
+      toast({ title: 'Cadence created' });
+    },
+    onError: (err: Error) => {
+      toast({ title: 'Could not create cadence', description: err.message, variant: 'destructive' });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest('DELETE', `/api/sales-process/cadences/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/sales-process/cadences'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/sales-process/tasks'] });
+      setSelectedId(null);
+      toast({ title: 'Cadence deleted' });
+    },
+    onError: (err: Error) => {
+      toast({ title: 'Could not delete cadence', description: err.message, variant: 'destructive' });
+    },
+  });
+
+  if (isLoadingList) {
+    return <div className="text-sm text-muted-foreground" data-testid="sales-process-loading">Loading sales process…</div>;
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Sales process</CardTitle>
+          <CardDescription>
+            Create one or more cadences. Each cadence defines what happens (and when) after a specific trigger —
+            for example, when a new lead comes in or when an estimate is approved.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-[16rem_1fr] gap-4">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <Label className="text-sm font-medium">Cadences</Label>
+                <Dialog open={showNewDialog} onOpenChange={setShowNewDialog}>
+                  <DialogTrigger asChild>
+                    <Button size="sm" variant="outline" data-testid="button-new-cadence">
+                      <Plus className="h-4 w-4 mr-1" /> New
+                    </Button>
+                  </DialogTrigger>
+                  <NewCadenceDialog
+                    onSubmit={(input) => createMutation.mutate(input)}
+                    isPending={createMutation.isPending}
+                  />
+                </Dialog>
+              </div>
+              {cadences.length === 0 ? (
+                <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground" data-testid="cadences-empty">
+                  No cadences yet. Create one to get started.
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {cadences.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => setSelectedId(c.id)}
+                      data-testid={`cadence-item-${c.id}`}
+                      data-active={selectedId === c.id}
+                      className={cn(
+                        'w-full text-left rounded-md border p-3 hover-elevate active-elevate-2',
+                        selectedId === c.id && 'bg-accent',
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="font-medium text-sm truncate flex-1">{c.name}</div>
+                        <Badge variant={c.active ? 'default' : 'secondary'} className="shrink-0">
+                          {c.active ? 'Active' : 'Off'}
+                        </Badge>
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
+                        <Workflow className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{describeTrigger(c)}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              {selectedId ? (
+                <CadenceEditor
+                  key={selectedId}
+                  cadenceId={selectedId}
+                  onDelete={() => deleteMutation.mutate(selectedId)}
+                  isDeleting={deleteMutation.isPending}
+                />
+              ) : (
+                <div className="rounded-md border border-dashed p-12 text-center text-sm text-muted-foreground" data-testid="cadence-editor-empty">
+                  {cadences.length === 0
+                    ? 'Create your first cadence to start automating follow-ups.'
+                    : 'Select a cadence on the left to edit it.'}
+                </div>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+interface NewCadenceDialogProps {
+  onSubmit: (input: { triggerType: TriggerType; targetStatus: string | null; name: string }) => void;
+  isPending: boolean;
+}
+
+function NewCadenceDialog({ onSubmit, isPending }: NewCadenceDialogProps) {
+  const [triggerType, setTriggerType] = useState<TriggerType>('lead_created');
+  const [targetStatus, setTargetStatus] = useState<string>('new');
+  const [name, setName] = useState('');
+
+  const statusOptions =
+    triggerType === 'lead_status_changed' ? LEAD_STATUSES :
+    triggerType === 'estimate_status_changed' ? ESTIMATE_STATUSES :
+    null;
+
+  // Reset target_status when switching trigger family so a stale lead-status
+  // doesn't accidentally get submitted with an estimate trigger.
+  useEffect(() => {
+    if (triggerType === 'lead_status_changed') setTargetStatus('new');
+    else if (triggerType === 'estimate_status_changed') setTargetStatus('sent');
+  }, [triggerType]);
+
+  return (
+    <DialogContent data-testid="dialog-new-cadence">
+      <DialogHeader>
+        <DialogTitle>New cadence</DialogTitle>
+        <DialogDescription>
+          Pick what should trigger this cadence. You can edit the name and steps after creating it.
+        </DialogDescription>
+      </DialogHeader>
+      <div className="space-y-4">
+        <div className="space-y-1">
+          <Label htmlFor="cadence-trigger">Trigger</Label>
+          <Select value={triggerType} onValueChange={(v) => setTriggerType(v as TriggerType)}>
+            <SelectTrigger id="cadence-trigger" data-testid="select-cadence-trigger">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="lead_created">New lead created</SelectItem>
+              <SelectItem value="lead_status_changed">Lead status changes to…</SelectItem>
+              <SelectItem value="estimate_status_changed">Estimate status changes to…</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        {statusOptions && (
+          <div className="space-y-1">
+            <Label htmlFor="cadence-status">Target status</Label>
+            <Select value={targetStatus} onValueChange={setTargetStatus}>
+              <SelectTrigger id="cadence-status" data-testid="select-cadence-status">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {statusOptions.map(s => (
+                  <SelectItem key={s} value={s}>{s}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+        <div className="space-y-1">
+          <Label htmlFor="cadence-name">Name (optional)</Label>
+          <Input
+            id="cadence-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Auto-named based on the trigger"
+            data-testid="input-cadence-name"
+          />
+        </div>
+      </div>
+      <DialogFooter>
+        <Button
+          onClick={() => onSubmit({
+            triggerType,
+            targetStatus: triggerType === 'lead_created' ? null : targetStatus,
+            name: name.trim(),
+          })}
+          disabled={isPending}
+          data-testid="button-create-cadence"
+        >
+          {isPending ? 'Creating…' : 'Create cadence'}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  );
+}
+
+interface CadenceEditorProps {
+  cadenceId: string;
+  onDelete: () => void;
+  isDeleting: boolean;
+}
+
+function CadenceEditor({ cadenceId, onDelete, isDeleting }: CadenceEditorProps) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const { data, isLoading } = useQuery<CadenceResponse>({
+    queryKey: ['/api/sales-process/cadences', cadenceId],
+  });
+
+  const [name, setName] = useState('');
   const [active, setActive] = useState(false);
   const [steps, setSteps] = useState<StepDraft[]>([]);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     if (data && !hydrated) {
+      setName(data.process.name);
       setActive(data.process.active);
       setSteps(data.steps.map(toDraft));
       setHydrated(true);
     }
   }, [data, hydrated]);
 
+  // Re-hydrate when cadence changes (parent passes key={cadenceId} so this
+  // component remounts, but defensively reset on data id change too).
+  useEffect(() => { setHydrated(false); }, [cadenceId]);
+
   const validation = useMemo(() => {
     const errors: Record<string, string> = {};
     const seen = new Set<string>();
     for (const s of steps) {
-      // Day must be a positive integer per spec — Day 0 is the lead's
-      // initial creation moment, not a cadence touchpoint. Mirroring the
-      // server-side Zod rule keeps form errors immediate (no round-trip).
       if (!Number.isFinite(s.dayOffset) || s.dayOffset < 1) {
         errors[s.key] = 'Day must be 1 or greater.';
       } else if (s.dayOffset > 365) {
@@ -93,40 +348,25 @@ export function SalesProcessTab() {
 
   const hasErrors = Object.keys(validation).length > 0;
 
-  // Preview: "If a lead came in today (or on this lead's createdAt),
-  // here's what would happen." Mirrors server's computeDueAt (createdAt +
-  // dayOffset days, preserving time-of-day) so managers see exactly when
-  // each touchpoint fires before they save. By default we use a sample
-  // lead with `now` as the reference. Managers can pick a real lead to
-  // spot-check template substitutions and back-dated cadences (e.g. a
-  // lead from last week to see whether the day-7 step is overdue).
   const SAMPLE_LEAD = {
-    first_name: 'Jane',
-    last_name: 'Smith',
-    phone: '(555) 123-4567',
-    email: 'jane.smith@example.com',
+    first_name: 'Jane', last_name: 'Smith',
+    phone: '(555) 123-4567', email: 'jane.smith@example.com',
   } as const;
 
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const { data: selectedLead, isLoading: selectedLeadLoading } = useContact(selectedLeadId);
 
-  // Effective preview lead: real lead's data when selected, else sample.
-  // Splitting `name` on the first whitespace mirrors how name pieces are
-  // surfaced elsewhere in the app — contacts use a single `name` column.
   const previewLead = useMemo(() => {
     if (selectedLeadId && selectedLead) {
-      const name = selectedLead.name ?? '';
-      const space = name.indexOf(' ');
-      const first_name = space >= 0 ? name.slice(0, space) : name;
-      const last_name = space >= 0 ? name.slice(space + 1) : '';
-      const createdAt = selectedLead.createdAt
-        ? new Date(selectedLead.createdAt)
-        : new Date();
+      const fullName = selectedLead.name ?? '';
+      const space = fullName.indexOf(' ');
+      const first_name = space >= 0 ? fullName.slice(0, space) : fullName;
+      const last_name = space >= 0 ? fullName.slice(space + 1) : '';
+      const createdAt = selectedLead.createdAt ? new Date(selectedLead.createdAt) : new Date();
       return {
         isSample: false,
-        label: name || 'Selected lead',
-        first_name,
-        last_name,
+        label: fullName || 'Selected lead',
+        first_name, last_name,
         phone: selectedLead.phones?.[0] ?? '',
         email: selectedLead.emails?.[0] ?? '',
         createdAt,
@@ -135,10 +375,8 @@ export function SalesProcessTab() {
     return {
       isSample: true,
       label: `${SAMPLE_LEAD.first_name} ${SAMPLE_LEAD.last_name}`,
-      first_name: SAMPLE_LEAD.first_name,
-      last_name: SAMPLE_LEAD.last_name,
-      phone: SAMPLE_LEAD.phone,
-      email: SAMPLE_LEAD.email,
+      first_name: SAMPLE_LEAD.first_name, last_name: SAMPLE_LEAD.last_name,
+      phone: SAMPLE_LEAD.phone, email: SAMPLE_LEAD.email,
       createdAt: new Date(),
     };
   }, [selectedLeadId, selectedLead]);
@@ -154,8 +392,7 @@ export function SalesProcessTab() {
     const MS_PER_DAY = 24 * 60 * 60 * 1000;
     const ref = previewLead.createdAt.getTime();
     return steps.map((s, i) => ({
-      idx: i + 1,
-      step: s,
+      idx: i + 1, step: s,
       dueAt: new Date(ref + Math.max(0, s.dayOffset) * MS_PER_DAY),
     }));
   }, [steps, previewLead]);
@@ -164,13 +401,13 @@ export function SalesProcessTab() {
     () => new Intl.DateTimeFormat(undefined, {
       weekday: 'short', month: 'short', day: 'numeric',
       hour: 'numeric', minute: '2-digit',
-    }),
-    [],
+    }), [],
   );
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest('PUT', '/api/sales-process', {
+      const res = await apiRequest('PUT', `/api/sales-process/cadences/${cadenceId}`, {
+        name,
         active,
         steps: steps.map((s, i) => ({
           dayOffset: s.dayOffset,
@@ -181,23 +418,26 @@ export function SalesProcessTab() {
         })),
       });
       return res.json() as Promise<{
-        process: SalesProcess;
-        steps: SalesProcessStep[];
+        process: CadenceListItem; steps: SalesProcessStep[];
         wasActivated: boolean;
         backfill: { leadsTouched: number; tasksCreated: number };
+        backfillStarted?: boolean;
       }>;
     },
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['/api/sales-process'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/sales-process/cadences'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/sales-process/cadences', cadenceId] });
       queryClient.invalidateQueries({ queryKey: ['/api/sales-process/tasks'] });
-      setHydrated(false); // re-pull canonical state from server
-      if (result.wasActivated && result.backfill.tasksCreated > 0) {
+      setHydrated(false);
+      if (result.backfillStarted) {
+        toast({ title: 'Cadence saved', description: 'Backfilling existing entities in the background…' });
+      } else if (result.wasActivated && result.backfill.tasksCreated > 0) {
         toast({
-          title: 'Sales process activated',
-          description: `Scheduled ${result.backfill.tasksCreated} task(s) for ${result.backfill.leadsTouched} open lead(s).`,
+          title: 'Cadence activated',
+          description: `Scheduled ${result.backfill.tasksCreated} task(s) for ${result.backfill.leadsTouched} matching item(s).`,
         });
       } else {
-        toast({ title: 'Sales process saved' });
+        toast({ title: 'Cadence saved' });
       }
     },
     onError: (err: Error) => {
@@ -208,33 +448,19 @@ export function SalesProcessTab() {
   const addStep = () => {
     setSteps(prev => [
       ...prev,
-      // First step defaults to Day 1 (the spec requires positive day
-      // offsets — Day 0 isn't a cadence touchpoint, it's the initial
-      // outreach). Each subsequent step suggests +3 days from the last.
       {
         key: newKey(),
         dayOffset: prev.length === 0 ? 1 : (prev[prev.length - 1].dayOffset + 3),
-        actionType: 'call',
-        mode: 'manual',
-        messageTemplate: '',
+        actionType: 'call', mode: 'manual', messageTemplate: '',
       },
     ]);
   };
-
   const updateStep = (key: string, patch: Partial<StepDraft>) => {
     setSteps(prev => prev.map(s => s.key === key ? { ...s, ...patch } : s));
   };
-
   const removeStep = (key: string) => {
     setSteps(prev => prev.filter(s => s.key !== key));
   };
-
-  // Steps are kept in user-controlled order in `steps`; the visible order
-  // matches that array directly so reorder controls (move up / move down)
-  // produce predictable results. We do NOT auto-sort by dayOffset because
-  // managers may want to express ordering intent independent of the day
-  // numbers themselves (e.g. two same-day actions). The server normalizes
-  // displayOrder from the request order on save.
   const moveStep = (key: string, direction: -1 | 1) => {
     setSteps(prev => {
       const idx = prev.findIndex(s => s.key === key);
@@ -247,266 +473,265 @@ export function SalesProcessTab() {
     });
   };
 
-  if (isLoading) {
-    return <div className="text-sm text-muted-foreground" data-testid="sales-process-loading">Loading sales process…</div>;
+  if (isLoading || !data) {
+    return <div className="text-sm text-muted-foreground" data-testid="cadence-loading">Loading cadence…</div>;
   }
 
+  const isLeadCadence = data.process.entityType === 'lead';
+
   return (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Sales process</CardTitle>
-          <CardDescription>
-            Define your follow-up cadence — what happens on day 1, day 4, day 7, etc. for every new lead.
-            Manual steps appear as to-dos for your team. Auto steps are sent automatically by the system.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between gap-4 rounded-md border p-4">
+    <div className="space-y-4" data-testid={`cadence-editor-${cadenceId}`}>
+      <div className="rounded-md border p-4 space-y-3">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="flex-1 min-w-[12rem] space-y-1">
+            <Label htmlFor="cadence-edit-name" className="text-sm">Name</Label>
+            <Input
+              id="cadence-edit-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              data-testid="input-edit-cadence-name"
+            />
+            <p className="text-xs text-muted-foreground flex items-center gap-1">
+              <Workflow className="h-3 w-3" />
+              {describeTrigger(data.process)}
+            </p>
+          </div>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label="Delete cadence" data-testid="button-delete-cadence">
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete this cadence?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This permanently removes the cadence and its steps. Pending tasks already created from it
+                  will remain on rep to-do lists; only future enrollments stop. This cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={onDelete}
+                  disabled={isDeleting}
+                  data-testid="button-confirm-delete-cadence"
+                >
+                  {isDeleting ? 'Deleting…' : 'Delete cadence'}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
+        <div className="flex items-center justify-between gap-4 rounded-md border p-3">
+          <div>
+            <Label htmlFor="cadence-edit-active" className="text-base">Active</Label>
+            <p className="text-sm text-muted-foreground">
+              When on, matching {isLeadCadence ? 'leads' : 'estimates'} are enrolled automatically.
+              Activating now also enrolls existing {isLeadCadence ? 'open leads' : 'open estimates'}.
+            </p>
+          </div>
+          <Switch
+            id="cadence-edit-active"
+            checked={active}
+            onCheckedChange={setActive}
+            data-testid="switch-cadence-active"
+          />
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {steps.length === 0 && (
+          <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground" data-testid="sales-process-empty">
+            No steps yet. Add your first touchpoint below.
+          </div>
+        )}
+        {steps.map((step, idx) => {
+          const Icon = ACTION_ICON[step.actionType];
+          const err = validation[step.key];
+          const isFirst = idx === 0;
+          const isLast = idx === steps.length - 1;
+          return (
+            <div key={step.key} className="rounded-md border p-4 space-y-3" data-testid={`step-row-${step.key}`}>
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex flex-col">
+                  <Button variant="ghost" size="icon" onClick={() => moveStep(step.key, -1)} disabled={isFirst} aria-label="Move step up" data-testid={`button-move-up-${step.key}`}>
+                    <ArrowUp className="h-4 w-4" />
+                  </Button>
+                  <Button variant="ghost" size="icon" onClick={() => moveStep(step.key, 1)} disabled={isLast} aria-label="Move step down" data-testid={`button-move-down-${step.key}`}>
+                    <ArrowDown className="h-4 w-4" />
+                  </Button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Label htmlFor={`day-${step.key}`} className="text-sm whitespace-nowrap">Day</Label>
+                  <Input
+                    id={`day-${step.key}`}
+                    type="number"
+                    min={1}
+                    max={365}
+                    value={step.dayOffset}
+                    onChange={(e) => updateStep(step.key, { dayOffset: Math.max(1, parseInt(e.target.value || '1', 10)) })}
+                    className="w-20"
+                    data-testid={`input-day-${step.key}`}
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Icon className="h-4 w-4 text-muted-foreground" />
+                  <Select
+                    value={step.actionType}
+                    onValueChange={(v) => updateStep(step.key, { actionType: v as ActionType, mode: v === 'call' ? 'manual' : step.mode })}
+                  >
+                    <SelectTrigger className="w-32" data-testid={`select-action-${step.key}`}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="call">Call</SelectItem>
+                      <SelectItem value="text">Text</SelectItem>
+                      <SelectItem value="email">Email</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Label className="text-sm whitespace-nowrap">Mode</Label>
+                  <Select
+                    value={step.mode}
+                    onValueChange={(v) => updateStep(step.key, { mode: v as StepMode })}
+                    disabled={step.actionType === 'call'}
+                  >
+                    <SelectTrigger className="w-32" data-testid={`select-mode-${step.key}`}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="manual">Manual</SelectItem>
+                      <SelectItem value="auto">Auto</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex-1" />
+                <Button variant="ghost" size="icon" onClick={() => removeStep(step.key)} data-testid={`button-remove-${step.key}`}>
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+              {step.actionType !== 'call' && (
+                <div className="space-y-1">
+                  <Label htmlFor={`tpl-${step.key}`} className="text-sm">
+                    Message template {step.mode === 'manual' && <span className="text-muted-foreground">(optional)</span>}
+                  </Label>
+                  <Textarea
+                    id={`tpl-${step.key}`}
+                    rows={3}
+                    placeholder="Hi {first_name}, just checking in — let me know if you'd like to schedule a quote."
+                    value={step.messageTemplate}
+                    onChange={(e) => updateStep(step.key, { messageTemplate: e.target.value })}
+                    className="resize-y border text-sm"
+                    data-testid={`textarea-template-${step.key}`}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {step.mode === 'auto' ? 'Required for auto steps. ' : 'Optional starter text for the rep when they manually send. '}
+                    Variables: <code>{'{first_name}'}</code>, <code>{'{last_name}'}</code>, <code>{'{phone}'}</code>, <code>{'{email}'}</code>
+                  </p>
+                </div>
+              )}
+              {err && (
+                <p className="text-sm text-destructive" data-testid={`error-${step.key}`}>{err}</p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {steps.length > 0 && isLeadCadence && (
+        <div className="rounded-md border p-4 space-y-3" data-testid="card-cadence-preview">
+          <div className="space-y-3">
             <div>
-              <Label htmlFor="sp-active" className="text-base">Process active</Label>
-              <p className="text-sm text-muted-foreground">
-                When on, every new lead is enrolled. Activating now also enrolls existing open leads (won/lost leads are skipped).
+              <div className="text-base font-medium flex items-center gap-2">
+                <CalendarDays className="h-4 w-4" />
+                Preview cadence
+              </div>
+              <p className="text-sm text-muted-foreground mt-1">
+                {previewLead.isSample
+                  ? `Using sample lead ${previewLead.label} as if they came in right now. `
+                  : `Using ${previewLead.label}'s real info and createdAt. `}
+                Auto steps are sent automatically; manual steps appear as to-dos for your team.
               </p>
             </div>
-            <Switch
-              id="sp-active"
-              checked={active}
-              onCheckedChange={setActive}
-              data-testid="switch-process-active"
-            />
-          </div>
-
-          <div className="space-y-3">
-            {steps.length === 0 && (
-              <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground" data-testid="sales-process-empty">
-                No steps yet. Add your first touchpoint below.
-              </div>
-            )}
-            {steps.map((step, idx) => {
-              const Icon = ACTION_ICON[step.actionType];
-              const err = validation[step.key];
-              const isFirst = idx === 0;
-              const isLast = idx === steps.length - 1;
-              return (
-                <div key={step.key} className="rounded-md border p-4 space-y-3" data-testid={`step-row-${step.key}`}>
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <div className="flex flex-col">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => moveStep(step.key, -1)}
-                        disabled={isFirst}
-                        aria-label="Move step up"
-                        data-testid={`button-move-up-${step.key}`}
-                      >
-                        <ArrowUp className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => moveStep(step.key, 1)}
-                        disabled={isLast}
-                        aria-label="Move step down"
-                        data-testid={`button-move-down-${step.key}`}
-                      >
-                        <ArrowDown className="h-4 w-4" />
-                      </Button>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Label htmlFor={`day-${step.key}`} className="text-sm whitespace-nowrap">Day</Label>
-                      <Input
-                        id={`day-${step.key}`}
-                        type="number"
-                        min={1}
-                        max={365}
-                        value={step.dayOffset}
-                        onChange={(e) => updateStep(step.key, { dayOffset: Math.max(1, parseInt(e.target.value || '1', 10)) })}
-                        className="w-20"
-                        data-testid={`input-day-${step.key}`}
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Icon className="h-4 w-4 text-muted-foreground" />
-                      <Select
-                        value={step.actionType}
-                        onValueChange={(v) => updateStep(step.key, { actionType: v as ActionType, mode: v === 'call' ? 'manual' : step.mode })}
-                      >
-                        <SelectTrigger className="w-32" data-testid={`select-action-${step.key}`}>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="call">Call</SelectItem>
-                          <SelectItem value="text">Text</SelectItem>
-                          <SelectItem value="email">Email</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Label className="text-sm whitespace-nowrap">Mode</Label>
-                      <Select
-                        value={step.mode}
-                        onValueChange={(v) => updateStep(step.key, { mode: v as StepMode })}
-                        disabled={step.actionType === 'call'}
-                      >
-                        <SelectTrigger className="w-32" data-testid={`select-mode-${step.key}`}>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="manual">Manual</SelectItem>
-                          <SelectItem value="auto">Auto</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="flex-1" />
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => removeStep(step.key)}
-                      data-testid={`button-remove-${step.key}`}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  {step.actionType !== 'call' && (
-                    <div className="space-y-1">
-                      <Label htmlFor={`tpl-${step.key}`} className="text-sm">
-                        Message template {step.mode === 'manual' && <span className="text-muted-foreground">(optional)</span>}
-                      </Label>
-                      <Textarea
-                        id={`tpl-${step.key}`}
-                        rows={3}
-                        placeholder="Hi {first_name}, just checking in — let me know if you'd like to schedule a quote."
-                        value={step.messageTemplate}
-                        onChange={(e) => updateStep(step.key, { messageTemplate: e.target.value })}
-                        className="resize-y border text-sm"
-                        data-testid={`textarea-template-${step.key}`}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        {step.mode === 'auto'
-                          ? 'Required for auto steps. '
-                          : 'Optional starter text for the rep when they manually send. '}
-                        Variables: <code>{'{first_name}'}</code>, <code>{'{last_name}'}</code>, <code>{'{phone}'}</code>, <code>{'{email}'}</code>
-                      </p>
-                    </div>
-                  )}
-                  {err && (
-                    <p className="text-sm text-destructive" data-testid={`error-${step.key}`}>{err}</p>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          {steps.length > 0 && (
-            <div className="rounded-md border p-4 space-y-3" data-testid="card-cadence-preview">
-              <div className="space-y-3">
-                <div>
-                  <div className="text-base font-medium flex items-center gap-2">
-                    <CalendarDays className="h-4 w-4" />
-                    Preview cadence
-                  </div>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    {previewLead.isSample
-                      ? `Using sample lead ${previewLead.label} as if they came in right now. `
-                      : `Using ${previewLead.label}'s real info and createdAt. `}
-                    Auto steps are sent automatically; manual steps appear as to-dos for your team.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Label className="text-sm whitespace-nowrap">Preview as</Label>
-                  <LeadPicker
-                    selectedLeadId={selectedLeadId}
-                    selectedLeadLabel={previewLead.isSample ? null : previewLead.label}
-                    isLoading={selectedLeadLoading}
-                    onSelect={setSelectedLeadId}
-                  />
-                  {selectedLeadId && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setSelectedLeadId(null)}
-                      data-testid="button-use-sample-lead"
-                    >
-                      <X className="h-4 w-4 mr-1" />
-                      Use sample lead
-                    </Button>
-                  )}
-                </div>
-              </div>
-              <div>
-                {hasErrors ? (
-                  <p className="text-sm text-muted-foreground" data-testid="preview-disabled">
-                    Fix the errors above to see the schedule preview.
-                  </p>
-                ) : (
-                  <ol className="space-y-3">
-                    {previewItems.map(({ idx, step, dueAt }) => {
-                      const Icon = ACTION_ICON[step.actionType];
-                      const isAuto = step.mode === 'auto';
-                      const rendered = renderTemplate(step.messageTemplate || '');
-                      return (
-                        <li
-                          key={step.key}
-                          className="flex gap-3 rounded-md border p-3"
-                          data-testid={`preview-item-${idx}`}
-                        >
-                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-muted-foreground">
-                            {idx}
-                          </div>
-                          <div className="flex-1 min-w-0 space-y-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <Icon className="h-4 w-4 text-muted-foreground" />
-                              <span className="text-sm font-medium capitalize">{step.actionType}</span>
-                              <Badge variant={isAuto ? 'default' : 'secondary'} className="gap-1">
-                                {isAuto ? <Zap className="h-3 w-3" /> : <ListTodo className="h-3 w-3" />}
-                                {isAuto ? 'Sent automatically' : 'To-do for team'}
-                              </Badge>
-                              <span className="text-xs text-muted-foreground">Day {step.dayOffset}</span>
-                            </div>
-                            <div
-                              className="text-sm text-muted-foreground"
-                              data-testid={`preview-date-${idx}`}
-                            >
-                              {dateFmt.format(dueAt)}
-                            </div>
-                            {step.actionType !== 'call' && rendered.trim().length > 0 && (
-                              <div
-                                className="mt-1 whitespace-pre-wrap rounded border bg-muted/40 p-2 text-sm"
-                                data-testid={`preview-message-${idx}`}
-                              >
-                                {rendered}
-                              </div>
-                            )}
-                            {step.actionType !== 'call' && rendered.trim().length === 0 && step.mode === 'manual' && (
-                              <p className="text-xs text-muted-foreground italic">
-                                No starter message — rep will compose when sending.
-                              </p>
-                            )}
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ol>
-                )}
-              </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Label className="text-sm whitespace-nowrap">Preview as</Label>
+              <LeadPicker
+                selectedLeadId={selectedLeadId}
+                selectedLeadLabel={previewLead.isSample ? null : previewLead.label}
+                isLoading={selectedLeadLoading}
+                onSelect={setSelectedLeadId}
+              />
+              {selectedLeadId && (
+                <Button variant="ghost" size="sm" onClick={() => setSelectedLeadId(null)} data-testid="button-use-sample-lead">
+                  <X className="h-4 w-4 mr-1" />
+                  Use sample lead
+                </Button>
+              )}
             </div>
-          )}
-
-          <div className="flex items-center justify-between gap-2">
-            <Button variant="outline" onClick={addStep} data-testid="button-add-step">
-              <Plus className="h-4 w-4 mr-1" /> Add step
-            </Button>
-            <Button
-              onClick={() => saveMutation.mutate()}
-              disabled={hasErrors || saveMutation.isPending}
-              data-testid="button-save-process"
-            >
-              {saveMutation.isPending ? 'Saving…' : 'Save changes'}
-            </Button>
           </div>
-        </CardContent>
-      </Card>
+          <div>
+            {hasErrors ? (
+              <p className="text-sm text-muted-foreground" data-testid="preview-disabled">
+                Fix the errors above to see the schedule preview.
+              </p>
+            ) : (
+              <ol className="space-y-3">
+                {previewItems.map(({ idx, step, dueAt }) => {
+                  const Icon = ACTION_ICON[step.actionType];
+                  const isAuto = step.mode === 'auto';
+                  const rendered = renderTemplate(step.messageTemplate || '');
+                  return (
+                    <li key={step.key} className="flex gap-3 rounded-md border p-3" data-testid={`preview-item-${idx}`}>
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-muted-foreground">
+                        {idx}
+                      </div>
+                      <div className="flex-1 min-w-0 space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Icon className="h-4 w-4 text-muted-foreground" />
+                          <span className="text-sm font-medium capitalize">{step.actionType}</span>
+                          <Badge variant={isAuto ? 'default' : 'secondary'} className="gap-1">
+                            {isAuto ? <Zap className="h-3 w-3" /> : <ListTodo className="h-3 w-3" />}
+                            {isAuto ? 'Sent automatically' : 'To-do for team'}
+                          </Badge>
+                          <span className="text-xs text-muted-foreground">Day {step.dayOffset}</span>
+                        </div>
+                        <div className="text-sm text-muted-foreground" data-testid={`preview-date-${idx}`}>
+                          {dateFmt.format(dueAt)}
+                        </div>
+                        {step.actionType !== 'call' && rendered.trim().length > 0 && (
+                          <div className="mt-1 whitespace-pre-wrap rounded border bg-muted/40 p-2 text-sm" data-testid={`preview-message-${idx}`}>
+                            {rendered}
+                          </div>
+                        )}
+                        {step.actionType !== 'call' && rendered.trim().length === 0 && step.mode === 'manual' && (
+                          <p className="text-xs text-muted-foreground italic">
+                            No starter message — rep will compose when sending.
+                          </p>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between gap-2">
+        <Button variant="outline" onClick={addStep} data-testid="button-add-step">
+          <Plus className="h-4 w-4 mr-1" /> Add step
+        </Button>
+        <Button
+          onClick={() => saveMutation.mutate()}
+          disabled={hasErrors || saveMutation.isPending}
+          data-testid="button-save-process"
+        >
+          {saveMutation.isPending ? 'Saving…' : 'Save changes'}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -518,9 +743,6 @@ interface LeadPickerProps {
   onSelect: (id: string) => void;
 }
 
-// Lead-only picker for the cadence preview. We don't reuse ContactCombobox
-// because it includes "create new customer" affordances that don't make
-// sense here (this is a read-only preview tool) and isn't scoped to leads.
 function LeadPicker({ selectedLeadId, selectedLeadLabel, isLoading, onSelect }: LeadPickerProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');

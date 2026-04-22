@@ -264,6 +264,19 @@ async function updateEstimate(id: string, estimate: UpdateEstimate, contractorId
     Object.entries(estimate).filter(([, v]) => v !== undefined)
   );
 
+  // Capture prior status to detect transitions for the sales-process
+  // estimate-status-changed cadences (task #567). We only need this when
+  // the caller is actually changing the status field — otherwise the hook
+  // is a no-op.
+  let priorStatus: string | undefined;
+  if (cleanEstimate.status !== undefined) {
+    const before = await db.select({ status: estimates.status })
+      .from(estimates)
+      .where(and(eq(estimates.id, id), eq(estimates.contractorId, contractorId)))
+      .limit(1);
+    priorStatus = before[0]?.status;
+  }
+
   // Stamp approved_at / rejected_at the first time an estimate enters that
   // status. We compare to the existing row so subsequent edits (notes, etc.)
   // and re-affirmations of the same status don't bump the timestamp. Callers
@@ -296,6 +309,17 @@ async function updateEstimate(id: string, estimate: UpdateEstimate, contractorId
     .where(and(eq(estimates.id, id), eq(estimates.contractorId, contractorId)))
     .returning();
   if (result[0]) invalidateReportsCache(contractorId);
+  if (result[0] && priorStatus !== undefined && priorStatus !== result[0].status) {
+    const after = result[0];
+    void (async () => {
+      try {
+        const { onEstimateStatusChanged } = await import("../services/sales-process");
+        await onEstimateStatusChanged(after.id, contractorId, after.status, priorStatus);
+      } catch (err) {
+        console.warn('[sales-process] onEstimateStatusChanged hook failed:', err);
+      }
+    })();
+  }
   return result[0];
 }
 
