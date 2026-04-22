@@ -10,7 +10,9 @@ export function getStatusColorCategory(
     switch (status) {
       case "contacted": return "orange";
       case "scheduled": return "green";
+      case "converted": return "green";
       case "disqualified": return "red";
+      case "lost": return "red";
       default: return "gray";
     }
   }

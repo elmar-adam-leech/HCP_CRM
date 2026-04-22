@@ -75,7 +75,7 @@ export async function updateEntityStatusById(
         } else {
           await storage.updateContact(
             entityId,
-            { status: status as 'new' | 'contacted' | 'scheduled' | 'active' | 'disqualified' | 'inactive' },
+            { status: status as 'new' | 'contacted' | 'scheduled' | 'active' | 'disqualified' | 'inactive' | 'lost' },
             contractorId,
           );
         }

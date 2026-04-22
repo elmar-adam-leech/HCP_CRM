@@ -151,6 +151,7 @@ export function buildContactConditions(contractorId: string, options: ContactFil
     } else if (!options.status || options.status === 'all') {
       if (!options.type || options.type === 'lead') {
         conditions.push(ne(contacts.status, 'disqualified'));
+        conditions.push(ne(contacts.status, 'lost'));
       }
     }
   } else if (!skipStatusFilter && bypassPipelineGates && options.status && options.status !== 'all') {
@@ -360,7 +361,7 @@ async function getContactsCount(contractorId: string, options: ContactFilterOpti
   return Number(result[0]?.count || 0);
 }
 
-async function getContactsStatusCounts(contractorId: string, options: Pick<ContactFilterOptions, 'search' | 'type' | 'assignedTo' | 'dateFrom' | 'dateTo' | 'archived' | 'aged'> = {}): Promise<{ all: number; new: number; contacted: number; scheduled: number; disqualified: number }> {
+async function getContactsStatusCounts(contractorId: string, options: Pick<ContactFilterOptions, 'search' | 'type' | 'assignedTo' | 'dateFrom' | 'dateTo' | 'archived' | 'aged'> = {}): Promise<{ all: number; new: number; contacted: number; scheduled: number; disqualified: number; lost: number }> {
   // skipStatusFilter=true: status counts query enumerates ALL statuses in its
   // SELECT (including disqualified), so pre-filtering by status would zero-out
   // the disqualified CASE count and make the "all" total inconsistent.
@@ -369,12 +370,13 @@ async function getContactsStatusCounts(contractorId: string, options: Pick<Conta
   const isLeadType = !options.type || options.type === 'lead';
   const result = await db.select({
     all: isLeadType
-      ? sql<number>`COUNT(CASE WHEN ${contacts.status} != 'disqualified' THEN 1 END)`
+      ? sql<number>`COUNT(CASE WHEN ${contacts.status} NOT IN ('disqualified','lost') THEN 1 END)`
       : count(),
     new: sql<number>`COUNT(CASE WHEN ${contacts.status} = 'new' THEN 1 END)`,
     contacted: sql<number>`COUNT(CASE WHEN ${contacts.status} = 'contacted' THEN 1 END)`,
     scheduled: sql<number>`COUNT(CASE WHEN ${contacts.status} = 'scheduled' THEN 1 END)`,
     disqualified: sql<number>`COUNT(CASE WHEN ${contacts.status} = 'disqualified' THEN 1 END)`,
+    lost: sql<number>`COUNT(CASE WHEN ${contacts.status} = 'lost' THEN 1 END)`,
   }).from(contacts).where(and(...baseConditions));
 
   const counts = result[0];
@@ -384,6 +386,7 @@ async function getContactsStatusCounts(contractorId: string, options: Pick<Conta
     contacted: Number(counts.contacted),
     scheduled: Number(counts.scheduled),
     disqualified: Number(counts.disqualified),
+    lost: Number(counts.lost),
   };
 }
 

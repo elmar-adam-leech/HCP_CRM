@@ -18,6 +18,7 @@ const STATUS_TO_EVENT_NAME: Record<string, string> = {
   converted: 'CompleteRegistration',
   disqualified: 'Other',
   inactive: 'Other',
+  lost: 'Other',
 };
 
 export function hashValue(value: string): string {

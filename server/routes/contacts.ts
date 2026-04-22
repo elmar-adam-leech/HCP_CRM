@@ -614,7 +614,7 @@ export function registerContactRoutes(app: Express): void {
 
     const statusLabels: Record<string, string> = {
       'new': 'New', 'contacted': 'Contacted', 'scheduled': 'Scheduled',
-      'active': 'Active', 'disqualified': 'Disqualified', 'inactive': 'Inactive'
+      'active': 'Active', 'disqualified': 'Disqualified', 'inactive': 'Inactive', 'lost': 'Lost'
     };
 
     let contact: Contact;
@@ -694,7 +694,7 @@ export function registerContactRoutes(app: Express): void {
 
     const statusLabels: Record<string, string> = {
       'new': 'New', 'contacted': 'Contacted', 'scheduled': 'Scheduled',
-      'active': 'Active', 'disqualified': 'Disqualified', 'inactive': 'Inactive'
+      'active': 'Active', 'disqualified': 'Disqualified', 'inactive': 'Inactive', 'lost': 'Lost'
     };
 
     const results: { succeeded: number; failed: number; errors: string[] } = {

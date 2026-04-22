@@ -30,6 +30,7 @@ export interface LeadsStatusCounts {
   contacted: number | undefined;
   scheduled: number | undefined;
   disqualified: number | undefined;
+  lost: number | undefined;
 }
 
 export function useLeadsData(params: LeadsDataParams) {
@@ -179,6 +180,7 @@ export function useLeadsData(params: LeadsDataParams) {
     contacted: number;
     scheduled: number;
     disqualified: number;
+    lost: number;
   }>({
     queryKey: ["/api/contacts/status-counts", {
       type: "lead",
@@ -209,6 +211,7 @@ export function useLeadsData(params: LeadsDataParams) {
     contacted: statusCountsLoading ? undefined : 0,
     scheduled: statusCountsLoading ? undefined : 0,
     disqualified: statusCountsLoading ? undefined : 0,
+    lost: statusCountsLoading ? undefined : 0,
   };
 
   const leadById = useMemo(() => {

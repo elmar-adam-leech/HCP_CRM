@@ -32,6 +32,7 @@ export function StatusOptions({ entityType }: { entityType?: string }) {
     <SelectItem value="contacted">Contacted</SelectItem>
     <SelectItem value="scheduled">Scheduled</SelectItem>
     <SelectItem value="disqualified">Disqualified</SelectItem>
+    <SelectItem value="lost">Lost</SelectItem>
     <SelectItem value="aged">Aged</SelectItem>
   </>);
   if (entityType === 'estimate') return (<>

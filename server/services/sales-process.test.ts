@@ -48,9 +48,10 @@ beforeEach(() => {
 });
 
 describe('isTerminalLeadStatus', () => {
-  it('treats converted/disqualified as terminal', () => {
+  it('treats converted/disqualified/lost as terminal', () => {
     expect(isTerminalLeadStatus('converted')).toBe(true);
     expect(isTerminalLeadStatus('disqualified')).toBe(true);
+    expect(isTerminalLeadStatus('lost')).toBe(true);
   });
   it('treats other statuses as non-terminal', () => {
     expect(isTerminalLeadStatus('new')).toBe(false);
@@ -90,6 +91,7 @@ describe('materializeForLead', () => {
     (storage.countTaskInstancesForLead as any).mockResolvedValue(0);
     expect(await materializeForLead(makeLead({ status: 'converted' }))).toBe(0);
     expect(await materializeForLead(makeLead({ status: 'disqualified' }))).toBe(0);
+    expect(await materializeForLead(makeLead({ status: 'lost' }))).toBe(0);
     expect(storage.bulkInsertTaskInstances).not.toHaveBeenCalled();
   });
 
@@ -130,6 +132,12 @@ describe('backfillOpenLeads', () => {
 describe('onLeadStatusChanged', () => {
   it('skips pending tasks when transitioning into a terminal status', async () => {
     await onLeadStatusChanged('lead-1', tenantId, 'converted', 'contacted');
+    expect(storage.skipPendingTasksForLead).toHaveBeenCalledWith(
+      'lead-1', tenantId, 'lead_status_changed',
+    );
+  });
+  it('skips pending tasks when transitioning into the lost status', async () => {
+    await onLeadStatusChanged('lead-1', tenantId, 'lost', 'contacted');
     expect(storage.skipPendingTasksForLead).toHaveBeenCalledWith(
       'lead-1', tenantId, 'lead_status_changed',
     );

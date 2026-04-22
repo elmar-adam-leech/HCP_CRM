@@ -114,12 +114,14 @@ export async function handleLeadEvent(
   if (event_type === 'lead.lost') {
     const lead = data.id ? await storage.getLeadByHousecallProLeadId(data.id, contractorId) : null;
     if (lead) {
-      await storage.updateLead(lead.id, { status: 'disqualified' }, contractorId);
+      // HCP "lead.lost" maps to our new lead_status='lost' (#516) — distinct from
+      // disqualified, which is reserved for bad-fit/spam leads.
+      await storage.updateLead(lead.id, { status: 'lost' }, contractorId);
       const contact = await storage.getContact(lead.contactId, contractorId);
       if (contact) {
-        await storage.updateContact(contact.id, { status: 'disqualified' as const }, contractorId);
+        await storage.updateContact(contact.id, { status: 'lost' as const }, contractorId);
         broadcastToContractor(contractorId, { type: 'contact_updated', contactId: contact.id });
-        workflowEngine.triggerWorkflowsForEvent('contact_status_changed', toWorkflowEvent({ ...contact, status: 'disqualified' }), contractorId).catch(err =>
+        workflowEngine.triggerWorkflowsForEvent('contact_status_changed', toWorkflowEvent({ ...contact, status: 'lost' }), contractorId).catch(err =>
           log.error('contact_status_changed trigger error', err));
       }
     }

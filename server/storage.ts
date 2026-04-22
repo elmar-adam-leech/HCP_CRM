@@ -178,6 +178,7 @@ export interface IStorage {
     contacted: number;
     scheduled: number;
     disqualified: number;
+    lost: number;
   }>;
   getContact(id: string, contractorId: string): Promise<Contact | undefined>;
   getContactByExternalId(externalId: string, externalSource: string, contractorId: string): Promise<Contact | undefined>;

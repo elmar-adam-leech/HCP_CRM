@@ -189,6 +189,14 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       description: 'workflow_action_type enum: add set_follow_up value',
     },
     {
+      sql: `ALTER TYPE lead_status ADD VALUE IF NOT EXISTS 'lost'`,
+      description: 'lead_status enum: add lost value (#516)',
+    },
+    {
+      sql: `ALTER TYPE contact_status ADD VALUE IF NOT EXISTS 'lost'`,
+      description: 'contact_status enum: add lost value (#516)',
+    },
+    {
       sql: `ALTER TYPE workflow_trigger_type ADD VALUE IF NOT EXISTS 'estimate_option_approved'`,
       description: 'workflow_trigger_type enum: add estimate_option_approved value (#437)',
     },

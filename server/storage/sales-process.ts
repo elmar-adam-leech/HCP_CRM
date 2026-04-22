@@ -351,7 +351,7 @@ async function getOpenLeadsForBackfill(contractorId: string): Promise<Lead[]> {
   return db.select().from(leads).where(and(
     eq(leads.contractorId, contractorId),
     eq(leads.archived, false),
-    notInArray(leads.status, ['converted', 'disqualified']),
+    notInArray(leads.status, ['converted', 'disqualified', 'lost']),
   ));
 }
 
@@ -366,7 +366,7 @@ async function countOpenLeadsForBackfill(contractorId: string): Promise<number> 
     .where(and(
       eq(leads.contractorId, contractorId),
       eq(leads.archived, false),
-      notInArray(leads.status, ['converted', 'disqualified']),
+      notInArray(leads.status, ['converted', 'disqualified', 'lost']),
     ));
   return r[0]?.c ?? 0;
 }

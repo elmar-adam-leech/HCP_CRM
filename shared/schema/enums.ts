@@ -2,8 +2,8 @@ import { pgEnum } from "drizzle-orm/pg-core";
 
 export const userRoleEnum = pgEnum("user_role", ["super_admin", "admin", "manager", "user"]);
 export const contactTypeEnum = pgEnum("contact_type", ["lead", "customer", "inactive"]);
-export const contactStatusEnum = pgEnum("contact_status", ["new", "contacted", "scheduled", "active", "disqualified", "inactive"]);
-export const leadStatusEnum = pgEnum("lead_status", ["new", "contacted", "qualified", "converted", "disqualified"]);
+export const contactStatusEnum = pgEnum("contact_status", ["new", "contacted", "scheduled", "active", "disqualified", "inactive", "lost"]);
+export const leadStatusEnum = pgEnum("lead_status", ["new", "contacted", "qualified", "converted", "disqualified", "lost"]);
 export const jobStatusEnum = pgEnum("job_status", ["scheduled", "in_progress", "completed", "cancelled"]);
 export const jobPriorityEnum = pgEnum("job_priority", ["low", "medium", "high"]);
 export const estimateStatusEnum = pgEnum("estimate_status", ["sent", "scheduled", "in_progress", "approved", "rejected"]);

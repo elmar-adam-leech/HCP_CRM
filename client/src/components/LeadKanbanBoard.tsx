@@ -28,7 +28,7 @@ import type { Contact } from "@shared/schema";
 interface KanbanColumn {
   id: string;
   title: string;
-  status: "new" | "contacted" | "scheduled" | "disqualified";
+  status: "new" | "contacted" | "scheduled" | "disqualified" | "lost";
   leads: Contact[];
 }
 
@@ -197,6 +197,7 @@ const COLUMN_DEFINITIONS: Array<{ id: string; title: string; status: KanbanColum
   { id: "contacted", title: "Contacted", status: "contacted" },
   { id: "scheduled", title: "Scheduled", status: "scheduled" },
   { id: "disqualified", title: "Disqualified", status: "disqualified" },
+  { id: "lost", title: "Lost", status: "lost" },
 ];
 
 function createEmptyColumns(): KanbanColumn[] {

@@ -10,7 +10,7 @@ import { invalidateContacts } from "@/hooks/useInvalidations";
 import type { Contact } from "@shared/schema";
 import type { LeadActiveModal } from "@/types/leadTypes";
 
-const LEAD_STATUSES = ["new", "contacted", "scheduled", "disqualified"] as const;
+const LEAD_STATUSES = ["new", "contacted", "scheduled", "disqualified", "lost"] as const;
 
 interface LeadModalsProps {
   activeModal: LeadActiveModal;

@@ -15,7 +15,7 @@ export type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 const log = logger("SalesProcess");
 
 // Lead statuses that stop cadence (won/lost/disqualified).
-const TERMINAL_LEAD_STATUSES: ReadonlyArray<string> = ['converted', 'disqualified'];
+const TERMINAL_LEAD_STATUSES: ReadonlyArray<string> = ['converted', 'disqualified', 'lost'];
 
 export function isTerminalLeadStatus(status: string | null | undefined): boolean {
   return !!status && TERMINAL_LEAD_STATUSES.includes(status);

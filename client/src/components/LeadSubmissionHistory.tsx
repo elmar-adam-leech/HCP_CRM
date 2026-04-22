@@ -86,6 +86,7 @@ export function LeadSubmissionHistory({ contactId }: LeadSubmissionHistoryProps)
                   lead.status === 'converted' ? 'default' :
                   lead.status === 'qualified' ? 'secondary' :
                   lead.status === 'disqualified' ? 'destructive' :
+                  lead.status === 'lost' ? 'destructive' :
                   'outline'
                 }
                 data-testid={`lead-status-${lead.id}`}
