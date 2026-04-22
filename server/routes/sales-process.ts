@@ -351,6 +351,47 @@ export function registerSalesProcessRoutes(app: Express): void {
     res.json(current);
   }));
 
+  // Reschedule a pending task to a new dueAt — lets reps push a touchpoint
+  // out a day or two ("lead asked me to call back tomorrow") instead of
+  // having to skip work just to clear the queue. Only operates on `pending`
+  // rows; calling on a terminal task is a no-op (returns the current row).
+  app.post("/api/sales-process/tasks/:id/reschedule", asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const bodySchema = z.object({
+      dueAt: z.string().refine((s) => !isNaN(new Date(s).getTime()), {
+        message: 'dueAt must be a valid ISO date string',
+      }),
+    });
+    const parsed = bodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid reschedule', details: parsed.error.flatten() });
+      return;
+    }
+    const nextDueAt = new Date(parsed.data.dueAt);
+    // Reject scheduling into the past — rescheduling is a forward action.
+    // We allow "now" (1 minute of slack) so quick "later today" presets
+    // computed client-side don't race the server clock.
+    if (nextDueAt.getTime() < Date.now() - 60_000) {
+      res.status(400).json({ error: 'New due date must be in the future.' });
+      return;
+    }
+    const updated = await storage.rescheduleTask(
+      req.params.id,
+      req.user.contractorId,
+      nextDueAt,
+      req.user.userId,
+    );
+    if (updated) {
+      res.json(updated);
+      return;
+    }
+    const current = await storage.getTaskInstance(req.params.id, req.user.contractorId);
+    if (!current) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+    res.json(current);
+  }));
+
   app.post("/api/sales-process/tasks/:id/skip", asyncHandler(async (req: AuthedRequest, res: Response) => {
     const updated = await storage.markTaskSkipped(
       req.params.id,

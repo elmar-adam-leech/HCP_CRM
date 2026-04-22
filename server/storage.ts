@@ -606,6 +606,7 @@ export interface IStorage {
   markTaskSkipped: typeof salesProcessMethods.markTaskSkipped;
   markTaskFailed: typeof salesProcessMethods.markTaskFailed;
   rescheduleTaskForRetry: typeof salesProcessMethods.rescheduleTaskForRetry;
+  rescheduleTask: typeof salesProcessMethods.rescheduleTask;
   incrementAttemptCount: typeof salesProcessMethods.incrementAttemptCount;
   skipPendingTasksForLead: typeof salesProcessMethods.skipPendingTasksForLead;
   claimDueAutoTasks: typeof salesProcessMethods.claimDueAutoTasks;

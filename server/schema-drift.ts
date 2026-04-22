@@ -822,6 +822,30 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `CREATE UNIQUE INDEX IF NOT EXISTS "sales_process_steps_unique_per_process" ON "sales_process_steps"("sales_process_id", "day_offset", "action_type") WHERE "archived_at" IS NULL`,
       description: 'sales_process_steps unique (process, day_offset, action_type) WHERE archived_at IS NULL',
     },
+    // Task #567: multiple cadences per tenant with triggers/targets. The
+    // schema added these columns but the previous PR forgot to register the
+    // runtime drift migrations — without them the boot-time drift check
+    // refuses to start the server.
+    {
+      sql: `ALTER TABLE "sales_processes" ADD COLUMN IF NOT EXISTS "trigger_type" text NOT NULL DEFAULT 'lead_created'`,
+      description: 'sales_processes.trigger_type (cadence trigger discriminator)',
+    },
+    {
+      sql: `ALTER TABLE "sales_processes" ADD COLUMN IF NOT EXISTS "target_status" text`,
+      description: 'sales_processes.target_status (status filter for status-change triggers)',
+    },
+    {
+      sql: `ALTER TABLE "sales_processes" ADD COLUMN IF NOT EXISTS "entity_type" text NOT NULL DEFAULT 'lead'`,
+      description: 'sales_processes.entity_type (lead vs estimate cadence)',
+    },
+    {
+      sql: `ALTER TABLE "sales_processes" ADD COLUMN IF NOT EXISTS "archived_at" timestamp`,
+      description: 'sales_processes.archived_at (soft-delete column)',
+    },
+    {
+      sql: `ALTER TABLE "sales_process_task_instances" ADD COLUMN IF NOT EXISTS "estimate_id" varchar REFERENCES "estimates"("id") ON DELETE CASCADE`,
+      description: 'sales_process_task_instances.estimate_id (estimate-anchored cadences)',
+    },
     // Task #514: Reports speedups. Composite indexes that match the actual filter
     // shapes used by the Estimates "Lost Revenue" / "Time to Close" reports
     // (which group by status + updated_at) and the Speed-to-Lead report

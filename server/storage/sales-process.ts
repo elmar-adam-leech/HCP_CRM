@@ -676,6 +676,30 @@ async function rescheduleTaskForRetry(
   ));
 }
 
+// Manual rep-initiated reschedule of a pending task (e.g. "lead asked
+// me to call back tomorrow"). Mirrors the audit pattern used by
+// markTaskCompleted / markTaskSkipped — only operates on pending rows
+// and writes a single structured log line so we can reconstruct who
+// pushed which touchpoint and when.
+async function rescheduleTask(
+  id: string,
+  contractorId: string,
+  nextDueAt: Date,
+  rescheduledBy?: string | null,
+): Promise<SalesProcessTaskInstance | undefined> {
+  const r = await db.update(salesProcessTaskInstances).set({
+    dueAt: nextDueAt,
+  }).where(and(
+    eq(salesProcessTaskInstances.id, id),
+    eq(salesProcessTaskInstances.contractorId, contractorId),
+    eq(salesProcessTaskInstances.status, 'pending'),
+  )).returning();
+  if (r[0]) {
+    console.log(`[SalesProcess] sales_process instance_rescheduled tenantId=${r[0].contractorId} entity=${r[0].leadId ? `lead:${r[0].leadId}` : `estimate:${r[0].estimateId}`} stepId=${r[0].stepId} instanceId=${r[0].id} dueAt=${nextDueAt.toISOString()} rescheduledBy=${rescheduledBy ?? 'system'}`);
+  }
+  return r[0];
+}
+
 async function skipPendingTasksForLead(
   leadId: string,
   contractorId: string,
@@ -753,6 +777,7 @@ export const salesProcessMethods = {
   markTaskSkipped,
   markTaskFailed,
   rescheduleTaskForRetry,
+  rescheduleTask,
   incrementAttemptCount,
   skipPendingTasksForLead,
   claimDueAutoTasks,
