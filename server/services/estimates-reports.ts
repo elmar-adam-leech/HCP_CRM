@@ -907,7 +907,7 @@ export async function getSalesActivityReport(
   }>(sql`
     WITH base AS (
       SELECT e.*, COALESCE(l.source, c.source) AS lead_source
-      FROM estimates e
+      FROM ${canonicalEstimates(contractorId)} e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
       LEFT JOIN contacts c ON c.id = e.contact_id
       WHERE ${where}
