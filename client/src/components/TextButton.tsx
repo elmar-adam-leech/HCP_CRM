@@ -71,6 +71,20 @@ export function TextButton({
 
   const { data: templates = [] } = useTemplates("text", showPersonalModal);
 
+  // Keep messageBody in sync if the consumer changes initialMessage while
+  // the personal modal is open (e.g. selecting a different task row).
+  // NOTE: This effect must be declared before any early return below to
+  // preserve a stable hook order across renders. If recipientPhone toggles
+  // from empty to non-empty (e.g. when contact data loads asynchronously
+  // for a deep-linked entity modal), an early return placed above this
+  // useEffect would change the hook count between renders and trigger
+  // React error #310 ("Rendered more hooks than during the previous render").
+  useEffect(() => {
+    if (showPersonalModal && initialMessage && !messageBody) {
+      setMessageBody(initialMessage);
+    }
+  }, [showPersonalModal, initialMessage, messageBody]);
+
   const entityType = leadId ? "lead" : customerId ? "customer" : estimateId ? "estimate" : "contact";
   const entityId = leadId || customerId || estimateId || "";
 
@@ -91,14 +105,6 @@ export function TextButton({
       setShowTextingModal(true);
     }
   };
-
-  // Keep messageBody in sync if the consumer changes initialMessage while
-  // the personal modal is open (e.g. selecting a different task row).
-  useEffect(() => {
-    if (showPersonalModal && initialMessage && !messageBody) {
-      setMessageBody(initialMessage);
-    }
-  }, [showPersonalModal, initialMessage, messageBody]);
 
   const handleTemplateSelect = (templateId: string) => {
     if (!templateId || templateId === "__none__") {

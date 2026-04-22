@@ -39,6 +39,9 @@ A `runSchemaDriftCheck()` step runs at the end of `initDb()` and crashes startup
 
 **Process rule:** any new column added to `shared/schema/*` MUST ship in the same PR with a matching `columnMigrations` entry in `server/schema-drift.ts`. When `npm run db:push --force` is blocked (e.g. by an unrelated drizzle-kit interactive prompt), the `columnMigrations` entry is the **only** acceptable substitute — never roll out columns via ad-hoc psql or new files in `migrations/`. Task #473 is the canonical example of what happens when this is skipped (deploy promote fails on schema drift).
 
+### Known Pitfalls
+- **Frontend / Hooks ordering with optional props**: Components rendered inside entity-detail modals (Estimates/Leads/Jobs deep-link flows) often receive props like `recipientPhone`, `recipientEmail`, etc. that start out empty (e.g. fallbacks before async `detailsContact` resolves) and become populated on a later render. Any `useState`/`useEffect`/`useQuery`/`useMemo` declared **after** an early `if (!prop) return null` guard will be skipped on the empty render and called on the populated render, causing React error #310 ("Rendered more hooks than during the previous render"). Always declare every hook **before** any prop-conditional early return — this rule was violated by `client/src/components/TextButton.tsx` (fixed in task #626) and is a pattern to audit anywhere a button/badge component takes optional contact data.
+
 ### Performance & Resource Standards
 Every change must pull its weight in load time, network bytes, JS bundle size, DB time, and battery on the end user's device — the same way every change is held to tenant isolation.
 
