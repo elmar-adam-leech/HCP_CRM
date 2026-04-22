@@ -3,11 +3,12 @@ import { asyncHandler } from "../utils/async-handler";
 import { storage } from "../storage";
 import { users, userContractors, contractors } from "@shared/schema";
 import { db } from "../db";
-import { eq, and, isNotNull } from "drizzle-orm";
+import { eq, and, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import crypto from "crypto";
 
 import { requireManagerOrAdmin, requireAdmin } from "../auth-service";
+import { cacheInvalidation } from "../services/cache";
 import bcrypt from "bcrypt";
 import { parseBody } from "../utils/validate-body";
 
@@ -149,6 +150,19 @@ export function registerUserRoutes(app: Express): void {
       .set({ role })
       .where(and(eq(userContractors.userId, userId), eq(userContractors.contractorId, req.user.contractorId)))
       .returning();
+
+    // Bump tokenVersion so existing JWTs for this user are immediately rejected.
+    // This ensures a demoted/promoted user cannot retain stale privileges via
+    // a cached token — the very next request will fail the tokenVersion check.
+    await db.update(users)
+      .set({ tokenVersion: sql`token_version + 1` })
+      .where(eq(users.id, userId));
+
+    // Immediately evict the affected user's entries from the in-process cache
+    // so the new role and tokenVersion are visible on the very next request,
+    // rather than after the 5-minute cache TTL expires.
+    cacheInvalidation.invalidateUserContractor(userId, req.user.contractorId);
+    cacheInvalidation.invalidateUser(userId);
 
     res.json({
       userId: updated[0].userId,

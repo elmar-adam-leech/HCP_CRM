@@ -344,6 +344,7 @@ export function registerOAuthRoutes(app: Express): void {
       role: userContractor.role,
       contractorId: contractorId,
       canManageIntegrations: userContractor.canManageIntegrations || false,
+      allowedIntegrations: userContractor.allowedIntegrations ?? null,
       tokenVersion: updatedUser.tokenVersion ?? 1,
     });
 

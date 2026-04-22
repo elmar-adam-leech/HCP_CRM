@@ -92,7 +92,7 @@ export function registerAuthRoutes(app: Express): void {
       username: user.username,
       name: user.name,
       email: user.email,
-      role: user.role,
+      role: userContractorEntry.role,
       contractorId: user.contractorId,
       canManageIntegrations: userContractorEntry.canManageIntegrations ?? user.canManageIntegrations ?? false,
       allowedIntegrations: userContractorEntry.allowedIntegrations ?? null,
@@ -123,7 +123,7 @@ export function registerAuthRoutes(app: Express): void {
         username: user.username,
         name: user.name,
         email: user.email,
-        role: user.role,
+        role: userContractorEntry.role,
         // SAFE: verifyPassword returns only users that have an active contractorId
         // via the login flow; a null contractorId would have failed the DB query above.
         contractorId: user.contractorId!

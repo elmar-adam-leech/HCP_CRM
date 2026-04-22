@@ -316,20 +316,29 @@ export class AuthService {
         return;
       }
 
-      // Attach user to request
-      req.user = decoded;
+      // Attach user to request — overwrite stale JWT claims with fresh membership
+      // values so that role/permission changes take effect immediately without
+      // requiring a token refresh or re-login.
+      req.user = {
+        ...decoded,
+        role: userContractor.role,
+        canManageIntegrations: userContractor.canManageIntegrations,
+        allowedIntegrations: userContractor.allowedIntegrations ?? null,
+      };
       
-      // Sliding expiration: Refresh token if it's more than halfway to expiration
+      // Sliding expiration: Refresh token if it's more than halfway to expiration.
+      // Always re-issue from the current membership record (not stale JWT claims)
+      // so that role/permission changes are picked up at refresh time.
       if (AuthService.shouldRefreshToken(decoded)) {
         const newToken = AuthService.generateToken({
           id: decoded.userId,
           username: decoded.username,
           name: decoded.name,
           email: decoded.email,
-          role: decoded.role,
+          role: userContractor.role,
           contractorId: decoded.contractorId,
-          canManageIntegrations: decoded.canManageIntegrations,
-          allowedIntegrations: decoded.allowedIntegrations,
+          canManageIntegrations: userContractor.canManageIntegrations,
+          allowedIntegrations: userContractor.allowedIntegrations ?? null,
           tokenVersion: user.tokenVersion,
         });
         
