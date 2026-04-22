@@ -27,6 +27,21 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (/[\\/]node_modules[\\/](react|react-dom|scheduler|wouter|react-is|prop-types|use-sync-external-store|mitt|regexparam)[\\/]/.test(id)) return "react-vendor";
+          if (/[\\/]node_modules[\\/](@radix-ui|@floating-ui|aria-hidden|react-remove-scroll|react-remove-scroll-bar|react-style-singleton|use-callback-ref|use-sidecar|get-nonce|tslib|detect-node-es)[\\/]/.test(id)) return "radix-vendor";
+          if (/[\\/]node_modules[\\/]@tanstack[\\/]/.test(id)) return "query-vendor";
+          if (/[\\/]node_modules[\\/](recharts|d3-|victory-vendor)/.test(id)) return "charts-vendor";
+          if (/[\\/]node_modules[\\/](reactflow|@reactflow)[\\/]/.test(id)) return "flow-vendor";
+          if (/[\\/]node_modules[\\/]date-fns/.test(id)) return "date-vendor";
+          if (/[\\/]node_modules[\\/](lucide-react|react-icons)[\\/]/.test(id)) return "icons-vendor";
+          return "vendor";
+        },
+      },
+    },
   },
   server: {
     fs: {

@@ -47,6 +47,7 @@ Every change must pull its weight in load time, network bytes, JS bundle size, D
 - Use TanStack Query caching with correct, array-form query keys for hierarchical data so invalidation is precise.
 - Lazy-load route components and code-split per route; gate optional/heavy features behind dynamic imports.
 - Public/marketing routes (`/`, `/login`, `/signup`, `/privacy`, `/terms`, `/licenses`, `/forgot-password`, `/reset-password`, `/book/*`) MUST NOT pull dashboard infrastructure into the entry chunk. The dashboard tree lives in `client/src/AppInner.tsx` and is `lazy()`-imported by `App.tsx`. When adding a new public route, add it to `PUBLIC_PATHS` (or the matching regex) **and** to `PublicShell`'s `<Switch>` in `App.tsx` — never reach for anything from `AppInner.tsx` (no `WebSocketProvider`, `DashboardLayout`, `useCurrentUser`, etc.) from the public shell.
+- Heavy per-route dependencies (recharts, reactflow, anything > 50 KB) must live behind a lazy route boundary; vendor chunks are split in `vite.config.ts` so cache invalidation is scoped.
 - Prefer server-side aggregation (SQL `GROUP BY`, CTEs, window functions) over shipping rows to the client to be summed.
 - Prefer `EXISTS` subqueries (or single joined aggregates) over per-row API calls or N+1 fetches in render paths.
 - Debounce expensive inputs (search boxes, autocomplete, filter changes).
