@@ -23,7 +23,7 @@ export class HousecallProService
   extends HcpCustomersModule
   implements
     Pick<HcpEstimatesModule, 'getEstimates' | 'createEstimate' | 'updateEstimate' | 'updateEstimateOptionSchedule' | 'getEstimate' | 'addEstimateNote'>,
-    Pick<HcpLeadsModule, 'createLead' | 'getLead' | 'convertLead' | 'getLeadSources'>,
+    Pick<HcpLeadsModule, 'createLead' | 'getLead' | 'patchLead' | 'convertLead' | 'getLeadSources'>,
     Pick<HcpJobsModule, 'getJobs' | 'getJob'>,
     Pick<HcpEmployeesModule, 'getEmployees' | 'filterEstimators'>,
     Pick<HcpSchedulingModule, 'getEstimatorAvailability' | 'getEmployeeScheduledEstimates' | 'getEmployeeScheduledJobs' | 'getEmployeeScheduledEvents' | 'calculateAvailableSlots'>,
@@ -45,6 +45,7 @@ export class HousecallProService
 
   createLead = this._leads.createLead.bind(this._leads);
   getLead = this._leads.getLead.bind(this._leads);
+  patchLead = this._leads.patchLead.bind(this._leads);
   convertLead = this._leads.convertLead.bind(this._leads);
   getLeadSources = this._leads.getLeadSources.bind(this._leads);
 

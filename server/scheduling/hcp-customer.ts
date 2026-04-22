@@ -164,10 +164,7 @@ export async function syncHcpCustomerAddress(
 
   if (!patchResult.success) {
     log.warn(`[scheduling] Per-address PATCH failed for HCP customer ${customerId} address ${existingAddressId}: ${patchResult.error}. Falling back to delete + recreate.`);
-    const deleteResult = await housecallProService.deleteCustomerAddress(tenantId, customerId, existingAddressId);
-    if (!deleteResult.success) {
-      log.warn(`[scheduling] Could not delete stale HCP address ${existingAddressId} on customer ${customerId}: ${deleteResult.error}; attempting POST anyway`);
-    }
+    await deleteAndVerifyAddress(tenantId, customerId, existingAddressId);
     return await postNewServiceAddress(tenantId, customerId, addressData);
   }
 
@@ -189,11 +186,36 @@ export async function syncHcpCustomerAddress(
   }
 
   log.warn(`[scheduling] HCP per-address PATCH returned success but street did not persist for customer ${customerId} address ${existingAddressId} (expected "${expectedStreet}", got "${persistedStreet}"). Deleting stale record and POSTing a fresh one.`);
-  const deleteResult = await housecallProService.deleteCustomerAddress(tenantId, customerId, existingAddressId);
-  if (!deleteResult.success) {
-    log.warn(`[scheduling] Could not delete stale HCP address ${existingAddressId} on customer ${customerId} during recovery: ${deleteResult.error}; POSTing new address anyway (may result in duplicate)`);
-  }
+  await deleteAndVerifyAddress(tenantId, customerId, existingAddressId);
   return await postNewServiceAddress(tenantId, customerId, addressData);
+}
+
+/**
+ * Deletes an HCP customer address record, then re-fetches the customer to
+ * verify the row is actually gone. HCP occasionally returns 2xx on DELETE but
+ * leaves the row in place; when that happens we log loudly so the caller can
+ * decide whether to take additional recovery steps (e.g. PATCH the HCP lead's
+ * `address_id` so the next convertLead doesn't re-bind to the legacy row).
+ */
+async function deleteAndVerifyAddress(
+  tenantId: string,
+  customerId: string,
+  addressId: string,
+): Promise<void> {
+  const deleteResult = await housecallProService.deleteCustomerAddress(tenantId, customerId, addressId);
+  if (!deleteResult.success) {
+    log.warn(`[scheduling] Could not delete stale HCP address ${addressId} on customer ${customerId}: ${deleteResult.error}`);
+    return;
+  }
+  const verify = await housecallProService.getCustomer(tenantId, customerId);
+  if (!verify.success) {
+    log.warn(`[scheduling] Could not verify deletion of HCP address ${addressId} on customer ${customerId}: ${verify.error}`);
+    return;
+  }
+  const remaining: HcpAddressRecord[] = verify.data?.addresses ?? [];
+  if (remaining.some((a) => a?.id === addressId)) {
+    log.warn(`[scheduling] HCP returned success on DELETE of address ${addressId} on customer ${customerId} but the row is still present after re-fetch. The convert-from-lead path may re-bind to this stale row; rely on the lead address_id PATCH before convertLead to recover.`);
+  }
 }
 
 /**

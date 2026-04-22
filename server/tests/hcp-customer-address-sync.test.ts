@@ -175,7 +175,7 @@ describe('resolveHcpCustomer / syncHcpCustomerAddress', () => {
     expect(hcp.getCustomer).toHaveBeenCalledTimes(2);
   });
 
-  it('per-address PATCH succeeds but street does not persist: deletes + recreates', async () => {
+  it('per-address PATCH succeeds but street does not persist: deletes + recreates and verifies the legacy row is gone', async () => {
     state.contact = {
       id: 'c4',
       name: 'Jane Doe',
@@ -189,10 +189,15 @@ describe('resolveHcpCustomer / syncHcpCustomerAddress', () => {
         success: true,
         data: { addresses: [{ id: 'addr-4', type: 'service', street: 'old st' }] },
       })
-      // Verify: street did NOT update.
+      // Verify after PATCH: street did NOT update.
       .mockResolvedValueOnce({
         success: true,
         data: { addresses: [{ id: 'addr-4', type: 'service', street: 'old st' }] },
+      })
+      // Verify after DELETE: legacy row is gone.
+      .mockResolvedValueOnce({
+        success: true,
+        data: { addresses: [] },
       });
     hcp.updateCustomerAddress.mockResolvedValue({ success: true, data: {} });
     hcp.deleteCustomerAddress.mockResolvedValue({ success: true, data: {} });
@@ -211,9 +216,11 @@ describe('resolveHcpCustomer / syncHcpCustomerAddress', () => {
       country: 'US',
       type: 'service',
     });
+    // 1 initial fetch + 1 PATCH-verify + 1 DELETE-verify
+    expect(hcp.getCustomer).toHaveBeenCalledTimes(3);
   });
 
-  it('per-address PATCH fails: deletes + recreates without verifying', async () => {
+  it('per-address PATCH fails: deletes + recreates and verifies the legacy row is gone', async () => {
     state.contact = {
       id: 'c5',
       name: 'Jane Doe',
@@ -222,10 +229,16 @@ describe('resolveHcpCustomer / syncHcpCustomerAddress', () => {
       phones: [],
     };
 
-    hcp.getCustomer.mockResolvedValueOnce({
-      success: true,
-      data: { addresses: [{ id: 'addr-5', type: 'service', street: 'old st' }] },
-    });
+    hcp.getCustomer
+      .mockResolvedValueOnce({
+        success: true,
+        data: { addresses: [{ id: 'addr-5', type: 'service', street: 'old st' }] },
+      })
+      // Verify after DELETE: legacy row is gone.
+      .mockResolvedValueOnce({
+        success: true,
+        data: { addresses: [] },
+      });
     hcp.updateCustomerAddress.mockResolvedValue({ success: false, error: 'boom' });
     hcp.deleteCustomerAddress.mockResolvedValue({ success: true, data: {} });
     hcp.createCustomerAddress.mockResolvedValue({ success: true, data: { id: 'addr-5-new' } });
@@ -235,8 +248,8 @@ describe('resolveHcpCustomer / syncHcpCustomerAddress', () => {
     expect(hcp.updateCustomerAddress).toHaveBeenCalledTimes(1);
     expect(hcp.deleteCustomerAddress).toHaveBeenCalledWith(TENANT, 'hcp-5', 'addr-5');
     expect(hcp.createCustomerAddress).toHaveBeenCalledTimes(1);
-    // Verify path should NOT have run a second getCustomer
-    expect(hcp.getCustomer).toHaveBeenCalledTimes(1);
+    // 1 initial fetch + 1 DELETE-verify (no PATCH-verify since PATCH failed)
+    expect(hcp.getCustomer).toHaveBeenCalledTimes(2);
     expect(hcp.createCustomerAddress).toHaveBeenCalledWith(TENANT, 'hcp-5', {
       street: ADDRESS.street,
       city: ADDRESS.city,
@@ -245,5 +258,43 @@ describe('resolveHcpCustomer / syncHcpCustomerAddress', () => {
       country: 'US',
       type: 'service',
     });
+  });
+
+  it('HCP returns success on DELETE but the legacy row is still present: logs but proceeds with POST', async () => {
+    state.contact = {
+      id: 'c6',
+      name: 'Jane Doe',
+      housecallProCustomerId: 'hcp-6',
+      emails: [],
+      phones: [],
+    };
+
+    hcp.getCustomer
+      .mockResolvedValueOnce({
+        success: true,
+        data: { addresses: [{ id: 'addr-6', type: 'service', street: 'old st' }] },
+      })
+      // Verify after PATCH: street did NOT update.
+      .mockResolvedValueOnce({
+        success: true,
+        data: { addresses: [{ id: 'addr-6', type: 'service', street: 'old st' }] },
+      })
+      // Verify after DELETE: legacy row is STILL present (HCP no-op delete).
+      .mockResolvedValueOnce({
+        success: true,
+        data: { addresses: [{ id: 'addr-6', type: 'service', street: 'old st' }] },
+      });
+    hcp.updateCustomerAddress.mockResolvedValue({ success: true, data: {} });
+    hcp.deleteCustomerAddress.mockResolvedValue({ success: true, data: {} });
+    hcp.createCustomerAddress.mockResolvedValue({ success: true, data: { id: 'addr-6-new' } });
+
+    const result = await resolveHcpCustomer(TENANT, 'c6', REQUEST);
+
+    // We still return the new address ID; the convert-path will then PATCH the
+    // HCP lead's address_id to bind the estimate to the new row even though
+    // the legacy row remained on the customer.
+    expect(result?.serviceAddressId).toBe('addr-6-new');
+    expect(hcp.deleteCustomerAddress).toHaveBeenCalledTimes(1);
+    expect(hcp.createCustomerAddress).toHaveBeenCalledTimes(1);
   });
 });

@@ -66,6 +66,21 @@ export class HcpLeadsModule extends HcpBaseClient {
     return this.makeRequest(`/leads/${leadId}`, tenantId);
   }
 
+  /**
+   * Patches an HCP lead. Most importantly, lets us re-pin the lead's
+   * `address_id` *before* `convertLead` runs — once the lead has been converted
+   * to an estimate, HCP silently ignores `address_id` PATCH on the resulting
+   * estimate. See `replit.md` HCP Integration Pitfalls.
+   */
+  async patchLead(tenantId: string, leadId: string, leadData: {
+    address_id?: string;
+    note?: string;
+    job_type_id?: string;
+    lead_source?: string;
+  }): Promise<HousecallProResponse<any>> {
+    return this.makeRequest(`/leads/${leadId}`, tenantId, 'PATCH', leadData);
+  }
+
   async convertLead(tenantId: string, leadId: string, options: {
     employee_id?: string;
   } = {}): Promise<HousecallProResponse<HousecallProEstimate>> {

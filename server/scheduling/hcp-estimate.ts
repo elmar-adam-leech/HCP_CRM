@@ -178,6 +178,36 @@ export async function createOrConvertHcpEstimate(
 
   if (!rawEstimateData) {
     if (hcpLeadId) {
+      // Re-pin the lead's address_id BEFORE convertLead. Once HCP creates the
+      // estimate from the lead, it silently no-ops on `address_id` PATCH for
+      // the resulting estimate (documented in `replit.md` HCP Integration
+      // Pitfalls). Pinning the lead first means the converted estimate is
+      // born bound to the right address — no PATCH-and-pray needed.
+      if (serviceAddressId) {
+        try {
+          const leadFetch = await housecallProService.getLead(tenantId, hcpLeadId);
+          const currentLeadAddressId: string | undefined =
+            leadFetch.success
+              ? (leadFetch.data?.address_id || leadFetch.data?.address?.id)
+              : undefined;
+          if (currentLeadAddressId !== serviceAddressId) {
+            log.info(`[scheduling] PATCHing HCP lead ${hcpLeadId} address_id ${currentLeadAddressId ?? '<none>'} → ${serviceAddressId} before convert`);
+            const leadPatch = await housecallProService.patchLead(tenantId, hcpLeadId, {
+              address_id: serviceAddressId,
+            });
+            if (!leadPatch.success) {
+              log.warn(`[scheduling] Failed to PATCH HCP lead ${hcpLeadId} address_id to ${serviceAddressId}: ${leadPatch.error}. Convert may produce an estimate bound to the legacy address.`);
+            } else {
+              log.info(`[scheduling] HCP lead ${hcpLeadId} address_id pinned to ${serviceAddressId}`);
+            }
+          } else {
+            log.info(`[scheduling] HCP lead ${hcpLeadId} already bound to address ${serviceAddressId}; no pre-convert PATCH needed`);
+          }
+        } catch (err) {
+          log.warn(`[scheduling] Unexpected error pinning HCP lead ${hcpLeadId} address before convert: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
       log.info(`[scheduling] Converting HCP lead ${hcpLeadId} to estimate (convert path)`);
       const convertResult = await housecallProService.convertLead(tenantId, hcpLeadId, {
         employee_id: hcpEmployeeId,
@@ -325,32 +355,44 @@ export async function createOrConvertHcpEstimate(
     }
   }
 
+  // Notes are added synchronously (awaited) so any failure is surfaced via the
+  // existing scheduleError channel back to the user — previously these were
+  // fire-and-forget, which silently dropped the booker's typed notes when the
+  // POST failed or raced.
+  const noteFailures: string[] = [];
+
   if (estimateAddress?.street) {
     const addressLine = [estimateAddress.street, estimateAddress.city, estimateAddress.state, estimateAddress.zip]
       .filter(Boolean).join(', ');
     const noteContent = `Service Address: ${addressLine}`;
-    housecallProService.addEstimateNote(tenantId, hcpEstimateId, noteContent).then((noteResult) => {
+    try {
+      const noteResult = await housecallProService.addEstimateNote(tenantId, hcpEstimateId, noteContent);
       if (noteResult.success) {
         log.info(`[scheduling] Added address note to HCP estimate ${hcpEstimateId}`);
       } else {
         log.warn(`[scheduling] Failed to add address note to HCP estimate ${hcpEstimateId}: ${noteResult.error}`);
+        noteFailures.push('service address');
       }
-    }).catch((err) => {
+    } catch (err) {
       log.warn(`[scheduling] Unexpected error adding address note to HCP estimate ${hcpEstimateId}: ${err instanceof Error ? err.message : String(err)}`);
-    });
+      noteFailures.push('service address');
+    }
   }
 
   const customerNotes = (request.notes || '').trim();
   if (customerNotes.length > 0) {
-    housecallProService.addEstimateNote(tenantId, hcpEstimateId, customerNotes).then((noteResult) => {
+    try {
+      const noteResult = await housecallProService.addEstimateNote(tenantId, hcpEstimateId, customerNotes);
       if (noteResult.success) {
-        log.info(`[scheduling] Added customer note to HCP estimate ${hcpEstimateId}`);
+        log.info(`[scheduling] Added booker note to HCP estimate ${hcpEstimateId}`);
       } else {
-        log.warn(`[scheduling] Failed to add customer note to HCP estimate ${hcpEstimateId}: ${noteResult.error}`);
+        log.warn(`[scheduling] Failed to add booker note to HCP estimate ${hcpEstimateId}: ${noteResult.error}`);
+        noteFailures.push('booker notes');
       }
-    }).catch((err) => {
-      log.warn(`[scheduling] Unexpected error adding customer note to HCP estimate ${hcpEstimateId}: ${err instanceof Error ? err.message : String(err)}`);
-    });
+    } catch (err) {
+      log.warn(`[scheduling] Unexpected error adding booker note to HCP estimate ${hcpEstimateId}: ${err instanceof Error ? err.message : String(err)}`);
+      noteFailures.push('booker notes');
+    }
   }
 
   const optionId = rawEstimateData.options?.[0]?.id;
@@ -380,6 +422,11 @@ export async function createOrConvertHcpEstimate(
   } else {
     log.warn('[scheduling] Could not get option ID from estimate, skipping schedule update');
     scheduleError = 'Estimate was created in HousecallPro but no option ID was found to schedule. Please open HousecallPro to assign the appointment time.';
+  }
+
+  if (noteFailures.length > 0) {
+    const noteMsg = `Estimate was created in HousecallPro but the following note(s) could not be added automatically: ${noteFailures.join(', ')}. Please open HousecallPro to add them manually.`;
+    scheduleError = scheduleError ? `${scheduleError} ${noteMsg}` : noteMsg;
   }
 
   return { hcpEstimateId, scheduleError };
