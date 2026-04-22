@@ -39,6 +39,7 @@ import { registerDashboardRoutes } from './routes/dashboard';
 import { registerReportsRoutes } from './routes/reports';
 import { registerLeadCaptureRoutes } from './routes/lead-capture';
 import { registerSalesProcessRoutes } from './routes/sales-process';
+import { registerAdminPerfRoutes } from './routes/admin-perf';
 
 export async function registerRoutes(app: Express): Promise<Server> {
   app.use(cookieParser());
@@ -136,6 +137,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerPublicRoutes(app);
   registerDashboardRoutes(app);
   registerReportsRoutes(app);
+  registerAdminPerfRoutes(app);
 
   app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
     const isDevelopment = process.env.NODE_ENV === 'development';

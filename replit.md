@@ -55,6 +55,7 @@ Every change must pull its weight in load time, network bytes, JS bundle size, D
 - Ship images at the resolution actually rendered; respect viewport pixel width.
 - All HTTP responses are gzip-compressed by `compression` middleware in `server/index.ts`; content-hashed `/assets/*` files are served with `max-age=1y, immutable` in `server/vite.ts`.
 - Public marketing pages (`/`, `/privacy`, `/terms`, `/licenses`) are pre-rendered to static HTML at build time with critical CSS inlined (`scripts/prerender.mjs` + `client/src/prerender-entry.tsx`); `client/src/main.tsx` calls `hydrateRoot` when the root has children. New public/marketing routes MUST be added to `PRERENDER_PATHS` in `client/src/prerender-entry.tsx` AND to `PRERENDERED_ROUTES` in `server/vite.ts:serveStatic`.
+- After any latency-affecting change, capture before/after p50/p95 from `/api/_admin/perf/latency` (super_admin only) for the affected routes and include the numbers in the PR description. Slow individual requests (> `SLOW_REQUEST_THRESHOLD_MS`, default 500ms) are logged with `[slow]` plus method, route, status, duration, and contractorId. Top slow SQL statements are exposed at `/api/_admin/perf/slow-queries` (requires `pg_stat_statements`).
 
 **Never do:**
 - No unbounded list fetches (no endpoint that returns "all rows for the tenant" without `LIMIT`/cursor).

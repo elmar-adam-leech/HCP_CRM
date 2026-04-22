@@ -35,6 +35,21 @@ export const defaultLogger: SchemaDriftLogger = {
 // ──────────────────────────────────────────────────────────────────────────
 export const columnMigrations: Array<{ sql: string; description: string }> = [
     {
+      // Best-effort enable of pg_stat_statements so the
+      // /api/_admin/perf/slow-queries endpoint can report top queries by mean
+      // execution time. Wrapped in DO/EXCEPTION so databases where the role
+      // lacks CREATE EXTENSION privileges (or the extension isn't packaged)
+      // silently no-op instead of breaking startup. See task #593.
+      sql: `DO $$ BEGIN
+        BEGIN
+          CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+        EXCEPTION WHEN OTHERS THEN
+          RAISE NOTICE 'pg_stat_statements not available: %', SQLERRM;
+        END;
+      END $$`,
+      description: 'pg_stat_statements extension (best-effort; powers /api/_admin/perf/slow-queries)',
+    },
+    {
       sql: `ALTER TABLE user_contractors ADD COLUMN IF NOT EXISTS allowed_integrations text[]`,
       description: 'user_contractors.allowed_integrations (per-user integration permissions)',
     },

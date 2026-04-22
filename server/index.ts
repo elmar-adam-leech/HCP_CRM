@@ -21,9 +21,19 @@ import { SpamAuditCleanupJob } from "./services/spam-audit-cleanup-job";
 import { webhookEvents } from "@shared/schema";
 import { and, eq, lt, or, isNotNull, sql } from "drizzle-orm";
 import { CredentialService } from "./credential-service";
+import { recordRequest, normalizePath } from "./services/latency-stats";
 
 const app = express();
 const isProd = process.env.NODE_ENV === "production";
+
+// Slow-request WARN threshold: any /api request exceeding this is logged with
+// method, route key, status, duration, and contractorId (when authenticated).
+// Configurable via SLOW_REQUEST_THRESHOLD_MS (defaults to 500ms). Tuned for
+// "human-noticeable" latency — not for paging anyone.
+const SLOW_REQUEST_THRESHOLD_MS = parseInt(
+  process.env.SLOW_REQUEST_THRESHOLD_MS || '500',
+  10,
+);
 
 // Content Security Policy
 // Production: no 'unsafe-inline' or 'unsafe-eval' in script-src — the Vite
@@ -122,6 +132,26 @@ app.use((req, res, next) => {
       }
 
       log(logLine);
+
+      // Per-route latency aggregation (task #593). Prefer Express's matched
+      // route template (e.g. /api/contacts/:id/leads) so paths bucket
+      // correctly; fall back to regex normalization for unmatched paths.
+      const routeKey = (req as any).route?.path
+        ? `/api${(req as any).baseUrl?.replace(/^\/api/, '') ?? ''}${(req as any).route.path}`
+        : normalizePath(path);
+      try {
+        recordRequest(req.method, routeKey, res.statusCode, duration);
+      } catch {
+        // Never let metrics recording break a request lifecycle.
+      }
+
+      if (duration > SLOW_REQUEST_THRESHOLD_MS) {
+        const contractorId = (req as any).user?.contractorId;
+        const tenantPart = contractorId ? ` contractor=${contractorId}` : '';
+        log(
+          `[slow] ${req.method} ${routeKey} ${res.statusCode} ${duration}ms${tenantPart}`,
+        );
+      }
     }
   });
 
