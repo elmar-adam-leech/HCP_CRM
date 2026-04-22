@@ -46,10 +46,13 @@ export function LogCallDialog({
       const response = await apiRequest('POST', '/api/activities', data);
       return response.json();
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
+      const cleared = data?.autoCompletedCadenceTask;
       toast({
         title: "Call logged",
-        description: "Call activity has been recorded successfully",
+        description: cleared
+          ? "Call recorded — cleared the matching task from your sales cadence."
+          : "Call activity has been recorded successfully",
       });
       
       // Invalidate activities query to refresh the list

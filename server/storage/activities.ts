@@ -146,17 +146,27 @@ async function createActivity(activity: Omit<InsertActivity, 'contractorId'>, co
         sql`(${contacts.lastActivityAt} IS NULL OR ${contacts.lastActivityAt} < ${activityTs})`,
       ));
   }
-  // Sales-process auto-completion hook (task #506). Fire-and-forget so a
-  // hook failure cannot break the primary activity-creation write path.
+  // Sales-process auto-completion hook (task #506). Awaited but wrapped in
+  // try/catch so a hook failure cannot break the primary activity-creation
+  // write path. The result (if any) is attached to the returned activity as
+  // a non-persisted side-channel field so the POST /api/activities route can
+  // surface a subtle confirmation to the rep ("cleared Day-1 call from your
+  // cadence"). Other callers of createActivity simply ignore the field.
   if (result[0]) {
-    void (async () => {
-      try {
-        const { onActivityCreated } = await import("../services/sales-process");
-        await onActivityCreated(result[0]);
-      } catch (err) {
-        console.warn('[sales-process] onActivityCreated hook failed:', err);
+    try {
+      const { onActivityCreated } = await import("../services/sales-process");
+      const completed = await onActivityCreated(result[0]);
+      if (completed) {
+        (result[0] as Activity & { autoCompletedCadenceTask?: unknown }).autoCompletedCadenceTask = {
+          id: completed.id,
+          stepId: completed.stepId,
+          actionType: completed.actionType,
+          dueAt: completed.dueAt,
+        };
       }
-    })();
+    } catch (err) {
+      console.warn('[sales-process] onActivityCreated hook failed:', err);
+    }
   }
   return result[0];
 }

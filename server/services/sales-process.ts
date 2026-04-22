@@ -6,6 +6,7 @@ import type {
   Lead,
   SalesProcess,
   SalesProcessStep,
+  SalesProcessTaskInstance,
 } from "@shared/schema";
 import { logger } from "../utils/logger";
 
@@ -119,24 +120,24 @@ export async function onLeadStatusChanged(
 // Activities satisfying a step must occur within ±2 days of the dueAt.
 const ACTIVITY_MATCH_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
 
-export async function onActivityCreated(activity: Activity): Promise<void> {
-  if (!activity.contactId) return;
+export async function onActivityCreated(activity: Activity): Promise<SalesProcessTaskInstance | undefined> {
+  if (!activity.contactId) return undefined;
   const stepActionType = activityTypeToStepActionType(activity.type);
-  if (!stepActionType) return;
+  if (!stepActionType) return undefined;
 
   // Skip activities the auto-send path wrote, to avoid loopback.
   const meta = activity.metadata as { source?: string } | null | undefined;
-  if (meta && meta.source === 'sales_process') return;
+  if (meta && meta.source === 'sales_process') return undefined;
 
   const activityAt = activity.createdAt ?? new Date();
   const leads = await storage.getLeadsByContact(activity.contactId, activity.contractorId);
-  if (leads.length === 0) return;
+  if (leads.length === 0) return undefined;
   // Activity rows carry contactId only; for multi-lead contacts we
   // resolve to the most recently created non-terminal lead.
   const targetLead = leads
     .filter(l => !isTerminalLeadStatus(l.status))
     .sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0))[0];
-  if (!targetLead) return;
+  if (!targetLead) return undefined;
 
   const pending = await storage.listTaskInstances(activity.contractorId, {
     leadId: targetLead.id,
@@ -146,8 +147,8 @@ export async function onActivityCreated(activity: Activity): Promise<void> {
     .filter(t => t.actionType === stepActionType
       && Math.abs(t.dueAt.getTime() - activityAt.getTime()) <= ACTIVITY_MATCH_WINDOW_MS)
     .sort((a, b) => a.dueAt.getTime() - b.dueAt.getTime());
-  if (matches.length === 0) return;
-  await storage.markTaskCompleted(
+  if (matches.length === 0) return undefined;
+  return await storage.markTaskCompleted(
     matches[0].id,
     activity.contractorId,
     'activity_logged',
