@@ -14,6 +14,13 @@ import {
 } from "@shared/google-local-services-rules";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { SiGoogle } from "react-icons/si";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -41,6 +48,33 @@ interface GlsCredentialsInfo {
   tenantDeveloperTokenSet: boolean;
   platformClientConfigured: boolean;
   platformDeveloperTokenSet: boolean;
+}
+
+interface GlsDisputeBucket {
+  submitted: number;
+  approved: number;
+  rejected: number;
+  failed: number;
+}
+
+interface GlsDispute {
+  leadId: string;
+  contactId: string;
+  contactName: string | null;
+  status: 'submitted' | 'approved' | 'rejected' | 'failed';
+  reason: string | null;
+  notes: string | null;
+  submittedAt: string | null;
+  attemptedAt: string | null;
+  resolvedAt: string | null;
+  error: string | null;
+}
+
+interface GlsDisputeSummary {
+  windows: { last30: GlsDisputeBucket; last90: GlsDisputeBucket };
+  totals: GlsDisputeBucket;
+  disputes: GlsDispute[];
+  listTruncated: boolean;
 }
 
 interface GlsAccount {
@@ -83,6 +117,7 @@ export function GoogleLocalServicesCard() {
   const [clientIdInput, setClientIdInput] = useState('');
   const [clientSecretInput, setClientSecretInput] = useState('');
   const [credsError, setCredsError] = useState<{ message: string; field?: string } | null>(null);
+  const [disputesOpen, setDisputesOpen] = useState(false);
 
   const { data: status, isLoading: statusLoading } = useQuery<GlsStatus>({
     queryKey: ['/api/integrations/google-local-services/status'],
@@ -90,6 +125,11 @@ export function GoogleLocalServicesCard() {
 
   const { data: credsInfo } = useQuery<GlsCredentialsInfo>({
     queryKey: ['/api/integrations/google-local-services/credentials'],
+  });
+
+  const { data: disputeSummary } = useQuery<GlsDisputeSummary>({
+    queryKey: ['/api/integrations/google-local-services/disputes/summary'],
+    enabled: !!status?.connected && !!status?.accountSelected,
   });
 
   // After OAuth redirect we land here with ?google_local_services=pick_account
@@ -748,6 +788,18 @@ export function GoogleLocalServicesCard() {
         </div>
       )}
 
+      {fullyConnected && disputeSummary && (
+        <DisputesSection summary={disputeSummary} onView={() => setDisputesOpen(true)} />
+      )}
+
+      {fullyConnected && (
+        <DisputesDialog
+          open={disputesOpen}
+          onOpenChange={setDisputesOpen}
+          summary={disputeSummary}
+        />
+      )}
+
       <div className="rounded-md border bg-muted/40 p-3 space-y-2">
         <div className="flex items-start gap-2">
           <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
@@ -774,5 +826,162 @@ export function GoogleLocalServicesCard() {
         </div>
       </div>
     </IntegrationCardShell>
+  );
+}
+
+const DISPUTE_STATUS_LABELS: Record<GlsDispute['status'], string> = {
+  submitted: 'Submitted',
+  approved: 'Approved',
+  rejected: 'Rejected',
+  failed: 'Failed to submit',
+};
+
+const DISPUTE_STATUS_VARIANTS: Record<GlsDispute['status'], 'default' | 'secondary' | 'destructive' | 'outline'> = {
+  submitted: 'secondary',
+  approved: 'default',
+  rejected: 'destructive',
+  failed: 'destructive',
+};
+
+function formatDateTime(iso: string | null): string {
+  if (!iso) return '—';
+  const ts = Date.parse(iso);
+  if (Number.isNaN(ts)) return '—';
+  return new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+function DisputeStatRow({ label, bucket, hasAny }: { label: string; bucket: GlsDisputeBucket; hasAny: boolean }) {
+  if (!hasAny) {
+    return (
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="text-muted-foreground">{label}</span>
+        <span className="text-muted-foreground">No disputes</span>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center justify-between gap-2 flex-wrap">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <Badge variant="secondary" data-testid={`gls-dispute-${label.replace(/\s+/g, '-').toLowerCase()}-submitted`}>
+          {bucket.submitted} submitted
+        </Badge>
+        <Badge variant="default">{bucket.approved} approved</Badge>
+        <Badge variant="destructive">{bucket.rejected} rejected</Badge>
+        {bucket.failed > 0 && (
+          <Badge variant="outline">{bucket.failed} failed</Badge>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DisputesSection({ summary, onView }: { summary: GlsDisputeSummary; onView: () => void }) {
+  const { last30, last90 } = summary.windows;
+  const total30 = last30.submitted + last30.approved + last30.rejected + last30.failed;
+  const total90 = last90.submitted + last90.approved + last90.rejected + last90.failed;
+  const totalAll = summary.totals.submitted + summary.totals.approved + summary.totals.rejected + summary.totals.failed;
+
+  return (
+    <div className="rounded-md border bg-muted/30 p-3 space-y-2" data-testid="gls-disputes-section">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <ShieldAlert className="h-4 w-4 text-muted-foreground shrink-0" />
+          <p className="text-sm font-medium truncate">Lead disputes</p>
+        </div>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onView}
+          disabled={totalAll === 0}
+          data-testid="button-gls-view-disputes"
+        >
+          View disputes
+        </Button>
+      </div>
+      {totalAll === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No disputes have been filed yet. Open a Google Local Services lead and use "Dispute lead" to request credit for bad leads.
+        </p>
+      ) : (
+        <div className="space-y-1.5 pt-1">
+          <DisputeStatRow label="Last 30 days" bucket={last30} hasAny={total30 > 0} />
+          <DisputeStatRow label="Last 90 days" bucket={last90} hasAny={total90 > 0} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DisputesDialog({
+  open,
+  onOpenChange,
+  summary,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  summary: GlsDisputeSummary | undefined;
+}) {
+  const disputes = summary?.disputes ?? [];
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col" data-testid="dialog-gls-disputes">
+        <DialogHeader>
+          <DialogTitle>Google Local Services disputes</DialogTitle>
+          <DialogDescription>
+            Disputes you've filed with Google for individual leads, and the outcome Google returned.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="overflow-y-auto -mx-6 px-6 space-y-2">
+          {disputes.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-6 text-center">No disputes to show.</p>
+          ) : (
+            disputes.map(d => (
+              <a
+                key={d.leadId}
+                href={`/leads?contactId=${encodeURIComponent(d.contactId)}`}
+                className="block rounded-md border bg-card p-3 hover-elevate"
+                data-testid={`row-gls-dispute-${d.leadId}`}
+              >
+                <div className="flex items-start justify-between gap-2 flex-wrap">
+                  <div className="min-w-0 space-y-0.5">
+                    <p className="text-sm font-medium truncate">
+                      {d.contactName || 'Unknown contact'}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {d.reason ? `Reason: ${d.reason.replace(/_/g, ' ').toLowerCase()}` : 'No reason recorded'}
+                    </p>
+                  </div>
+                  <Badge variant={DISPUTE_STATUS_VARIANTS[d.status]} className="shrink-0">
+                    {DISPUTE_STATUS_LABELS[d.status]}
+                  </Badge>
+                </div>
+                <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                  <div>Submitted: {formatDateTime(d.submittedAt || d.attemptedAt)}</div>
+                  {(d.status === 'approved' || d.status === 'rejected') && (
+                    <div>Resolved: {formatDateTime(d.resolvedAt)}</div>
+                  )}
+                </div>
+                {d.status === 'failed' && d.error && (
+                  <p className="mt-2 text-xs text-destructive break-words">
+                    Google rejected the submission: {d.error}
+                  </p>
+                )}
+                {d.notes && (
+                  <p className="mt-2 text-xs text-muted-foreground break-words">
+                    Notes: {d.notes}
+                  </p>
+                )}
+              </a>
+            ))
+          )}
+          {summary?.listTruncated && (
+            <p className="text-xs text-muted-foreground py-2 text-center">
+              Showing the most recent {disputes.length} disputes.
+            </p>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -47,6 +47,9 @@ import {
   GLS_AUTO_DISPUTE_RULES_KEY,
   loadAutoDisputeRules,
 } from '../../services/google-local-services-auto-dispute';
+import { db } from '../../db';
+import { leads as leadsTable, contacts as contactsTable } from '@shared/schema';
+import { and, eq, like, desc } from 'drizzle-orm';
 
 const log = logger('GoogleLocalServicesIntegration');
 
@@ -484,6 +487,126 @@ export function registerGoogleLocalServicesIntegrationRoutes(app: Express): void
       }
       log.info(`[auto-dispute-rules] contractor=${tenantId} saved ${body.rules.length} rule(s)`);
       res.json({ rules: body.rules satisfies GlsAutoDisputeRule[] });
+   * Summary of dispute outcomes for the contractor's Google Local Services
+   * leads. Powers the "Disputes" section on the GLS settings card so admins
+   * can monitor credit recovery and spot systematically rejected disputes.
+   *
+   * Source of truth is `leads.rawPayload._gls_dispute_status` (set both by
+   * the dispute action and by the poller mirroring Google's authoritative
+   * state — see `server/sync/google-local-services-leads.ts`).
+   *
+   * Bucketing windows (30/90 day):
+   *   - submitted   → bucketed by `_gls_dispute_submitted_at`
+   *   - approved    → bucketed by `lead.updatedAt` (set when the poller
+   *                    transitioned the marker from submitted → approved)
+   *   - rejected    → ditto for rejected
+   *   - failed      → bucketed by `_gls_dispute_attempted_at`
+   * Approved/rejected don't carry their own resolution timestamp because
+   * Google's report doesn't expose one; `updatedAt` is a tight upper bound
+   * since the poller writes the marker change.
+   */
+  app.get('/api/integrations/google-local-services/disputes/summary',
+    requireGlsAccess,
+    asyncHandler(async (req: AuthedRequest, res: Response) => {
+      const tenantId = req.user.contractorId;
+
+      // Fetch all GLS leads for this tenant whose payload mentions a dispute
+      // marker. The LIKE filter avoids parsing tens of thousands of lead
+      // payloads for tenants with no dispute history.
+      const rows = await db
+        .select({
+          id: leadsTable.id,
+          contactId: leadsTable.contactId,
+          rawPayload: leadsTable.rawPayload,
+          updatedAt: leadsTable.updatedAt,
+          createdAt: leadsTable.createdAt,
+          name: contactsTable.name,
+        })
+        .from(leadsTable)
+        .leftJoin(contactsTable, eq(contactsTable.id, leadsTable.contactId))
+        .where(and(
+          eq(leadsTable.contractorId, tenantId),
+          eq(leadsTable.source, GLS_SOURCE),
+          like(leadsTable.rawPayload, '%_gls_dispute_status%'),
+        ))
+        .orderBy(desc(leadsTable.updatedAt));
+
+      const now = Date.now();
+      const D30 = now - 30 * 24 * 60 * 60_000;
+      const D90 = now - 90 * 24 * 60 * 60_000;
+      const buckets = {
+        last30: { submitted: 0, approved: 0, rejected: 0, failed: 0 },
+        last90: { submitted: 0, approved: 0, rejected: 0, failed: 0 },
+      };
+      const totals = { submitted: 0, approved: 0, rejected: 0, failed: 0 };
+
+      // Cap drill-down list — admins eyeball recent activity, not history.
+      const DISPUTE_LIST_CAP = 50;
+      const disputes: Array<{
+        leadId: string;
+        contactId: string;
+        contactName: string | null;
+        status: 'submitted' | 'approved' | 'rejected' | 'failed';
+        reason: string | null;
+        notes: string | null;
+        submittedAt: string | null;
+        attemptedAt: string | null;
+        resolvedAt: string | null;
+        error: string | null;
+      }> = [];
+
+      for (const row of rows) {
+        let payload: Record<string, unknown>;
+        try { payload = JSON.parse(row.rawPayload ?? '{}'); }
+        catch { continue; }
+
+        const rawStatus = payload._gls_dispute_status;
+        if (rawStatus !== 'submitted' && rawStatus !== 'approved' && rawStatus !== 'rejected' && rawStatus !== 'failed') {
+          continue;
+        }
+        const status = rawStatus as 'submitted' | 'approved' | 'rejected' | 'failed';
+
+        // Pick the timestamp that defines when this dispute "happened" for
+        // bucketing. `submitted_at` and `attempted_at` are explicit; for
+        // approved/rejected we fall back to `updatedAt` because the poller
+        // writes the marker change at that moment.
+        const submittedAt = typeof payload._gls_dispute_submitted_at === 'string' ? payload._gls_dispute_submitted_at : null;
+        const attemptedAt = typeof payload._gls_dispute_attempted_at === 'string' ? payload._gls_dispute_attempted_at : null;
+        let bucketTs: number | null = null;
+        if (status === 'submitted' && submittedAt) bucketTs = Date.parse(submittedAt);
+        else if (status === 'failed' && attemptedAt) bucketTs = Date.parse(attemptedAt);
+        else bucketTs = row.updatedAt ? new Date(row.updatedAt).getTime() : null;
+
+        totals[status]++;
+        if (bucketTs !== null && !Number.isNaN(bucketTs)) {
+          if (bucketTs >= D90) buckets.last90[status]++;
+          if (bucketTs >= D30) buckets.last30[status]++;
+        }
+
+        if (disputes.length < DISPUTE_LIST_CAP) {
+          disputes.push({
+            leadId: row.id,
+            contactId: row.contactId,
+            contactName: row.name ?? null,
+            status,
+            reason: typeof payload._gls_dispute_reason === 'string' ? payload._gls_dispute_reason : null,
+            notes: typeof payload._gls_dispute_notes === 'string' ? payload._gls_dispute_notes : null,
+            submittedAt,
+            attemptedAt,
+            resolvedAt: status === 'approved' || status === 'rejected'
+              ? (row.updatedAt ? new Date(row.updatedAt).toISOString() : null)
+              : null,
+            error: typeof payload._gls_dispute_error === 'string' ? payload._gls_dispute_error : null,
+          });
+        }
+      }
+
+      res.json({
+        windows: buckets,
+        totals,
+        disputes,
+        listTruncated: rows.length > DISPUTE_LIST_CAP,
+      });
     }));
 
   app.put('/api/integrations/google-local-services/credentials',
