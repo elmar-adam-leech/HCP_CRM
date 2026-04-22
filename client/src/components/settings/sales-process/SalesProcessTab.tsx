@@ -7,7 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Trash2, ArrowUp, ArrowDown, Phone, MessageSquare, Mail } from "lucide-react";
+import { Plus, Trash2, ArrowUp, ArrowDown, Phone, MessageSquare, Mail, CalendarDays, Zap, ListTodo } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { SalesProcess, SalesProcessStep } from "@shared/schema";
@@ -87,6 +88,45 @@ export function SalesProcessTab() {
   }, [steps]);
 
   const hasErrors = Object.keys(validation).length > 0;
+
+  // Preview: "If a lead came in today, here's what would happen."
+  // Mirrors server's computeDueAt (createdAt + dayOffset days, preserving
+  // time-of-day) so managers see exactly when each touchpoint fires before
+  // they save. The reference `now` is captured when steps change (not on
+  // every render); managers are reading calendar-day granularity, so a few
+  // minutes of drift while the panel sits open doesn't matter. We don't
+  // tick on a timer — this is a sanity-check preview, not a live clock.
+  const SAMPLE_LEAD = {
+    first_name: 'Jane',
+    last_name: 'Smith',
+    phone: '(555) 123-4567',
+    email: 'jane.smith@example.com',
+  } as const;
+
+  const renderTemplate = (tpl: string) =>
+    tpl
+      .replace(/\{first_name\}/g, SAMPLE_LEAD.first_name)
+      .replace(/\{last_name\}/g, SAMPLE_LEAD.last_name)
+      .replace(/\{phone\}/g, SAMPLE_LEAD.phone)
+      .replace(/\{email\}/g, SAMPLE_LEAD.email);
+
+  const previewItems = useMemo(() => {
+    const now = new Date();
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+    return steps.map((s, i) => ({
+      idx: i + 1,
+      step: s,
+      dueAt: new Date(now.getTime() + Math.max(0, s.dayOffset) * MS_PER_DAY),
+    }));
+  }, [steps]);
+
+  const dateFmt = useMemo(
+    () => new Intl.DateTimeFormat(undefined, {
+      weekday: 'short', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit',
+    }),
+    [],
+  );
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -317,6 +357,76 @@ export function SalesProcessTab() {
               );
             })}
           </div>
+
+          {steps.length > 0 && (
+            <div className="rounded-md border p-4 space-y-3" data-testid="card-cadence-preview">
+              <div>
+                <div className="text-base font-medium flex items-center gap-2">
+                  <CalendarDays className="h-4 w-4" />
+                  Preview: if a lead came in today
+                </div>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Sample lead {SAMPLE_LEAD.first_name} {SAMPLE_LEAD.last_name}. Auto steps are sent automatically; manual steps appear as to-dos for your team.
+                </p>
+              </div>
+              <div>
+                {hasErrors ? (
+                  <p className="text-sm text-muted-foreground" data-testid="preview-disabled">
+                    Fix the errors above to see the schedule preview.
+                  </p>
+                ) : (
+                  <ol className="space-y-3">
+                    {previewItems.map(({ idx, step, dueAt }) => {
+                      const Icon = ACTION_ICON[step.actionType];
+                      const isAuto = step.mode === 'auto';
+                      const rendered = renderTemplate(step.messageTemplate || '');
+                      return (
+                        <li
+                          key={step.key}
+                          className="flex gap-3 rounded-md border p-3"
+                          data-testid={`preview-item-${idx}`}
+                        >
+                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-muted-foreground">
+                            {idx}
+                          </div>
+                          <div className="flex-1 min-w-0 space-y-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <Icon className="h-4 w-4 text-muted-foreground" />
+                              <span className="text-sm font-medium capitalize">{step.actionType}</span>
+                              <Badge variant={isAuto ? 'default' : 'secondary'} className="gap-1">
+                                {isAuto ? <Zap className="h-3 w-3" /> : <ListTodo className="h-3 w-3" />}
+                                {isAuto ? 'Sent automatically' : 'To-do for team'}
+                              </Badge>
+                              <span className="text-xs text-muted-foreground">Day {step.dayOffset}</span>
+                            </div>
+                            <div
+                              className="text-sm text-muted-foreground"
+                              data-testid={`preview-date-${idx}`}
+                            >
+                              {dateFmt.format(dueAt)}
+                            </div>
+                            {step.actionType !== 'call' && rendered.trim().length > 0 && (
+                              <div
+                                className="mt-1 whitespace-pre-wrap rounded border bg-muted/40 p-2 text-sm"
+                                data-testid={`preview-message-${idx}`}
+                              >
+                                {rendered}
+                              </div>
+                            )}
+                            {step.actionType !== 'call' && rendered.trim().length === 0 && step.mode === 'manual' && (
+                              <p className="text-xs text-muted-foreground italic">
+                                No starter message — rep will compose when sending.
+                              </p>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                )}
+              </div>
+            </div>
+          )}
 
           <div className="flex items-center justify-between gap-2">
             <Button variant="outline" onClick={addStep} data-testid="button-add-step">
