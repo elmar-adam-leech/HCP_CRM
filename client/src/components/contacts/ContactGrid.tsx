@@ -128,6 +128,11 @@ export function ContactGrid({
                     Disqualified
                   </Badge>
                 )}
+                {contact.status === 'lost' && (
+                  <Badge variant="destructive" className="text-xs" data-testid={`badge-lost-${contact.id}`}>
+                    Lost
+                  </Badge>
+                )}
                 {contact.allLeadsArchived && (
                   <Badge variant="secondary" className="text-xs" data-testid={`badge-archived-${contact.id}`}>
                     Archived

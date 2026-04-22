@@ -185,6 +185,9 @@ export function ContactCombobox({ value, onChange, error }: ContactComboboxProps
                         {contact.status === 'disqualified' && (
                           <Badge variant="destructive" className="text-xs">Disqualified</Badge>
                         )}
+                        {contact.status === 'lost' && (
+                          <Badge variant="destructive" className="text-xs">Lost</Badge>
+                        )}
                         {contact.allLeadsArchived && (
                           <Badge variant="secondary" className="text-xs">Archived</Badge>
                         )}
