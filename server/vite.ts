@@ -100,8 +100,33 @@ export function serveStatic(app: Express) {
   // etc.) are NOT content-hashed, so they keep the default short cache.
   app.use(express.static(distPath));
 
-  // fall through to index.html if the file doesn't exist
-  app.use("*", (_req, res) => {
-    res.sendFile(path.resolve(distPath, "index.html"));
+  // Marketing/public routes are pre-rendered into per-route HTML files at
+  // build time (scripts/prerender.mjs). Serve those files directly so the
+  // browser paints content before any JavaScript loads. The hashed JS/CSS
+  // bundles they reference are still long-cached; only the HTML must
+  // invalidate per deploy, hence Cache-Control: no-store.
+  //
+  // Any path not in this set falls through to the SPA shell (spa.html, the
+  // empty-root index.html the original SPA used) so wouter can route it.
+  const PRERENDERED_ROUTES: Record<string, string> = {
+    "/": path.resolve(distPath, "index.html"),
+    "/privacy": path.resolve(distPath, "privacy", "index.html"),
+    "/terms": path.resolve(distPath, "terms", "index.html"),
+    "/licenses": path.resolve(distPath, "licenses", "index.html"),
+  };
+
+  const spaShellPath = fs.existsSync(path.resolve(distPath, "spa.html"))
+    ? path.resolve(distPath, "spa.html")
+    : path.resolve(distPath, "index.html");
+
+  app.use("*", (req, res) => {
+    const prerendered = PRERENDERED_ROUTES[req.path];
+    if (prerendered && fs.existsSync(prerendered)) {
+      res.set("Cache-Control", "no-store");
+      res.set("Content-Type", "text/html; charset=utf-8");
+      return res.sendFile(prerendered);
+    }
+    res.set("Cache-Control", "no-store");
+    res.sendFile(spaShellPath);
   });
 }

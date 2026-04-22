@@ -54,6 +54,7 @@ Every change must pull its weight in load time, network bytes, JS bundle size, D
 - Virtualize lists that can render ≥200 rows.
 - Ship images at the resolution actually rendered; respect viewport pixel width.
 - All HTTP responses are gzip-compressed by `compression` middleware in `server/index.ts`; content-hashed `/assets/*` files are served with `max-age=1y, immutable` in `server/vite.ts`.
+- Public marketing pages (`/`, `/privacy`, `/terms`, `/licenses`) are pre-rendered to static HTML at build time with critical CSS inlined (`scripts/prerender.mjs` + `client/src/prerender-entry.tsx`); `client/src/main.tsx` calls `hydrateRoot` when the root has children. New public/marketing routes MUST be added to `PRERENDER_PATHS` in `client/src/prerender-entry.tsx` AND to `PRERENDERED_ROUTES` in `server/vite.ts:serveStatic`.
 
 **Never do:**
 - No unbounded list fetches (no endpoint that returns "all rows for the tenant" without `LIMIT`/cursor).

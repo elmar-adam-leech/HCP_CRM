@@ -1,4 +1,4 @@
-import { createRoot } from "react-dom/client";
+import { createRoot, hydrateRoot } from "react-dom/client";
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import App from "./App";
 import "./index.css";
@@ -42,8 +42,17 @@ class TopLevelErrorBoundary extends Component<
   }
 }
 
-createRoot(document.getElementById("root")!).render(
+const rootEl = document.getElementById("root")!;
+const tree = (
   <TopLevelErrorBoundary>
     <App />
   </TopLevelErrorBoundary>
 );
+
+// If the server sent a pre-rendered marketing page, hydrate the existing DOM
+// in place so the user doesn't see a flash. Otherwise mount the SPA fresh.
+if (rootEl.hasChildNodes()) {
+  hydrateRoot(rootEl, tree);
+} else {
+  createRoot(rootEl).render(tree);
+}
