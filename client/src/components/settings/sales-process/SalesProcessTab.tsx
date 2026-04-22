@@ -531,7 +531,7 @@ function LeadPicker({ selectedLeadId, selectedLeadLabel, isLoading, onSelect }: 
     return () => clearTimeout(t);
   }, [search]);
 
-  const { data: leads = [], isLoading } = useQuery<Contact[]>({
+  const { data: leads = [], isLoading: isLoadingLeads } = useQuery<Contact[]>({
     queryKey: ['/api/contacts/paginated', { type: 'lead', search: debounced, limit: 20, includeAll: true }],
     queryFn: async () => {
       const params = new URLSearchParams({ type: 'lead', limit: '20', includeAll: 'true' });
@@ -571,7 +571,7 @@ function LeadPicker({ selectedLeadId, selectedLeadLabel, isLoading, onSelect }: 
           <CommandList>
             <CommandEmpty>
               <div className="p-2 text-sm text-muted-foreground">
-                {isLoading ? 'Loading…' : 'No leads found.'}
+                {isLoadingLeads ? 'Loading…' : 'No leads found.'}
               </div>
             </CommandEmpty>
             <CommandGroup>

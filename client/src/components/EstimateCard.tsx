@@ -26,6 +26,7 @@ import { getInitials, formatCurrency, formatEntityTitle, hcpUrl } from "@/lib/ut
 import { updateContactTags, getStatusBorderColor } from "@/lib/card-utils";
 import { WorkflowEnrollmentBadges } from "./WorkflowEnrollmentBadges";
 import { useEstimateMutations } from "@/hooks/useEstimateMutations";
+import type { EditEstimateFormValues } from "@/components/EditEstimateModal";
 import type { EstimateListItem } from "./EstimateDetailsModal";
 import { isHcpApprovedOptionStatus, isHcpDeclinedOptionStatus, isHcpExpiredOptionStatus } from "@shared/hcp-option-status";
 
