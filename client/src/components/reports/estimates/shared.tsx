@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useLocation } from "wouter";
 import { useQuery, keepPreviousData, useQueryClient } from "@tanstack/react-query";
 import { format, parseISO } from "date-fns";
 import type { DateRange } from "react-day-picker";
@@ -98,11 +99,99 @@ interface FiltersContextValue {
 
 const FiltersContext = createContext<FiltersContextValue | null>(null);
 
-export function EstimatesReportsFiltersProvider({ children }: { children: ReactNode }) {
-  const [filters, setFiltersState] = useState<EstimatesReportFilters>({ preset: "30d" });
+const VALID_PRESETS: RangePreset[] = ["7d", "30d", "90d", "year", "custom"];
+
+// Format/parse YYYY-MM-DD using the *local* calendar so a user in (e.g.) PST
+// sharing "Aug 1 – Aug 7" doesn't see it shift to "Jul 31 – Aug 6" on reload.
+// `Date#toISOString` and `new Date("YYYY-MM-DD")` both go through UTC and can
+// drift by a day for users in non-UTC timezones.
+function formatLocalDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function parseLocalDate(s: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function parseDateRangeFromUrl(prefix: string): Partial<EstimatesReportFilters> {
+  if (typeof window === "undefined") return {};
+  const p = new URLSearchParams(window.location.search);
+  const preset = p.get(`${prefix}Preset`);
+  const out: Partial<EstimatesReportFilters> = {};
+  if (preset && VALID_PRESETS.includes(preset as RangePreset)) {
+    out.preset = preset as RangePreset;
+  }
+  if (out.preset === "custom") {
+    const from = p.get(`${prefix}From`);
+    const to = p.get(`${prefix}To`);
+    if (from && to) {
+      const fromDate = parseLocalDate(from);
+      const toDate = parseLocalDate(to);
+      if (fromDate && toDate) {
+        out.customRange = { from: fromDate, to: toDate };
+      }
+    }
+  }
+  return out;
+}
+
+// Wraps a subtree with a fresh filter state that initializes from URL params
+// (using the given prefix) and writes filter changes back to the URL. Used so
+// each estimates report can independently persist its date range to the URL.
+export function EstimatesReportsFiltersProvider({
+  children,
+  urlPrefix,
+}: {
+  children: ReactNode;
+  urlPrefix?: string;
+}) {
+  const [, setLocation] = useLocation();
+  const [filters, setFiltersState] = useState<EstimatesReportFilters>(() => {
+    const base: EstimatesReportFilters = { preset: "30d" };
+    if (urlPrefix) Object.assign(base, parseDateRangeFromUrl(urlPrefix));
+    return base;
+  });
   const setFilters = useCallback((next: Partial<EstimatesReportFilters>) => {
     setFiltersState((prev) => ({ ...prev, ...next }));
   }, []);
+
+  // Mirror date range state to the URL so reload/share preserves the view.
+  // Only the preset (and custom dates when relevant) are persisted — the task
+  // scope keeps salesperson/lead source out of the URL.
+  const customFromKey = filters.customRange?.from?.getTime() ?? 0;
+  const customToKey = filters.customRange?.to?.getTime() ?? 0;
+  useEffect(() => {
+    if (!urlPrefix) return;
+    const p = new URLSearchParams(window.location.search);
+    if (filters.preset === "30d") {
+      p.delete(`${urlPrefix}Preset`);
+    } else {
+      p.set(`${urlPrefix}Preset`, filters.preset);
+    }
+    if (
+      filters.preset === "custom" &&
+      filters.customRange?.from &&
+      filters.customRange?.to
+    ) {
+      p.set(`${urlPrefix}From`, formatLocalDate(filters.customRange.from));
+      p.set(`${urlPrefix}To`, formatLocalDate(filters.customRange.to));
+    } else {
+      p.delete(`${urlPrefix}From`);
+      p.delete(`${urlPrefix}To`);
+    }
+    const qs = p.toString();
+    const target = `${window.location.pathname}${qs ? `?${qs}` : ""}`;
+    if (target !== `${window.location.pathname}${window.location.search}`) {
+      setLocation(target, { replace: true });
+    }
+  }, [urlPrefix, filters.preset, customFromKey, customToKey, setLocation]);
+
   const value = useMemo(() => ({ filters, setFilters }), [filters, setFilters]);
   return <FiltersContext.Provider value={value}>{children}</FiltersContext.Provider>;
 }

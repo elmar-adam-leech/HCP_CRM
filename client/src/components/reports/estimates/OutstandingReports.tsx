@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useLocation, useSearch } from "wouter";
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +21,7 @@ import {
   PaginationPrevious,
 } from "@/components/ui/pagination";
 import {
+  EstimatesReportsFiltersProvider,
   ReportShell,
   Stat,
   formatDate,
@@ -334,6 +335,28 @@ export function TablePagination({ page, total, onPageChange, testId }: TablePagi
   );
 }
 
+// Page index lives in the URL (per-report prefix) so reload/share preserves
+// the user's spot in long results, just like the sort selection.
+function usePageFromUrl(prefix: string): { page: number; setPage: (n: number) => void } {
+  const search = useSearch();
+  const [, setLocation] = useLocation();
+  const params = new URLSearchParams(search);
+  const raw = params.get(`${prefix}Page`);
+  const parsed = raw === null ? 0 : parseInt(raw, 10);
+  const page = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  const setPage = useCallback(
+    (n: number) => {
+      const p = new URLSearchParams(window.location.search);
+      if (n <= 0) p.delete(`${prefix}Page`);
+      else p.set(`${prefix}Page`, String(n));
+      const qs = p.toString();
+      setLocation(`${window.location.pathname}${qs ? `?${qs}` : ""}`, { replace: true });
+    },
+    [prefix, setLocation],
+  );
+  return { page, setPage };
+}
+
 // Reset pagination to page 0 whenever any of the report filters change.
 // Without this, narrowing filters while sitting on a high page yields an
 // out-of-range OFFSET → empty rows even though `total > 0`, which would render
@@ -351,22 +374,35 @@ export function useResetOnFilterChange(reset: () => void) {
   const customTo = filters.customRange?.to?.getTime() ?? 0;
   const sp = filters.salespersonId ?? "";
   const ls = filters.leadSource ?? "";
+  // Skip the very first run so a URL-restored page index isn't immediately
+  // clobbered back to 0. Only fire when the user actually changes a filter.
+  const isFirst = useRef(true);
   useEffect(() => {
+    if (isFirst.current) {
+      isFirst.current = false;
+      return;
+    }
     reset();
     // `reset` is intentionally excluded — it's a stable setState callback.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preset, customFrom, customTo, sp, ls]);
 }
 
-export function PendingReport() {
-  const [page, setPage] = useState(0);
+function PendingReportInner() {
+  const { page, setPage } = usePageFromUrl("pending");
   const { sort, toggle } = useSortFromUrl("pending");
   useResetOnFilterChange(() => setPage(0));
   // Reset to page 0 whenever the sort changes — otherwise a sort flip while
-  // sitting on page 5 could leave the user on an out-of-range OFFSET.
+  // sitting on page 5 could leave the user on an out-of-range OFFSET. Skip the
+  // initial render so a URL-restored page isn't immediately reset.
+  const sortIsFirst = useRef(true);
   useEffect(() => {
+    if (sortIsFirst.current) {
+      sortIsFirst.current = false;
+      return;
+    }
     setPage(0);
-  }, [sort.field, sort.dir]);
+  }, [sort.field, sort.dir, setPage]);
   const { data, isLoading, isError } = useReportQuery<OutstandingData>(
     "/api/reports/estimates/pending",
     {
@@ -417,13 +453,26 @@ export function PendingReport() {
   );
 }
 
-export function InProgressReport() {
-  const [page, setPage] = useState(0);
+export function PendingReport() {
+  return (
+    <EstimatesReportsFiltersProvider urlPrefix="pending">
+      <PendingReportInner />
+    </EstimatesReportsFiltersProvider>
+  );
+}
+
+function InProgressReportInner() {
+  const { page, setPage } = usePageFromUrl("inProgress");
   const { sort, toggle } = useSortFromUrl("inProgress");
   useResetOnFilterChange(() => setPage(0));
+  const sortIsFirst = useRef(true);
   useEffect(() => {
+    if (sortIsFirst.current) {
+      sortIsFirst.current = false;
+      return;
+    }
     setPage(0);
-  }, [sort.field, sort.dir]);
+  }, [sort.field, sort.dir, setPage]);
   const { data, isLoading, isError } = useReportQuery<OutstandingData>(
     "/api/reports/estimates/in-progress",
     {
@@ -472,5 +521,13 @@ export function InProgressReport() {
         </>
       )}
     </ReportShell>
+  );
+}
+
+export function InProgressReport() {
+  return (
+    <EstimatesReportsFiltersProvider urlPrefix="inProgress">
+      <InProgressReportInner />
+    </EstimatesReportsFiltersProvider>
   );
 }
