@@ -51,6 +51,7 @@ Every change must pull its weight in load time, network bytes, JS bundle size, D
 - Debounce expensive inputs (search boxes, autocomplete, filter changes).
 - Virtualize lists that can render ≥200 rows.
 - Ship images at the resolution actually rendered; respect viewport pixel width.
+- All HTTP responses are gzip-compressed by `compression` middleware in `server/index.ts`; content-hashed `/assets/*` files are served with `max-age=1y, immutable` in `server/vite.ts`.
 
 **Never do:**
 - No unbounded list fetches (no endpoint that returns "all rows for the tenant" without `LIMIT`/cursor).

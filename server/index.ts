@@ -1,4 +1,5 @@
 import express, { type Request, Response, NextFunction } from "express";
+import compression from "compression";
 import helmet from "helmet";
 import { ZodError } from "zod";
 import { registerRoutes } from "./routes";
@@ -67,6 +68,12 @@ app.use((req, res, next) => {
   return express.json()(req, res, next);
 });
 app.use(express.urlencoded({ extended: false }));
+
+// gzip-compress responses (HTML, JS, CSS, JSON). Registered AFTER the raw-body
+// HCP webhook branch and the standard body parsers so it never reads webhook
+// payloads, and BEFORE the request-logger / route handlers so all responses
+// flow through it. Default threshold (1 KB) avoids spending CPU on tiny JSON.
+app.use(compression());
 
 // Sensitive path prefixes whose response bodies must never be logged.
 // Add any new route prefix here that returns credentials, tokens, PII, or

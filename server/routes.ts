@@ -51,7 +51,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.setHeader('Surrogate-Control', 'no-store');
     }
     else if (req.path.match(/\.(js|css|png|jpg|jpeg|gif|ico|svg)$/)) {
-      res.setHeader('Cache-Control', 'max-age=300, must-revalidate');
+      // Content-hashed Vite bundles under /assets/* are immutable — let
+      // serveStatic apply its own `public, max-age=1y, immutable` header
+      // (send.js only sets Cache-Control when it isn't already set, so we
+      // must NOT pre-set anything here for those paths).
+      if (!req.path.startsWith('/assets/')) {
+        res.setHeader('Cache-Control', 'max-age=300, must-revalidate');
+      }
     }
     next();
   });
