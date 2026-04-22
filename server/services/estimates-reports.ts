@@ -20,6 +20,8 @@ export interface EstimatesReportFilters {
   endDate: Date;
   salespersonId?: string | null;
   leadSource?: string | null;
+  page?: number;
+  pageSize?: number;
 }
 
 const num = (v: unknown): number => {
@@ -680,22 +682,28 @@ export interface OutstandingEstimateRow {
 }
 
 export interface OutstandingReport {
-  count: number;
+  total: number;
   totalValue: number;
   estimates: OutstandingEstimateRow[];
   buckets: { bucket: string; count: number }[];
 }
+
+const OUTSTANDING_DEFAULT_PAGE_SIZE = 25;
+const OUTSTANDING_MAX_PAGE_SIZE = 100;
 
 async function getOutstanding(
   contractorId: string,
   f: EstimatesReportFilters,
   statuses: string[],
 ): Promise<OutstandingReport> {
-  // Outstanding lists ignore the date range — they're a "right now" worklist.
-  // Salesperson + lead-source filters still apply.
+  // Date range filter applies to e.created_at; salesperson + lead-source still
+  // apply. Pagination is server-side: stats span the full filtered set, only
+  // the row list is sliced.
   const parts: SQL[] = [
     sql.raw(`e.contractor_id = `).append(sql`${contractorId}`),
     sql`e.status IN (${sql.join(statuses.map((s) => sql`${s}`), sql`, `)})`,
+    sql`e.created_at >= ${f.startDate.toISOString()}`,
+    sql`e.created_at < ${f.endDate.toISOString()}`,
   ];
   if (f.salespersonId) {
     parts.push(sql.raw(`e.salesperson_user_id = `).append(sql`${f.salespersonId}`));
@@ -705,7 +713,42 @@ async function getOutstanding(
     else parts.push(sql.raw(`l.source = `).append(sql`${f.leadSource}`));
   }
   const where = sql.join(parts, sql.raw(" AND "));
-  const result = await db.execute<{
+
+  const page = Math.max(0, Math.floor(f.page ?? 0));
+  const rawSize = Math.floor(f.pageSize ?? OUTSTANDING_DEFAULT_PAGE_SIZE);
+  const pageSize = Math.min(OUTSTANDING_MAX_PAGE_SIZE, Math.max(1, rawSize));
+  const offset = page * pageSize;
+
+  // Aggregate query: totals + age bucket counts across the full filtered set.
+  const aggResult = await db.execute<{
+    total: string | number;
+    total_value: string | null;
+    bucket_0_7: string | number;
+    bucket_8_14: string | number;
+    bucket_15_30: string | number;
+    bucket_30_plus: string | number;
+  }>(sql`
+    WITH base AS (
+      SELECT
+        e.amount::numeric AS amount,
+        EXTRACT(EPOCH FROM (NOW() - e.created_at)) / 86400.0 AS age_days
+      FROM ${canonicalEstimates(contractorId)} e
+      LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
+      WHERE ${where}
+    )
+    SELECT
+      COUNT(*)::int AS total,
+      COALESCE(SUM(amount), 0)::float8 AS total_value,
+      COUNT(*) FILTER (WHERE age_days <= 7)::int AS bucket_0_7,
+      COUNT(*) FILTER (WHERE age_days > 7 AND age_days <= 14)::int AS bucket_8_14,
+      COUNT(*) FILTER (WHERE age_days > 14 AND age_days <= 30)::int AS bucket_15_30,
+      COUNT(*) FILTER (WHERE age_days > 30)::int AS bucket_30_plus
+    FROM base
+  `);
+  const agg = aggResult.rows[0];
+
+  // Row query: only the requested page slice.
+  const rowResult = await db.execute<{
     id: string;
     title: string;
     contact_id: string;
@@ -730,9 +773,9 @@ async function getOutstanding(
     LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
     WHERE ${where}
     ORDER BY e.created_at ASC
-    LIMIT 500
+    LIMIT ${pageSize} OFFSET ${offset}
   `);
-  const rows: OutstandingEstimateRow[] = result.rows.map((r) => {
+  const rows: OutstandingEstimateRow[] = rowResult.rows.map((r) => {
     const age = num(r.age_days);
     const bucket: OutstandingEstimateRow["ageBucket"] =
       age <= 7 ? "0-7" : age <= 14 ? "8-14" : age <= 30 ? "15-30" : "30+";
@@ -749,13 +792,15 @@ async function getOutstanding(
       ageBucket: bucket,
     };
   });
-  const buckets = ["0-7", "8-14", "15-30", "30+"].map((b) => ({
-    bucket: b,
-    count: rows.filter((r) => r.ageBucket === b).length,
-  }));
+  const buckets = [
+    { bucket: "0-7", count: num(agg?.bucket_0_7) },
+    { bucket: "8-14", count: num(agg?.bucket_8_14) },
+    { bucket: "15-30", count: num(agg?.bucket_15_30) },
+    { bucket: "30+", count: num(agg?.bucket_30_plus) },
+  ];
   return {
-    count: rows.length,
-    totalValue: round2(rows.reduce((acc, r) => acc + r.amount, 0)),
+    total: num(agg?.total),
+    totalValue: round2(num(agg?.total_value)),
     estimates: rows,
     buckets,
   };

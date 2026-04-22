@@ -16,6 +16,7 @@ import {
   getRevenueReport,
   getPipelineForecastReport,
   getCloseRateBySalesperson,
+  getPendingReport,
 } from "./estimates-reports";
 
 const RUN = !!process.env.DATABASE_URL;
@@ -129,5 +130,98 @@ d("estimates reports — option-row dedup", () => {
     expect(r.totals.won).toBe(0);
     expect(r.totals.lost).toBe(0);
     expect(r.totals.decisionRate).toBe(0);
+  });
+});
+
+// Separate suite for outstanding date filter + pagination. Uses its own
+// contractor to keep the row counts deterministic regardless of the seeds in
+// the dedup suite above.
+let pagedContractorId: string;
+let pagedContactId: string;
+
+const ageDate = (days: number): string => {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString();
+};
+
+beforeAll(async () => {
+  if (!RUN) return;
+  const c = await db.execute<{ id: string }>(sql`
+    INSERT INTO contractors (name, domain)
+    VALUES ('test-outstanding-paging', ${'test-outstanding-' + Date.now() + '.example.com'})
+    RETURNING id
+  `);
+  pagedContractorId = c.rows[0].id;
+  const ct = await db.execute<{ id: string }>(sql`
+    INSERT INTO contacts (name, contractor_id)
+    VALUES ('Test Contact', ${pagedContractorId})
+    RETURNING id
+  `);
+  pagedContactId = ct.rows[0].id;
+
+  // Three pending estimates: 5 days old, 20 days old, 60 days old. Each native
+  // (no HCP id), each at $1000. Default Last 30 days returns 2; full range 3.
+  for (const [title, age] of [["P-5d", 5], ["P-20d", 20], ["P-60d", 60]] as const) {
+    await db.execute(sql`
+      INSERT INTO estimates (title, amount, status, contact_id, contractor_id,
+        created_at, updated_at)
+      VALUES (${title}, '1000', 'sent', ${pagedContactId}, ${pagedContractorId},
+        ${ageDate(age)}, ${ageDate(age)})
+    `);
+  }
+});
+
+afterAll(async () => {
+  if (!RUN || !pagedContractorId) return;
+  await db.execute(sql`DELETE FROM estimates WHERE contractor_id = ${pagedContractorId}`);
+  await db.execute(sql`DELETE FROM contacts WHERE contractor_id = ${pagedContractorId}`);
+  await db.execute(sql`DELETE FROM contractors WHERE id = ${pagedContractorId}`);
+});
+
+d("getPendingReport — date filter + pagination", () => {
+  it("default 30-day window excludes the 60-day-old estimate", async () => {
+    const end = new Date();
+    const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const r = await getPendingReport(pagedContractorId, { startDate: start, endDate: end });
+    expect(r.total).toBe(2);
+    expect(r.totalValue).toBe(2000);
+    expect(r.estimates).toHaveLength(2);
+  });
+
+  it("wider date range returns all three estimates", async () => {
+    const end = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const start = new Date(end.getTime() - 365 * 24 * 60 * 60 * 1000);
+    const r = await getPendingReport(pagedContractorId, { startDate: start, endDate: end });
+    expect(r.total).toBe(3);
+    expect(r.totalValue).toBe(3000);
+  });
+
+  it("paginates rows but keeps stats across the full filtered set", async () => {
+    const end = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const start = new Date(end.getTime() - 365 * 24 * 60 * 60 * 1000);
+    const baseFilters = { startDate: start, endDate: end };
+
+    const page0 = await getPendingReport(pagedContractorId, { ...baseFilters, page: 0, pageSize: 1 });
+    expect(page0.estimates).toHaveLength(1);
+    expect(page0.total).toBe(3);
+    expect(page0.totalValue).toBe(3000);
+
+    const page1 = await getPendingReport(pagedContractorId, { ...baseFilters, page: 1, pageSize: 1 });
+    expect(page1.estimates).toHaveLength(1);
+    expect(page1.total).toBe(3);
+    expect(page1.totalValue).toBe(3000);
+
+    const page2 = await getPendingReport(pagedContractorId, { ...baseFilters, page: 2, pageSize: 1 });
+    expect(page2.estimates).toHaveLength(1);
+    expect(page2.total).toBe(3);
+
+    // Stats (bucket counts) should match across pages.
+    expect(page0.buckets).toEqual(page1.buckets);
+    expect(page1.buckets).toEqual(page2.buckets);
+
+    // Different rows on each page (sorted by created_at ASC = oldest first).
+    const ids = new Set([page0.estimates[0].id, page1.estimates[0].id, page2.estimates[0].id]);
+    expect(ids.size).toBe(3);
   });
 });

@@ -280,10 +280,19 @@ export function EstimatesReportFiltersBar({
 
 // ---- Report query helper ---------------------------------------------------
 
-export function useReportQuery<T>(path: string, opts?: { skipDateFilter?: boolean }) {
+export function useReportQuery<T>(
+  path: string,
+  opts?: { skipDateFilter?: boolean; extraParams?: Record<string, string | number> },
+) {
   const { filters } = useEstimatesReportFilters();
   const range = resolveRange(filters);
   const enabled = opts?.skipDateFilter ? true : range !== null;
+  // Stable, sorted serialization of extraParams so the queryKey is consistent
+  // regardless of insertion order.
+  const extraEntries = Object.entries(opts?.extraParams ?? {})
+    .filter(([, v]) => v !== undefined && v !== null)
+    .sort(([a], [b]) => a.localeCompare(b));
+  const extraKey = extraEntries.map(([k, v]) => `${k}=${v}`).join("&");
   return useQuery<T>({
     queryKey: [
       path,
@@ -291,6 +300,7 @@ export function useReportQuery<T>(path: string, opts?: { skipDateFilter?: boolea
       range?.endDate ?? "",
       filters.salespersonId ?? "",
       filters.leadSource ?? "",
+      extraKey,
     ],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -300,6 +310,7 @@ export function useReportQuery<T>(path: string, opts?: { skipDateFilter?: boolea
       }
       if (filters.salespersonId) params.set("salespersonId", filters.salespersonId);
       if (filters.leadSource) params.set("leadSource", filters.leadSource);
+      for (const [k, v] of extraEntries) params.set(k, String(v));
       const url = `${path}?${params.toString()}`;
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error(`Failed to load ${path}`);

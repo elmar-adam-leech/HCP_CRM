@@ -35,6 +35,8 @@ const estimatesReportQuerySchema = z.object({
   endDate: z.string().datetime({ offset: true }).optional().or(z.string().date().optional()),
   salespersonId: z.string().min(1).optional(),
   leadSource: z.string().min(1).optional(),
+  page: z.coerce.number().int().min(0).optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).optional(),
 });
 
 // Resolve a report-filters object out of the query string. Default window is the
@@ -46,7 +48,7 @@ function resolveFilters(req: AuthedRequest, res: Response): EstimatesReportFilte
     res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid query parameters" });
     return null;
   }
-  const { startDate, endDate, salespersonId, leadSource } = parsed.data;
+  const { startDate, endDate, salespersonId, leadSource, page, pageSize } = parsed.data;
   let start: Date;
   let end: Date;
   if (startDate && endDate) {
@@ -69,11 +71,14 @@ function resolveFilters(req: AuthedRequest, res: Response): EstimatesReportFilte
     endDate: end,
     salespersonId: salespersonId ?? null,
     leadSource: leadSource ?? null,
+    page: page ?? 0,
+    pageSize: pageSize ?? 25,
   };
 }
 
 // Stable cache-key serializer: filter date instances normalize to ISO and
 // nullable filters normalize to "" so identical requests share a cache slot.
+// page/pageSize are included so paginated reports cache each page separately.
 function serializeFilters(args: [EstimatesReportFilters]): string {
   const f = args[0];
   return [
@@ -81,6 +86,8 @@ function serializeFilters(args: [EstimatesReportFilters]): string {
     f.endDate.toISOString(),
     f.salespersonId ?? "",
     f.leadSource ?? "",
+    f.page ?? 0,
+    f.pageSize ?? 25,
   ].join("|");
 }
 
