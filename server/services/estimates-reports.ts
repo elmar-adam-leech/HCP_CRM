@@ -80,7 +80,6 @@ export async function getEstimateFilterOptions(contractorId: string): Promise<{
     WHERE contractor_id = ${contractorId}
       AND source IS NOT NULL
       AND source <> ''
-      AND converted_to_estimate_id IS NOT NULL
     ORDER BY source
   `);
   return {
