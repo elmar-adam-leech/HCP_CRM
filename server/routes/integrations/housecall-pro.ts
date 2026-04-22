@@ -54,6 +54,32 @@ export function registerHousecallProRoutes(app: Express): void {
     res.json(result.data);
   }));
 
+  app.get("/api/housecall-pro/service-items/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const isIntegrationEnabled = await isIntegrationEnabledCached(req.user.contractorId, 'housecall-pro');
+    if (!isIntegrationEnabled) {
+      res.status(403).json({
+        message: "Housecall Pro integration is not enabled for this tenant. Please enable it first.",
+        integrationDisabled: true,
+      });
+      return;
+    }
+
+    const { id } = req.params;
+    if (!id || typeof id !== 'string') {
+      res.status(400).json({ message: "service_item_id is required" });
+      return;
+    }
+
+    const result = await housecallProService.getServiceItem(id, req.user.contractorId);
+    if (!result.success) {
+      const message = result.error || 'Failed to fetch service item';
+      const isNotFound = /404|not found/i.test(message);
+      res.status(isNotFound ? 404 : 502).json({ message });
+      return;
+    }
+    res.json(result.data);
+  }));
+
   app.get("/api/housecall-pro/availability", asyncHandler(async (req: AuthedRequest, res: Response) => {
     const isIntegrationEnabled = await isIntegrationEnabledCached(req.user.contractorId, 'housecall-pro');
     if (!isIntegrationEnabled) {

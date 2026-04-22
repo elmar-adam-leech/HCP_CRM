@@ -4,6 +4,7 @@ import { HcpLeadsModule } from './leads';
 import { HcpJobsModule } from './jobs';
 import { HcpEmployeesModule } from './employees';
 import { HcpSchedulingModule } from './scheduling';
+import { HcpServiceItemsModule } from './service-items';
 
 export type {
   HousecallProCustomer,
@@ -25,13 +26,15 @@ export class HousecallProService
     Pick<HcpLeadsModule, 'createLead' | 'getLead' | 'convertLead' | 'getLeadSources'>,
     Pick<HcpJobsModule, 'getJobs' | 'getJob'>,
     Pick<HcpEmployeesModule, 'getEmployees' | 'filterEstimators'>,
-    Pick<HcpSchedulingModule, 'getEstimatorAvailability' | 'getEmployeeScheduledEstimates' | 'getEmployeeScheduledJobs' | 'getEmployeeScheduledEvents' | 'calculateAvailableSlots'>
+    Pick<HcpSchedulingModule, 'getEstimatorAvailability' | 'getEmployeeScheduledEstimates' | 'getEmployeeScheduledJobs' | 'getEmployeeScheduledEvents' | 'calculateAvailableSlots'>,
+    Pick<HcpServiceItemsModule, 'getServiceItem'>
 {
   private readonly _estimates = new HcpEstimatesModule();
   private readonly _leads = new HcpLeadsModule();
   private readonly _jobs = new HcpJobsModule();
   private readonly _employees = new HcpEmployeesModule();
   private readonly _scheduling = new HcpSchedulingModule();
+  private readonly _serviceItems = new HcpServiceItemsModule();
 
   getEstimates = this._estimates.getEstimates.bind(this._estimates);
   createEstimate = this._estimates.createEstimate.bind(this._estimates);
@@ -56,6 +59,8 @@ export class HousecallProService
   getEmployeeScheduledJobs = this._scheduling.getEmployeeScheduledJobs.bind(this._scheduling);
   getEmployeeScheduledEvents = this._scheduling.getEmployeeScheduledEvents.bind(this._scheduling);
   calculateAvailableSlots = this._scheduling.calculateAvailableSlots.bind(this._scheduling);
+
+  getServiceItem = this._serviceItems.getServiceItem.bind(this._serviceItems);
 
   async isConfigured(tenantId: string): Promise<boolean> {
     try {
