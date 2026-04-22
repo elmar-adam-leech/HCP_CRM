@@ -275,6 +275,11 @@ export interface DialpadOffice {
   phone_numbers?: string[];
 }
 
+interface DialpadOfficesResponse {
+  items?: DialpadOffice[];
+  cursor?: string;
+}
+
 export async function getCompanyOffices(tenantId: string): Promise<DialpadOffice[]> {
   try {
     const { apiKey, baseUrl } = await getCredentials(tenantId);
@@ -282,11 +287,11 @@ export async function getCompanyOffices(tenantId: string): Promise<DialpadOffice
     let cursor: string | null = null;
 
     do {
-      const url = cursor
+      const url: string = cursor
         ? `${baseUrl}/offices?active_only=true&cursor=${encodeURIComponent(cursor)}`
         : `${baseUrl}/offices?active_only=true`;
 
-      const response = await withRetry(
+      const response: Response = await withRetry(
         () => dialpadFetch(url, {
           method: 'GET',
           headers: {
@@ -302,10 +307,12 @@ export async function getCompanyOffices(tenantId: string): Promise<DialpadOffice
         break;
       }
 
-      const result = await response.json();
-      const items = result.items || (Array.isArray(result) ? result : []);
+      const result = (await response.json()) as DialpadOfficesResponse | DialpadOffice[];
+      const items: DialpadOffice[] = Array.isArray(result)
+        ? result
+        : (result.items ?? []);
       allOffices.push(...items);
-      cursor = result.cursor || null;
+      cursor = (Array.isArray(result) ? null : result.cursor) ?? null;
     } while (cursor);
 
     log.info(`Fetched ${allOffices.length} offices from Dialpad`);

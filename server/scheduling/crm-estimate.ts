@@ -1,6 +1,6 @@
 import { db } from '../db';
 import { estimates } from '@shared/schema';
-import { eq, and, isNotNull, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import type { BookingRequest, SalespersonInfo } from '../types/scheduling';
 import { logger } from '../utils/logger';
 import { storage } from '../storage';

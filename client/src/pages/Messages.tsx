@@ -22,7 +22,7 @@ import {
   Inbox
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest } from "@/lib/queryClient";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import type { Message } from "@shared/schema";
