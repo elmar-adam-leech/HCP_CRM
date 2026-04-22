@@ -1,9 +1,9 @@
-import { Switch, Route } from "wouter";
+import { Switch, Route, useLocation } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { LoginForm } from "@/components/LoginForm";
 
@@ -47,9 +47,25 @@ const PUBLIC_PATHS = new Set<string>([
 ]);
 
 function isPublicPath(path: string): boolean {
-  if (PUBLIC_PATHS.has(path)) return true;
-  if (/^\/privacy\//.test(path)) return true;
+  const normalized = path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
+  if (PUBLIC_PATHS.has(normalized)) return true;
+  if (/^\/privacy\//.test(normalized)) return true;
   return false;
+}
+
+/**
+ * Strips a single trailing slash from the current pathname (for any path
+ * longer than "/") via a `replace` navigation, so wouter's exact-match
+ * `<Switch>` resolves the route. Used by both PublicShell and
+ * PublicBookingShell so that `/licenses/`, `/book/foo/`, etc. don't 404.
+ */
+function useStripTrailingSlash() {
+  const [location, setLocation] = useLocation();
+  useEffect(() => {
+    if (location.length > 1 && location.endsWith("/")) {
+      setLocation(location.slice(0, -1), { replace: true });
+    }
+  }, [location, setLocation]);
 }
 
 /**
@@ -119,23 +135,30 @@ function PublicLoginPage() {
  * useCurrentUser auth bootstrap). Visitors to /, /login, /privacy, /terms,
  * /licenses, /signup, /forgot-password, /reset-password get this shell only.
  */
+function PublicShellRoutes() {
+  useStripTrailingSlash();
+  return (
+    <Switch>
+      <Route path="/" component={LandingPage} />
+      <Route path="/login" component={PublicLoginPage} />
+      <Route path="/signup" component={SignUp} />
+      <Route path="/forgot-password" component={ForgotPassword} />
+      <Route path="/reset-password" component={ResetPassword} />
+      <Route path="/privacy" component={PrivacyPolicy} />
+      <Route path="/privacy/:slug" component={PrivacyPolicy} />
+      <Route path="/terms" component={TermsOfService} />
+      <Route path="/licenses" component={OpenSourceLicenses} />
+    </Switch>
+  );
+}
+
 function PublicShell() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <ErrorBoundary>
           <Suspense fallback={PageFallback}>
-            <Switch>
-              <Route path="/" component={LandingPage} />
-              <Route path="/login" component={PublicLoginPage} />
-              <Route path="/signup" component={SignUp} />
-              <Route path="/forgot-password" component={ForgotPassword} />
-              <Route path="/reset-password" component={ResetPassword} />
-              <Route path="/privacy" component={PrivacyPolicy} />
-              <Route path="/privacy/:slug" component={PrivacyPolicy} />
-              <Route path="/terms" component={TermsOfService} />
-              <Route path="/licenses" component={OpenSourceLicenses} />
-            </Switch>
+            <PublicShellRoutes />
           </Suspense>
         </ErrorBoundary>
         <Toaster />
@@ -144,18 +167,26 @@ function PublicShell() {
   );
 }
 
+
 /**
  * PublicBookingShell — even more minimal than PublicShell. Used for /book/*
  * so that public booking visitors don't pay for the marketing pages either.
  */
+function PublicBookingShellRoutes() {
+  useStripTrailingSlash();
+  return (
+    <Switch>
+      <Route path="/book/:slug" component={PublicBooking} />
+    </Switch>
+  );
+}
+
 function PublicBookingShell() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <ErrorBoundary>
-          <Switch>
-            <Route path="/book/:slug" component={PublicBooking} />
-          </Switch>
+          <PublicBookingShellRoutes />
         </ErrorBoundary>
         <Toaster />
       </TooltipProvider>
