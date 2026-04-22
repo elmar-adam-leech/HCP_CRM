@@ -7,11 +7,15 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Trash2, ArrowUp, ArrowDown, Phone, MessageSquare, Mail, CalendarDays, Zap, ListTodo } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Plus, Trash2, ArrowUp, ArrowDown, Phone, MessageSquare, Mail, CalendarDays, Zap, ListTodo, Check, ChevronsUpDown, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import type { SalesProcess, SalesProcessStep } from "@shared/schema";
+import { useContact } from "@/hooks/useContact";
+import { cn } from "@/lib/utils";
+import type { Contact, SalesProcess, SalesProcessStep } from "@shared/schema";
 
 type ActionType = 'call' | 'text' | 'email';
 type StepMode = 'manual' | 'auto';
@@ -89,13 +93,13 @@ export function SalesProcessTab() {
 
   const hasErrors = Object.keys(validation).length > 0;
 
-  // Preview: "If a lead came in today, here's what would happen."
-  // Mirrors server's computeDueAt (createdAt + dayOffset days, preserving
-  // time-of-day) so managers see exactly when each touchpoint fires before
-  // they save. The reference `now` is captured when steps change (not on
-  // every render); managers are reading calendar-day granularity, so a few
-  // minutes of drift while the panel sits open doesn't matter. We don't
-  // tick on a timer — this is a sanity-check preview, not a live clock.
+  // Preview: "If a lead came in today (or on this lead's createdAt),
+  // here's what would happen." Mirrors server's computeDueAt (createdAt +
+  // dayOffset days, preserving time-of-day) so managers see exactly when
+  // each touchpoint fires before they save. By default we use a sample
+  // lead with `now` as the reference. Managers can pick a real lead to
+  // spot-check template substitutions and back-dated cadences (e.g. a
+  // lead from last week to see whether the day-7 step is overdue).
   const SAMPLE_LEAD = {
     first_name: 'Jane',
     last_name: 'Smith',
@@ -103,22 +107,58 @@ export function SalesProcessTab() {
     email: 'jane.smith@example.com',
   } as const;
 
+  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
+  const { data: selectedLead, isLoading: selectedLeadLoading } = useContact(selectedLeadId);
+
+  // Effective preview lead: real lead's data when selected, else sample.
+  // Splitting `name` on the first whitespace mirrors how name pieces are
+  // surfaced elsewhere in the app — contacts use a single `name` column.
+  const previewLead = useMemo(() => {
+    if (selectedLeadId && selectedLead) {
+      const name = selectedLead.name ?? '';
+      const space = name.indexOf(' ');
+      const first_name = space >= 0 ? name.slice(0, space) : name;
+      const last_name = space >= 0 ? name.slice(space + 1) : '';
+      const createdAt = selectedLead.createdAt
+        ? new Date(selectedLead.createdAt)
+        : new Date();
+      return {
+        isSample: false,
+        label: name || 'Selected lead',
+        first_name,
+        last_name,
+        phone: selectedLead.phones?.[0] ?? '',
+        email: selectedLead.emails?.[0] ?? '',
+        createdAt,
+      };
+    }
+    return {
+      isSample: true,
+      label: `${SAMPLE_LEAD.first_name} ${SAMPLE_LEAD.last_name}`,
+      first_name: SAMPLE_LEAD.first_name,
+      last_name: SAMPLE_LEAD.last_name,
+      phone: SAMPLE_LEAD.phone,
+      email: SAMPLE_LEAD.email,
+      createdAt: new Date(),
+    };
+  }, [selectedLeadId, selectedLead]);
+
   const renderTemplate = (tpl: string) =>
     tpl
-      .replace(/\{first_name\}/g, SAMPLE_LEAD.first_name)
-      .replace(/\{last_name\}/g, SAMPLE_LEAD.last_name)
-      .replace(/\{phone\}/g, SAMPLE_LEAD.phone)
-      .replace(/\{email\}/g, SAMPLE_LEAD.email);
+      .replace(/\{first_name\}/g, previewLead.first_name)
+      .replace(/\{last_name\}/g, previewLead.last_name)
+      .replace(/\{phone\}/g, previewLead.phone)
+      .replace(/\{email\}/g, previewLead.email);
 
   const previewItems = useMemo(() => {
-    const now = new Date();
     const MS_PER_DAY = 24 * 60 * 60 * 1000;
+    const ref = previewLead.createdAt.getTime();
     return steps.map((s, i) => ({
       idx: i + 1,
       step: s,
-      dueAt: new Date(now.getTime() + Math.max(0, s.dayOffset) * MS_PER_DAY),
+      dueAt: new Date(ref + Math.max(0, s.dayOffset) * MS_PER_DAY),
     }));
-  }, [steps]);
+  }, [steps, previewLead]);
 
   const dateFmt = useMemo(
     () => new Intl.DateTimeFormat(undefined, {
@@ -360,14 +400,39 @@ export function SalesProcessTab() {
 
           {steps.length > 0 && (
             <div className="rounded-md border p-4 space-y-3" data-testid="card-cadence-preview">
-              <div>
-                <div className="text-base font-medium flex items-center gap-2">
-                  <CalendarDays className="h-4 w-4" />
-                  Preview: if a lead came in today
+              <div className="space-y-3">
+                <div>
+                  <div className="text-base font-medium flex items-center gap-2">
+                    <CalendarDays className="h-4 w-4" />
+                    Preview cadence
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {previewLead.isSample
+                      ? `Using sample lead ${previewLead.label} as if they came in right now. `
+                      : `Using ${previewLead.label}'s real info and createdAt. `}
+                    Auto steps are sent automatically; manual steps appear as to-dos for your team.
+                  </p>
                 </div>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Sample lead {SAMPLE_LEAD.first_name} {SAMPLE_LEAD.last_name}. Auto steps are sent automatically; manual steps appear as to-dos for your team.
-                </p>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Label className="text-sm whitespace-nowrap">Preview as</Label>
+                  <LeadPicker
+                    selectedLeadId={selectedLeadId}
+                    selectedLeadLabel={previewLead.isSample ? null : previewLead.label}
+                    isLoading={selectedLeadLoading}
+                    onSelect={setSelectedLeadId}
+                  />
+                  {selectedLeadId && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setSelectedLeadId(null)}
+                      data-testid="button-use-sample-lead"
+                    >
+                      <X className="h-4 w-4 mr-1" />
+                      Use sample lead
+                    </Button>
+                  )}
+                </div>
               </div>
               <div>
                 {hasErrors ? (
@@ -443,5 +508,97 @@ export function SalesProcessTab() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+interface LeadPickerProps {
+  selectedLeadId: string | null;
+  selectedLeadLabel: string | null;
+  isLoading?: boolean;
+  onSelect: (id: string) => void;
+}
+
+// Lead-only picker for the cadence preview. We don't reuse ContactCombobox
+// because it includes "create new customer" affordances that don't make
+// sense here (this is a read-only preview tool) and isn't scoped to leads.
+function LeadPicker({ selectedLeadId, selectedLeadLabel, isLoading, onSelect }: LeadPickerProps) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const [debounced, setDebounced] = useState('');
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(search), 250);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const { data: leads = [], isLoading } = useQuery<Contact[]>({
+    queryKey: ['/api/contacts/paginated', { type: 'lead', search: debounced, limit: 20, includeAll: true }],
+    queryFn: async () => {
+      const params = new URLSearchParams({ type: 'lead', limit: '20', includeAll: 'true' });
+      if (debounced) params.set('search', debounced);
+      const result = await (await apiRequest('GET', `/api/contacts/paginated?${params}`)).json();
+      return (result.data ?? []) as Contact[];
+    },
+    enabled: open,
+  });
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-72 justify-between"
+          data-testid="button-select-preview-lead"
+        >
+          <span className="truncate">
+            {selectedLeadId
+              ? (selectedLeadLabel ?? (isLoading ? 'Loading selected lead…' : 'Selected lead'))
+              : 'Use sample lead'}
+          </span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72 p-0" align="start">
+        <Command shouldFilter={false}>
+          <CommandInput
+            placeholder="Search leads by name, email, or phone…"
+            value={search}
+            onValueChange={setSearch}
+            data-testid="input-search-preview-lead"
+          />
+          <CommandList>
+            <CommandEmpty>
+              <div className="p-2 text-sm text-muted-foreground">
+                {isLoading ? 'Loading…' : 'No leads found.'}
+              </div>
+            </CommandEmpty>
+            <CommandGroup>
+              {leads.map((lead) => (
+                <CommandItem
+                  key={lead.id}
+                  value={lead.id}
+                  onSelect={() => {
+                    onSelect(lead.id);
+                    setOpen(false);
+                    setSearch('');
+                  }}
+                  data-testid={`option-preview-lead-${lead.id}`}
+                >
+                  <Check className={cn('mr-2 h-4 w-4', selectedLeadId === lead.id ? 'opacity-100' : 'opacity-0')} />
+                  <div className="flex flex-col flex-1 min-w-0">
+                    <span className="truncate text-sm">{lead.name}</span>
+                    <span className="text-xs text-muted-foreground truncate">
+                      {lead.emails?.[0] || lead.phones?.[0] || 'No contact info'}
+                    </span>
+                  </div>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
