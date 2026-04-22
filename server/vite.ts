@@ -3,6 +3,9 @@ import fs from "fs";
 import path from "path";
 import { createServer as createViteServer, createLogger } from "vite";
 import { type Server } from "http";
+// @ts-expect-error - critters ships types under src/ but its package.json
+// "exports" map doesn't expose them, so TS can't resolve a declaration file.
+import Critters from "critters";
 import viteConfig from "../vite.config";
 import { nanoid } from "nanoid";
 import { PRERENDERED_ROUTE_PATHS } from "@shared/prerendered-routes.mjs";
@@ -165,9 +168,25 @@ export function serveStatic(app: Express) {
   // Per-tenant SSR for /book/:slug — paints the branded booking card before
   // any JavaScript loads. Uses the same SSR bundle the build-time prerender
   // produced (dist/prerender/prerender-entry.mjs).
+  //
+  // We also run Critters over the rendered HTML to inline the CSS rules used
+  // for the first paint (mirroring what scripts/prerender.mjs does for the
+  // static marketing pages). The full stylesheet is rewritten with a swap
+  // preload so it takes over once it finishes loading. Critters output is
+  // cached by booking-ssr alongside the rendered HTML, so the cost is paid at
+  // most once per slug per cache TTL.
+  const critters = new Critters({
+    path: distPath,
+    publicPath: "/",
+    preload: "swap",
+    pruneSource: false,
+    reduceInlineStyles: false,
+    logLevel: "silent",
+  });
   const bookingSsr = createBookingSsrHandler({
     templatePath: spaShellPath,
     loadSsrModule: createProdBookingSsrLoader(path.resolve(distPath, "..")),
+    inlineCriticalCss: (html) => critters.process(html),
   });
   app.get("/book/:slug", (req, res, next) => bookingSsr(req, res, next));
 

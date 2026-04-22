@@ -97,6 +97,14 @@ export interface BookingSsrHandlerOptions {
   loadSsrModule: () => Promise<SsrModule>;
   /** Optional template transform (used by Vite in dev for HMR injection). */
   transformTemplate?: (url: string, html: string) => Promise<string>;
+  /**
+   * Optional post-processor that inlines critical CSS into the page so it can
+   * paint before the main stylesheet downloads. Used in production where the
+   * built CSS files exist on disk; skipped in dev where Vite injects styles
+   * dynamically. Failures are swallowed — inlining is a perf optimisation,
+   * never a correctness requirement.
+   */
+  inlineCriticalCss?: (html: string) => Promise<string>;
 }
 
 export function createBookingSsrHandler(opts: BookingSsrHandlerOptions) {
@@ -138,7 +146,18 @@ export function createBookingSsrHandler(opts: BookingSsrHandlerOptions) {
         search: typeof req.query === "object" ? new URLSearchParams(req.query as Record<string, string>).toString() : "",
       });
 
-      const html = buildPage(template, publicContractor, ssrHtml, slug);
+      let html = buildPage(template, publicContractor, ssrHtml, slug);
+
+      if (opts.inlineCriticalCss) {
+        try {
+          html = await opts.inlineCriticalCss(html);
+        } catch (err) {
+          console.warn(
+            "[booking-ssr] critical CSS inlining failed, serving uninlined HTML:",
+            err,
+          );
+        }
+      }
 
       htmlCache.set(slug, { html, expiresAt: Date.now() + HTML_CACHE_TTL_MS });
 
