@@ -173,10 +173,25 @@ export async function processGlsLead(
   // Mirror Google's authoritative dispute outcome onto our internal status
   // marker so the UI reflects approval/rejection without us having to add a
   // dedicated column. (Google's poller is the source of truth here.)
+  //
+  // The first time we observe a transition from submitted → approved/rejected
+  // we also stamp `_gls_dispute_resolved_at` so the disputes summary endpoint
+  // can bucket the resolution by when Google actually resolved it (well, when
+  // we first saw the resolution — Google's report has no resolution timestamp
+  // — but that's a tight upper bound, and crucially it's stable across
+  // unrelated lead updates that bump `updatedAt` later). Task #576.
+  const priorStatus = preservedMarkers._gls_dispute_status;
+  const stampResolvedAt = () => {
+    if (!preservedMarkers._gls_dispute_resolved_at) {
+      preservedMarkers._gls_dispute_resolved_at = new Date().toISOString();
+    }
+  };
   if (glsLead.disputeStatus === 'DISPUTE_APPROVED') {
     preservedMarkers._gls_dispute_status = 'approved';
+    if (priorStatus !== 'approved') stampResolvedAt();
   } else if (glsLead.disputeStatus === 'DISPUTE_REJECTED') {
     preservedMarkers._gls_dispute_status = 'rejected';
+    if (priorStatus !== 'rejected') stampResolvedAt();
   } else if (glsLead.disputeStatus === 'DISPUTED' && !preservedMarkers._gls_dispute_status) {
     // Lead was disputed directly in the GLS dashboard (not via this CRM) —
     // record it so the UI shows "Submitted" instead of a dispute button.

@@ -487,6 +487,9 @@ export function registerGoogleLocalServicesIntegrationRoutes(app: Express): void
       }
       log.info(`[auto-dispute-rules] contractor=${tenantId} saved ${body.rules.length} rule(s)`);
       res.json({ rules: body.rules satisfies GlsAutoDisputeRule[] });
+    }));
+
+  /**
    * Summary of dispute outcomes for the contractor's Google Local Services
    * leads. Powers the "Disputes" section on the GLS settings card so admins
    * can monitor credit recovery and spot systematically rejected disputes.
@@ -497,13 +500,15 @@ export function registerGoogleLocalServicesIntegrationRoutes(app: Express): void
    *
    * Bucketing windows (30/90 day):
    *   - submitted   → bucketed by `_gls_dispute_submitted_at`
-   *   - approved    → bucketed by `lead.updatedAt` (set when the poller
-   *                    transitioned the marker from submitted → approved)
+   *   - approved    → bucketed by `_gls_dispute_resolved_at` (stamped by the
+   *                    poller the first time it observed the resolution),
+   *                    falling back to `lead.updatedAt` for legacy rows
+   *                    resolved before that marker existed
    *   - rejected    → ditto for rejected
    *   - failed      → bucketed by `_gls_dispute_attempted_at`
-   * Approved/rejected don't carry their own resolution timestamp because
-   * Google's report doesn't expose one; `updatedAt` is a tight upper bound
-   * since the poller writes the marker change.
+   * Google's report has no resolution timestamp, so `_gls_dispute_resolved_at`
+   * captures when we first observed the resolution — a tight upper bound that
+   * is stable across unrelated lead updates that bump `updatedAt` later.
    */
   app.get('/api/integrations/google-local-services/disputes/summary',
     requireGlsAccess,
@@ -568,13 +573,17 @@ export function registerGoogleLocalServicesIntegrationRoutes(app: Express): void
 
         // Pick the timestamp that defines when this dispute "happened" for
         // bucketing. `submitted_at` and `attempted_at` are explicit; for
-        // approved/rejected we fall back to `updatedAt` because the poller
-        // writes the marker change at that moment.
+        // approved/rejected we prefer `_gls_dispute_resolved_at` (stamped by
+        // the poller on the submitted→approved/rejected transition) and fall
+        // back to `updatedAt` only for legacy rows resolved before that
+        // marker existed.
         const submittedAt = typeof payload._gls_dispute_submitted_at === 'string' ? payload._gls_dispute_submitted_at : null;
         const attemptedAt = typeof payload._gls_dispute_attempted_at === 'string' ? payload._gls_dispute_attempted_at : null;
+        const resolvedAtMarker = typeof payload._gls_dispute_resolved_at === 'string' ? payload._gls_dispute_resolved_at : null;
         let bucketTs: number | null = null;
         if (status === 'submitted' && submittedAt) bucketTs = Date.parse(submittedAt);
         else if (status === 'failed' && attemptedAt) bucketTs = Date.parse(attemptedAt);
+        else if ((status === 'approved' || status === 'rejected') && resolvedAtMarker) bucketTs = Date.parse(resolvedAtMarker);
         else bucketTs = row.updatedAt ? new Date(row.updatedAt).getTime() : null;
 
         totals[status]++;
@@ -594,7 +603,7 @@ export function registerGoogleLocalServicesIntegrationRoutes(app: Express): void
             submittedAt,
             attemptedAt,
             resolvedAt: status === 'approved' || status === 'rejected'
-              ? (row.updatedAt ? new Date(row.updatedAt).toISOString() : null)
+              ? (resolvedAtMarker ?? (row.updatedAt ? new Date(row.updatedAt).toISOString() : null))
               : null,
             error: typeof payload._gls_dispute_error === 'string' ? payload._gls_dispute_error : null,
           });
