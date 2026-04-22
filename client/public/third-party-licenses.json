@@ -670,6 +670,12 @@
         "publisher": ""
       },
       {
+        "name": "@types/compression",
+        "version": "1.8.1",
+        "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+        "publisher": ""
+      },
+      {
         "name": "@types/connect",
         "version": "3.4.38",
         "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
@@ -1426,6 +1432,12 @@
         "publisher": "Jake Luer"
       },
       {
+        "name": "chalk",
+        "version": "4.1.2",
+        "repository": "https://github.com/chalk/chalk",
+        "publisher": ""
+      },
+      {
         "name": "character-entities",
         "version": "2.0.2",
         "repository": "https://github.com/wooorm/character-entities",
@@ -1502,6 +1514,18 @@
         "version": "4.1.1",
         "repository": "https://github.com/tj/commander.js",
         "publisher": "TJ Holowaychuk"
+      },
+      {
+        "name": "compressible",
+        "version": "2.0.18",
+        "repository": "https://github.com/jshttp/compressible",
+        "publisher": ""
+      },
+      {
+        "name": "compression",
+        "version": "1.8.1",
+        "repository": "https://github.com/expressjs/compression",
+        "publisher": ""
       },
       {
         "name": "connect-pg-simple",
@@ -1688,6 +1712,12 @@
         "version": "5.2.1",
         "repository": "https://github.com/react-bootstrap/dom-helpers",
         "publisher": "Jason Quense"
+      },
+      {
+        "name": "dom-serializer",
+        "version": "2.0.0",
+        "repository": "https://github.com/cheeriojs/dom-serializer",
+        "publisher": "Felix Boehm"
       },
       {
         "name": "dunder-proto",
@@ -2032,6 +2062,12 @@
         "publisher": "Google, LLC"
       },
       {
+        "name": "has-flag",
+        "version": "4.0.0",
+        "repository": "https://github.com/sindresorhus/has-flag",
+        "publisher": "Sindre Sorhus"
+      },
+      {
         "name": "has-symbols",
         "version": "1.1.0",
         "repository": "https://github.com/inspect-js/has-symbols",
@@ -2108,6 +2144,12 @@
         "version": "3.0.0",
         "repository": "https://github.com/wooorm/html-void-elements",
         "publisher": "Titus Wormer"
+      },
+      {
+        "name": "htmlparser2",
+        "version": "8.0.2",
+        "repository": "https://github.com/fb55/htmlparser2",
+        "publisher": "Felix Boehm"
       },
       {
         "name": "http-errors",
@@ -2716,6 +2758,12 @@
         "publisher": ""
       },
       {
+        "name": "negotiator",
+        "version": "0.6.4",
+        "repository": "https://github.com/jshttp/negotiator",
+        "publisher": ""
+      },
+      {
         "name": "next-themes",
         "version": "0.4.6",
         "repository": "https://github.com/pacocoursey/next-themes",
@@ -3020,6 +3068,12 @@
         "version": "4.0.2",
         "repository": "https://github.com/postcss/postcss-load-config",
         "publisher": "Michael Ciniawky"
+      },
+      {
+        "name": "postcss-media-query-parser",
+        "version": "0.2.3",
+        "repository": "https://github.com/dryoma/postcss-media-query-parser",
+        "publisher": "dryoma"
       },
       {
         "name": "postcss-nested",
@@ -3502,6 +3556,12 @@
         "publisher": "Sindre Sorhus"
       },
       {
+        "name": "supports-color",
+        "version": "7.2.0",
+        "repository": "https://github.com/chalk/supports-color",
+        "publisher": "Sindre Sorhus"
+      },
+      {
         "name": "supports-preserve-symlinks-flag",
         "version": "1.0.0",
         "repository": "https://github.com/inspect-js/node-supports-preserve-symlinks-flag",
@@ -3902,6 +3962,12 @@
         "version": "3.1.3",
         "repository": "https://github.com/micromatch/anymatch",
         "publisher": "Elan Shanker"
+      },
+      {
+        "name": "boolbase",
+        "version": "1.0.0",
+        "repository": "https://github.com/fb55/boolbase",
+        "publisher": "Felix Boehm"
       },
       {
         "name": "cliui",
@@ -4360,6 +4426,12 @@
         "publisher": "Joe Bell"
       },
       {
+        "name": "critters",
+        "version": "0.0.23",
+        "repository": "https://github.com/GoogleChromeLabs/critters",
+        "publisher": "The Chromium Authors"
+      },
+      {
         "name": "detect-libc",
         "version": "2.1.2",
         "repository": "https://github.com/lovell/detect-libc",
@@ -4480,6 +4552,42 @@
     "licenseText": "Copyright (c) Felix Böhm\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:\n\nRedistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.\n\nRedistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.\n\nTHIS IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS,\nEVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
     "packages": [
       {
+        "name": "css-select",
+        "version": "5.2.2",
+        "repository": "https://github.com/fb55/css-select",
+        "publisher": "Felix Boehm"
+      },
+      {
+        "name": "css-what",
+        "version": "6.2.2",
+        "repository": "https://github.com/fb55/css-what",
+        "publisher": "Felix Böhm"
+      },
+      {
+        "name": "domelementtype",
+        "version": "2.3.0",
+        "repository": "https://github.com/fb55/domelementtype",
+        "publisher": "Felix Boehm"
+      },
+      {
+        "name": "domhandler",
+        "version": "5.0.3",
+        "repository": "https://github.com/fb55/domhandler",
+        "publisher": "Felix Boehm"
+      },
+      {
+        "name": "domutils",
+        "version": "3.2.2",
+        "repository": "https://github.com/fb55/domutils",
+        "publisher": "Felix Boehm"
+      },
+      {
+        "name": "entities",
+        "version": "4.5.0",
+        "repository": "https://github.com/fb55/entities",
+        "publisher": "Felix Boehm"
+      },
+      {
         "name": "entities",
         "version": "6.0.1",
         "repository": "https://github.com/fb55/entities",
@@ -4514,6 +4622,12 @@
         "version": "2.0.3",
         "repository": "https://github.com/estools/esutils",
         "publisher": ""
+      },
+      {
+        "name": "nth-check",
+        "version": "2.1.1",
+        "repository": "https://github.com/fb55/nth-check",
+        "publisher": "Felix Boehm"
       },
       {
         "name": "uri-js",

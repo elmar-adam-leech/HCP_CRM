@@ -1,3 +1,7 @@
+// Runs as part of `npm run build` — do not invoke manually before commits.
+// The build script regenerates client/public/third-party-licenses.json from the
+// installed production dependency tree so the /licenses page stays in sync
+// without any manual step when a new runtime dep is added.
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
