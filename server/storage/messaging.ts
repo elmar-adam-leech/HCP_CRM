@@ -132,19 +132,24 @@ async function getConversations(contractorId: string, options: {
   // Single DB round-trip: find the top N contacts by most recent activity.
   // Date range predicates are applied on the outer MAX(last_ts) so that we only
   // return conversations whose *latest* message falls within the selected range.
-  // Exclude contacts where every lead is archived AND the contact has no estimates or jobs.
+  // For the "All" view, exclude contacts where every lead is archived AND the
+  // contact has no estimates or jobs. The Unread view skips this exclusion so
+  // inbound messages from archived/lead-less contacts still surface.
+  const archivedExclusion = unreadOnly
+    ? sql``
+    : sql`AND NOT (
+        EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = combined.contact_id AND leads.contractor_id = ${contractorId} AND leads.archived = true)
+        AND NOT EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = combined.contact_id AND leads.contractor_id = ${contractorId} AND leads.archived = false)
+        AND NOT EXISTS (SELECT 1 FROM estimates WHERE estimates.contact_id = combined.contact_id AND estimates.contractor_id = ${contractorId})
+        AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.contact_id = combined.contact_id AND jobs.contractor_id = ${contractorId})
+      )`;
   type TopConvRow = { contact_id: string; last_ts: string };
   const topConvResult = await db.execute<TopConvRow>(sql`
     SELECT contact_id, MAX(last_ts) AS last_ts
     FROM (${smsBranch} UNION ALL ${emailBranch}) combined
     WHERE contact_id IS NOT NULL
       ${unreadFilter}
-      AND NOT (
-        EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = combined.contact_id AND leads.contractor_id = ${contractorId} AND leads.archived = true)
-        AND NOT EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = combined.contact_id AND leads.contractor_id = ${contractorId} AND leads.archived = false)
-        AND NOT EXISTS (SELECT 1 FROM estimates WHERE estimates.contact_id = combined.contact_id AND estimates.contractor_id = ${contractorId})
-        AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.contact_id = combined.contact_id AND jobs.contractor_id = ${contractorId})
-      )
+      ${archivedExclusion}
     GROUP BY contact_id
     HAVING TRUE ${dateFrom ? sql`AND MAX(last_ts) >= ${dateFrom.toISOString()}` : sql``} ${dateToInclusive ? sql`AND MAX(last_ts) <= ${dateToInclusive.toISOString()}` : sql``}
     ORDER BY last_ts DESC
@@ -314,6 +319,8 @@ async function markConversationRead(contractorId: string, contactId: string, mes
 
 async function getUnreadMessageCount(contractorId: string): Promise<number> {
   // Distinct contacts with at least one unread inbound SMS or email.
+  // No archived-lead exclusion here: an unread inbound message should always
+  // count, regardless of whether the sender's only lead is archived.
   const result = await db.execute<{ count: string }>(sql`
     WITH unread_contacts AS (
       SELECT contact_id FROM messages
@@ -329,13 +336,7 @@ async function getUnreadMessageCount(contractorId: string): Promise<number> {
         AND contact_id IS NOT NULL
         AND (metadata::jsonb)->>'direction' = 'inbound'
     )
-    SELECT COUNT(*)::text AS count FROM unread_contacts u
-    WHERE NOT (
-      EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = u.contact_id AND leads.contractor_id = ${contractorId} AND leads.archived = true)
-      AND NOT EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = u.contact_id AND leads.contractor_id = ${contractorId} AND leads.archived = false)
-      AND NOT EXISTS (SELECT 1 FROM estimates WHERE estimates.contact_id = u.contact_id AND estimates.contractor_id = ${contractorId})
-      AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.contact_id = u.contact_id AND jobs.contractor_id = ${contractorId})
-    )
+    SELECT COUNT(*)::text AS count FROM unread_contacts
   `);
   return parseInt(result.rows[0]?.count || '0', 10);
 }
@@ -409,12 +410,6 @@ async function getUnreadMessageSummary(contractorId: string): Promise<{ messages
       EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = u.contact_id AND leads.contractor_id = ${contractorId} AND leads.archived = false) AS has_lead,
       EXISTS (SELECT 1 FROM estimates WHERE estimates.contact_id = u.contact_id AND estimates.contractor_id = ${contractorId}) AS has_estimate
     FROM unread_contacts u
-    WHERE NOT (
-      EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = u.contact_id AND leads.contractor_id = ${contractorId} AND leads.archived = true)
-      AND NOT EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = u.contact_id AND leads.contractor_id = ${contractorId} AND leads.archived = false)
-      AND NOT EXISTS (SELECT 1 FROM estimates WHERE estimates.contact_id = u.contact_id AND estimates.contractor_id = ${contractorId})
-      AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.contact_id = u.contact_id AND jobs.contractor_id = ${contractorId})
-    )
   `);
 
   let messages = false;

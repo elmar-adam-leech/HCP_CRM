@@ -1,7 +1,7 @@
 import { storage } from '../storage';
 import { db } from '../db';
 import { users, activities, contacts, contractors } from '@shared/schema';
-import { eq, and, inArray, sql } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { withRetry } from '../utils/retry';
 import { gmailService } from '../gmail-service';
 import { broadcastToContractor } from '../websocket';
@@ -127,20 +127,11 @@ async function syncOneGmailAccount(opts: SyncOneAccountOpts): Promise<void> {
         continue;
       }
 
-      // Skip email activity creation for contacts where every lead is archived
-      // and there are no estimates or jobs — these are muted/archived senders.
-      const archivedCheckResult = await db.execute<{ is_fully_archived: boolean }>(sql`
-        SELECT (
-          EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = ${matchingContact.id} AND leads.contractor_id = ${tenantId} AND leads.archived = true)
-          AND NOT EXISTS (SELECT 1 FROM leads WHERE leads.contact_id = ${matchingContact.id} AND leads.contractor_id = ${tenantId} AND leads.archived = false)
-          AND NOT EXISTS (SELECT 1 FROM estimates WHERE estimates.contact_id = ${matchingContact.id} AND estimates.contractor_id = ${tenantId})
-          AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.contact_id = ${matchingContact.id} AND jobs.contractor_id = ${tenantId})
-        ) AS is_fully_archived
-      `);
-      if (archivedCheckResult.rows[0]?.is_fully_archived) {
-        log.debug(`Skipping email ${email.id} — contact ${matchingContact.id} has only archived leads`);
-        continue;
-      }
+      // NOTE: previously we skipped email activity creation for contacts whose
+      // only lead was archived. That hid legitimate inbound emails from the
+      // Unread tab and unread badge. We now always persist the activity; the
+      // archived-only suppression lives in the conversations "All" view query
+      // instead, so unread surfaces still see new mail.
 
       // Auto-learn the new sender address when the reply was attributed via
       // headers (so subsequent replies match via the fast sender path). Skip
