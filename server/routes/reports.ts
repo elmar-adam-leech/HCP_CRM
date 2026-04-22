@@ -14,7 +14,6 @@ import {
   getPendingReport,
   getInProgressReport,
   getSalesActivityReport,
-  getRepeatCustomerReport,
   getGeographicReport,
   type EstimatesReportFilters,
 } from "../services/estimates-reports";
@@ -96,7 +95,6 @@ const cachedTimeToClose = withReportCache("time-to-close", getTimeToCloseReport,
 const cachedPending = withReportCache("pending", getPendingReport, { serialize: serializeFilters });
 const cachedInProgress = withReportCache("in-progress", getInProgressReport, { serialize: serializeFilters });
 const cachedSalesActivity = withReportCache("sales-activity", getSalesActivityReport, { serialize: serializeFilters });
-const cachedRepeatCustomer = withReportCache("repeat-customer", getRepeatCustomerReport, { serialize: serializeFilters });
 const cachedGeographic = withReportCache("geographic", getGeographicReport, { serialize: serializeFilters });
 const cachedFilterOptions = withReportCache(
   "filter-options",
@@ -187,6 +185,5 @@ export function registerReportsRoutes(app: Express): void {
   wire("/api/reports/estimates/pending", cachedPending);
   wire("/api/reports/estimates/in-progress", cachedInProgress);
   wire("/api/reports/estimates/sales-activity", cachedSalesActivity);
-  wire("/api/reports/estimates/repeat-customers", cachedRepeatCustomer);
   wire("/api/reports/estimates/geographic", cachedGeographic);
 }

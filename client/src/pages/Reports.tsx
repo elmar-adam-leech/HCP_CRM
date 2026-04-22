@@ -23,7 +23,6 @@ import {
   InProgressReport,
 } from "@/components/reports/estimates/OutstandingReports";
 import { SalesActivityReport } from "@/components/reports/estimates/SalesActivityReport";
-import { RepeatCustomerReport } from "@/components/reports/estimates/RepeatCustomerReport";
 import { GeographicReport } from "@/components/reports/estimates/GeographicReport";
 import { PageHeader } from "@/components/ui/page-header-v2";
 import { PageLayout } from "@/components/ui/page-layout";
@@ -43,7 +42,6 @@ const ESTIMATES_REPORT_PATHS: Record<string, string> = {
   pending: "/api/reports/estimates/pending",
   "in-progress": "/api/reports/estimates/in-progress",
   "sales-activity": "/api/reports/estimates/sales-activity",
-  "repeat-customers": "/api/reports/estimates/repeat-customers",
   geographic: "/api/reports/estimates/geographic",
 };
 
@@ -117,11 +115,6 @@ const TAB_REPORTS: Record<TabId, ReportItem[]> = {
     { slug: "pending", name: "Pending Estimates", render: () => <PendingReport /> },
     { slug: "in-progress", name: "In-Progress Estimates", render: () => <InProgressReport /> },
     { slug: "sales-activity", name: "Sales Activity", render: () => <SalesActivityReport /> },
-    {
-      slug: "repeat-customers",
-      name: "Repeat Customers",
-      render: () => <RepeatCustomerReport />,
-    },
     { slug: "geographic", name: "Geographic", render: () => <GeographicReport /> },
   ],
 };
