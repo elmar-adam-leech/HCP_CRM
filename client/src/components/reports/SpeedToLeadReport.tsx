@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { format } from "date-fns";
 import type { DateRange } from "react-day-picker";
 import { CalendarIcon, PhoneOff } from "lucide-react";
@@ -208,6 +208,11 @@ export function SpeedToLeadReport() {
       return res.json();
     },
     enabled: resolvedRange !== null,
+    // Match the estimates reports' caching behavior: keep prior numbers on
+    // screen while a new range loads, and don't refetch within 2 minutes.
+    staleTime: 2 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+    placeholderData: keepPreviousData,
   });
 
   const sortedRows = useMemo(() => {

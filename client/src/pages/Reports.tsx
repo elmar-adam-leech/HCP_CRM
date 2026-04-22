@@ -6,7 +6,10 @@ import {
   ReportsTabLayout,
   type ReportItem,
 } from "@/components/reports/ReportsTabLayout";
-import { EstimatesReportsFiltersProvider } from "@/components/reports/estimates/shared";
+import {
+  EstimatesReportsFiltersProvider,
+  usePrefetchEstimatesReports,
+} from "@/components/reports/estimates/shared";
 import { RevenueReport } from "@/components/reports/estimates/RevenueReport";
 import { LostRevenueReport } from "@/components/reports/estimates/LostRevenueReport";
 import { PipelineForecastReport } from "@/components/reports/estimates/PipelineForecastReport";
@@ -27,6 +30,55 @@ import { PageLayout } from "@/components/ui/page-layout";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 type TabId = "leads" | "sales" | "estimates";
+
+// Map each estimates report slug to the API endpoint it loads. Used to prefetch
+// the neighbors of the active report so the next click feels instant.
+const ESTIMATES_REPORT_PATHS: Record<string, string> = {
+  revenue: "/api/reports/estimates/revenue",
+  "lost-revenue": "/api/reports/estimates/lost-revenue",
+  "pipeline-forecast": "/api/reports/estimates/pipeline-forecast",
+  "close-rate-salesperson": "/api/reports/estimates/close-rate-by-salesperson",
+  "close-rate-source": "/api/reports/estimates/close-rate-by-source",
+  "time-to-close": "/api/reports/estimates/time-to-close",
+  pending: "/api/reports/estimates/pending",
+  "in-progress": "/api/reports/estimates/in-progress",
+  "sales-activity": "/api/reports/estimates/sales-activity",
+  "repeat-customers": "/api/reports/estimates/repeat-customers",
+  geographic: "/api/reports/estimates/geographic",
+};
+
+function EstimatesReportsTab({
+  activeReport,
+  onSelect,
+}: {
+  activeReport: string;
+  onSelect: (slug: string) => void;
+}) {
+  // Prefetch the two neighbors on either side of the current report so users
+  // who scan adjacent tabs don't see a skeleton.
+  const neighborPaths = useMemo(() => {
+    const slugs = TAB_REPORTS.estimates.map((r) => r.slug);
+    const idx = Math.max(0, slugs.indexOf(activeReport));
+    const out: string[] = [];
+    for (let offset = -2; offset <= 2; offset++) {
+      if (offset === 0) continue;
+      const slug = slugs[idx + offset];
+      if (!slug) continue;
+      const path = ESTIMATES_REPORT_PATHS[slug];
+      if (path) out.push(path);
+    }
+    return out;
+  }, [activeReport]);
+  usePrefetchEstimatesReports(neighborPaths);
+  return (
+    <ReportsTabLayout
+      items={TAB_REPORTS.estimates}
+      activeSlug={activeReport}
+      onSelect={onSelect}
+      testIdPrefix="estimates-report"
+    />
+  );
+}
 
 const TAB_REPORTS: Record<TabId, ReportItem[]> = {
   leads: [
@@ -168,12 +220,7 @@ export default function Reports() {
 
         <TabsContent value="estimates" className="mt-6">
           <EstimatesReportsFiltersProvider>
-            <ReportsTabLayout
-              items={TAB_REPORTS.estimates}
-              activeSlug={activeReport}
-              onSelect={setReport}
-              testIdPrefix="estimates-report"
-            />
+            <EstimatesReportsTab activeReport={activeReport} onSelect={setReport} />
           </EstimatesReportsFiltersProvider>
         </TabsContent>
       </Tabs>

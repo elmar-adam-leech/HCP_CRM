@@ -8,6 +8,7 @@ import { db } from "../db";
 import { eq, and, or, desc, gt, gte, lte, ilike, sql, count } from "drizzle-orm";
 import type { UpdateEstimate } from "../storage-types";
 import { maybeDeleteOrphanContactTx } from "./contacts";
+import { invalidateReportsCache } from "../services/report-cache";
 
 type EstimateStatusCounts = {
   all: number;
@@ -243,6 +244,7 @@ async function createEstimate(estimate: Omit<InsertEstimate, 'contractorId'>, co
   // produces the correct shape at runtime. Drizzle's insert type is slightly stricter
   // than the inferred spread, so `as any` silences the structural mismatch.
   const result = await db.insert(estimates).values({ ...estimate, contractorId } as any).returning();
+  invalidateReportsCache(contractorId);
   return result[0];
 }
 
@@ -257,6 +259,7 @@ async function updateEstimate(id: string, estimate: UpdateEstimate, contractorId
     .set({ ...cleanEstimate, updatedAt: new Date() } as any)
     .where(and(eq(estimates.id, id), eq(estimates.contractorId, contractorId)))
     .returning();
+  if (result[0]) invalidateReportsCache(contractorId);
   return result[0];
 }
 
@@ -289,6 +292,7 @@ async function deleteEstimate(id: string, contractorId: string): Promise<boolean
     return result;
   });
 
+  if (deleted.length > 0) invalidateReportsCache(contractorId);
   return deleted.length > 0;
 }
 

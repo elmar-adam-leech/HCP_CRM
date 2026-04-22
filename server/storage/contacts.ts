@@ -15,6 +15,7 @@ import { eq, and, or, asc, desc, ne, lt, lte, gte, ilike, isNotNull, notInArray,
 import { normalizePhoneArrayForStorage } from "../utils/phone-normalizer";
 import type { UpdateContact } from "../storage-types";
 import { cacheInvalidation } from "../services/cache";
+import { invalidateReportsCache } from "../services/report-cache";
 
 function encodeContactCursor(activityAt: Date, createdAt: Date, id: string): string {
   return Buffer.from(JSON.stringify({
@@ -666,6 +667,7 @@ async function createLead(lead: Omit<InsertLead, 'contractorId'>, contractorId: 
       const { materializeForLead } = await import("../services/sales-process");
       await materializeForLead(created, tx);
     }
+    if (created) invalidateReportsCache(contractorId);
     return created;
   });
 }
@@ -683,6 +685,7 @@ async function updateLead(id: string, lead: Partial<InsertLead>, contractorId: s
     .set({ ...lead, updatedAt: new Date() })
     .where(and(eq(leads.id, id), eq(leads.contractorId, contractorId)))
     .returning();
+  if (result[0]) invalidateReportsCache(contractorId);
   if (result[0] && lead.status !== undefined && beforeStatus !== undefined && beforeStatus !== result[0].status) {
     const after = result[0];
     void (async () => {
@@ -718,6 +721,7 @@ async function deleteLead(id: string, contractorId: string): Promise<boolean> {
     await maybeDeleteOrphanContact(contactId, contractorId);
   }
 
+  invalidateReportsCache(contractorId);
   return true;
 }
 

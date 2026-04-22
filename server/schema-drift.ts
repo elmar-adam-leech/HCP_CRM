@@ -796,6 +796,18 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `CREATE UNIQUE INDEX IF NOT EXISTS "sales_process_steps_unique_per_process" ON "sales_process_steps"("sales_process_id", "day_offset", "action_type") WHERE "archived_at" IS NULL`,
       description: 'sales_process_steps unique (process, day_offset, action_type) WHERE archived_at IS NULL',
     },
+    // Task #514: Reports speedups. Composite indexes that match the actual filter
+    // shapes used by the Estimates "Lost Revenue" / "Time to Close" reports
+    // (which group by status + updated_at) and the Speed-to-Lead report
+    // (which joins activities to leads via contact_id and filters by type).
+    {
+      sql: `CREATE INDEX IF NOT EXISTS "estimates_contractor_status_updated_at_idx" ON "estimates" ("contractor_id", "status", "updated_at")`,
+      description: 'estimates composite index (contractor_id, status, updated_at) for Lost Revenue / Time to Close reports',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS "activities_contractor_type_contact_created_idx" ON "activities" ("contractor_id", "type", "contact_id", "created_at")`,
+      description: 'activities composite index (contractor_id, type, contact_id, created_at) for Speed-to-Lead report',
+    },
   ];
 
 export async function applyColumnMigrations(

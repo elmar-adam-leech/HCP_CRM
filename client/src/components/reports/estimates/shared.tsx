@@ -2,11 +2,12 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
 } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData, useQueryClient } from "@tanstack/react-query";
 import { format, parseISO } from "date-fns";
 import type { DateRange } from "react-day-picker";
 import { CalendarIcon } from "lucide-react";
@@ -305,7 +306,60 @@ export function useReportQuery<T>(path: string, opts?: { skipDateFilter?: boolea
       return res.json();
     },
     enabled,
+    // Reports change rarely on the timescale of a user clicking around the
+    // page; bump staleTime so flipping between reports/tabs doesn't refetch
+    // identical data, and keep previous data on screen while new data loads.
+    staleTime: 2 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+    placeholderData: keepPreviousData,
   });
+}
+
+// Lightweight prefetch helper for sibling reports. The Reports page calls this
+// for the active report's neighbors so that when the user clicks one, the data
+// is already in the React Query cache and the chart skeleton is skipped.
+export function usePrefetchEstimatesReports(paths: readonly string[]): void {
+  const qc = useQueryClient();
+  const { filters } = useEstimatesReportFilters();
+  const range = resolveRange(filters);
+  const salesperson = filters.salespersonId ?? "";
+  const leadSource = filters.leadSource ?? "";
+  useEffect(() => {
+    if (!range) return;
+    // Defer to idle to avoid competing with the active report's request.
+    const schedule: (cb: () => void) => number =
+      typeof (globalThis as { requestIdleCallback?: (cb: () => void) => number })
+        .requestIdleCallback === "function"
+        ? (globalThis as { requestIdleCallback: (cb: () => void) => number })
+            .requestIdleCallback
+        : (cb: () => void) => window.setTimeout(cb, 250);
+    const handle = schedule(() => {
+      for (const path of paths) {
+        const params = new URLSearchParams();
+        params.set("startDate", range.startDate);
+        params.set("endDate", range.endDate);
+        if (salesperson) params.set("salespersonId", salesperson);
+        if (leadSource) params.set("leadSource", leadSource);
+        const url = `${path}?${params.toString()}`;
+        void qc.prefetchQuery({
+          queryKey: [path, range.startDate, range.endDate, salesperson, leadSource],
+          queryFn: async () => {
+            const res = await fetch(url, { credentials: "include" });
+            if (!res.ok) throw new Error(`Failed to prefetch ${path}`);
+            return res.json();
+          },
+          staleTime: 2 * 60 * 1000,
+        });
+      }
+    });
+    return () => {
+      const cancel = (
+        globalThis as { cancelIdleCallback?: (h: number) => void }
+      ).cancelIdleCallback;
+      if (typeof cancel === "function") cancel(handle);
+      else clearTimeout(handle);
+    };
+  }, [qc, paths, range?.startDate, range?.endDate, salesperson, leadSource]);
 }
 
 // ---- Report shell ----------------------------------------------------------
