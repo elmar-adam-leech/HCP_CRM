@@ -45,6 +45,7 @@ export interface BackfillFoundationResult {
   estimatesUpdated: number;
   jobsUpdated: number;
   optionsStamped: number;
+  estimateStatusMetadata: number;
 }
 
 /**
@@ -270,7 +271,63 @@ export async function backfillOptionApprovalTimestamps(tenantId: string): Promis
 }
 
 /**
- * Runs all four backfill passes for a single tenant. Idempotent: re-running
+ * Stamps approvalStatusChangedAt on parent estimates that already reached a
+ * terminal status (approved/rejected) but never had the new column populated.
+ * Uses the latest non-pending option timestamp where available, falling back
+ * to syncedAt/updatedAt — the same anchor strategy used for option timestamps.
+ * Also writes a "backfill" reason so reports can distinguish stamped-from-history
+ * rows from live webhook transitions.
+ */
+export async function backfillEstimateStatusMetadata(tenantId: string): Promise<number> {
+  const rows = await db
+    .select({
+      id: estimates.id,
+      status: estimates.status,
+      hcpOptions: estimates.hcpOptions,
+      syncedAt: estimates.syncedAt,
+      updatedAt: estimates.updatedAt,
+    })
+    .from(estimates)
+    .where(and(
+      eq(estimates.contractorId, tenantId),
+      isNull(estimates.approvalStatusChangedAt),
+    ));
+
+  let stamped = 0;
+  for (const row of rows) {
+    // Only backfill rows whose status indicates a customer / pro decision has
+    // already happened — sent/scheduled rows are still awaiting action so
+    // there's no meaningful transition timestamp to record yet.
+    const status = row.status;
+    if (!status || status === 'sent' || status === 'scheduled') continue;
+
+    let anchor: Date | null = null;
+    const opts = row.hcpOptions as HcpOptionEntry[] | null;
+    if (Array.isArray(opts)) {
+      for (const o of opts) {
+        if (o.approval_status_changed_at) {
+          const parsed = new Date(o.approval_status_changed_at);
+          if (!isNaN(parsed.getTime()) && (!anchor || parsed > anchor)) anchor = parsed;
+        }
+      }
+    }
+    anchor = anchor ?? row.syncedAt ?? row.updatedAt ?? null;
+    if (!anchor) continue;
+    await db
+      .update(estimates)
+      .set({
+        approvalStatusChangedAt: anchor,
+        mostRecentStatusChangeReason: `backfill: status=${status}`,
+      })
+      .where(and(eq(estimates.id, row.id), eq(estimates.contractorId, tenantId)));
+    stamped++;
+  }
+  log.info(`[backfill-foundation] tenant ${tenantId}: stamped approvalStatusChangedAt on ${stamped} estimates`);
+  return stamped;
+}
+
+/**
+ * Runs all backfill passes for a single tenant. Idempotent: re-running
  * makes no further changes once everything that can be linked has been linked.
  */
 export async function backfillHcpFoundationForTenant(tenantId: string): Promise<BackfillFoundationResult> {
@@ -278,7 +335,8 @@ export async function backfillHcpFoundationForTenant(tenantId: string): Promise<
   const estimatesUpdated = await backfillEstimateSalespeople(tenantId);
   const jobsUpdated = await backfillJobSalespeople(tenantId);
   const optionsStamped = await backfillOptionApprovalTimestamps(tenantId);
-  return { employeesLinked, estimatesUpdated, jobsUpdated, optionsStamped };
+  const estimateStatusMetadata = await backfillEstimateStatusMetadata(tenantId);
+  return { employeesLinked, estimatesUpdated, jobsUpdated, optionsStamped, estimateStatusMetadata };
 }
 
 /**
@@ -305,6 +363,7 @@ export async function runFoundationBackfill(tenantId?: string): Promise<{
     estimatesUpdated: 0,
     jobsUpdated: 0,
     optionsStamped: 0,
+    estimateStatusMetadata: 0,
   };
 
   for (const t of tenants) {
@@ -315,6 +374,7 @@ export async function runFoundationBackfill(tenantId?: string): Promise<{
       totals.estimatesUpdated += result.estimatesUpdated;
       totals.jobsUpdated += result.jobsUpdated;
       totals.optionsStamped += result.optionsStamped;
+      totals.estimateStatusMetadata += result.estimateStatusMetadata;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.error(`[backfill-foundation] tenant ${t}: failed — ${message}`);
@@ -322,6 +382,6 @@ export async function runFoundationBackfill(tenantId?: string): Promise<{
     }
   }
 
-  log.info(`[backfill-foundation] aggregate across ${tenants.length} tenant(s): linked ${totals.employeesLinked} employees, ${totals.estimatesUpdated} estimates, ${totals.jobsUpdated} jobs, stamped ${totals.optionsStamped} estimate option sets`);
+  log.info(`[backfill-foundation] aggregate across ${tenants.length} tenant(s): linked ${totals.employeesLinked} employees, ${totals.estimatesUpdated} estimates, ${totals.jobsUpdated} jobs, stamped ${totals.optionsStamped} estimate option sets, ${totals.estimateStatusMetadata} parent estimate status timestamps`);
   return { perTenant, totals };
 }

@@ -157,6 +157,10 @@ export async function syncHousecallProEstimates(tenantId: string): Promise<void>
               lineItems: buildHcpLineItems(hcpEstimate) ?? null,
               salespersonUserId: await resolveSalespersonForHcpEntity(tenantId, hcpEstimate),
             };
+            if (newStatus !== existingEstimate.status) {
+              updateData.approvalStatusChangedAt = new Date();
+              updateData.mostRecentStatusChangeReason = `polling-sync: ${existingEstimate.status} → ${newStatus}`;
+            }
             if (!existingEstimate.housecallProEstimateId) updateData.housecallProEstimateId = hcpEstimate.id;
             const hcpCustId = hcpEstimate.customer?.id;
             if (!existingEstimate.housecallProCustomerId && hcpCustId) {

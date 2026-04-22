@@ -197,28 +197,56 @@ export async function extractVariablesFromEntity(entity: Record<string, unknown>
     variables.booking_link = '';
   }
 
-  // Derive condition-friendly scalar fields from nested objects (#437).
-  // These give workflow authors clean comparison fields like
-  // estimate.option_count, job.paid_amount, job.payment_method, job.is_deposit.
+  // Derive condition-friendly scalar fields. Persisted DB columns (Task #445)
+  // are preferred over the raw webhook envelope (#437) so condition matching is
+  // consistent across reruns and surface in reports even after the original
+  // webhook payload is gone.
   if (resolvedType === 'estimate') {
     const options = (entity as any).options;
     if (Array.isArray(options)) {
       variables.option_count = options.length;
     }
     const salesperson = (entity as any).salesperson;
-    if (salesperson && typeof salesperson === 'object') {
-      // Allow conditions to compare against the salesperson's name or id easily.
-      variables.salesperson_name = (salesperson as any).name ?? '';
-      variables.salesperson_id = (salesperson as any).id ?? '';
+    const persistedSalespersonId = (entity as any).salespersonUserId;
+    // Prefer the persisted user id; fall back to the envelope's nested salesperson.
+    variables.salesperson_id = persistedSalespersonId ?? (salesperson?.id ?? '');
+    // The envelope is still the only source of the salesperson display name today —
+    // the DB column is just the user id. Reports that need the name should join.
+    variables.salesperson_name = salesperson?.name ?? '';
+    // Surface the persisted parent-status metadata so workflow conditions can
+    // reference {{estimate.status_changed_at}} / {{estimate.status_change_reason}}.
+    const stampedAt = (entity as any).approvalStatusChangedAt;
+    if (stampedAt) {
+      variables.status_changed_at = stampedAt instanceof Date ? stampedAt.toISOString() : stampedAt;
     }
+    const stampedReason = (entity as any).mostRecentStatusChangeReason;
+    if (stampedReason) variables.status_change_reason = stampedReason;
   }
   if (resolvedType === 'job') {
     const payment = (entity as any).payment;
-    if (payment && typeof payment === 'object') {
-      variables.paid_amount = (payment as any).amount ?? '';
-      variables.payment_method = (payment as any).method ?? '';
-      variables.is_deposit = Boolean((payment as any).is_deposit);
+    const persistedAmount = (entity as any).paidAmount;
+    const persistedMethod = (entity as any).paymentMethod;
+    const persistedDeposit = (entity as any).isDeposit;
+    const persistedPaidAt = (entity as any).paidAt;
+    // Prefer persisted DB values; fall back to the webhook envelope.
+    if (persistedAmount != null) variables.paid_amount = persistedAmount;
+    else if (payment) variables.paid_amount = payment.amount ?? '';
+    if (persistedMethod != null) variables.payment_method = persistedMethod;
+    else if (payment) variables.payment_method = payment.method ?? '';
+    if (persistedDeposit != null) variables.is_deposit = Boolean(persistedDeposit);
+    else if (payment) variables.is_deposit = Boolean(payment.is_deposit);
+    if (persistedPaidAt) {
+      variables.payment_received_at = persistedPaidAt instanceof Date
+        ? persistedPaidAt.toISOString()
+        : persistedPaidAt;
+    } else if (payment?.paid_at) {
+      variables.payment_received_at = payment.paid_at;
     }
+    // Salesperson on the job mirrors the estimate behaviour above.
+    const salesperson = (entity as any).salesperson;
+    const persistedSalespersonId = (entity as any).salespersonUserId;
+    variables.salesperson_id = persistedSalespersonId ?? (salesperson?.id ?? '');
+    variables.salesperson_name = salesperson?.name ?? '';
   }
 
   // Surface nested objects added by HCP-driven triggers (#437) so templates

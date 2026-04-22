@@ -204,6 +204,13 @@
       "when": 1776825325184,
       "tag": "0028_estimates_status_timestamps",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1776825400000,
+      "tag": "0029_estimate_status_metadata",
+      "breakpoints": true
     }
   ]
 }

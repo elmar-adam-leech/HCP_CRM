@@ -692,6 +692,15 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `CREATE INDEX IF NOT EXISTS employees_user_contractor_id_idx ON employees(contractor_id, user_contractor_id) WHERE user_contractor_id IS NOT NULL`,
       description: 'employees_user_contractor_id_idx (per-tenant lookup of linked employees)',
     },
+    // ---- Task #445: Top-level estimate status-change metadata ----
+    {
+      sql: `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS approval_status_changed_at timestamp`,
+      description: 'estimates.approval_status_changed_at (timestamp of latest parent-status flip)',
+    },
+    {
+      sql: `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS most_recent_status_change_reason text`,
+      description: 'estimates.most_recent_status_change_reason (free-form reason for latest status change)',
+    },
     // ---- Task #506: Sales Process settings + scheduling engine ----
     {
       sql: `DO $$ BEGIN

@@ -15,6 +15,33 @@ import type { HandlerResult } from "../utils";
 
 const log = logger('HCPWebhook');
 
+/**
+ * Stamp `approvalStatusChangedAt` and `mostRecentStatusChangeReason` on an
+ * estimate update payload when the resolved status differs from what was
+ * already on the row. Centralised so every webhook branch records the same
+ * provenance string and uses the webhook's `occurred_at` (when supplied) over
+ * wall-clock time — that way replays / out-of-order deliveries do not drift
+ * the recorded transition time.
+ */
+function stampStatusChangeMeta(
+  updateData: Record<string, unknown>,
+  previousStatus: string,
+  eventType: string,
+  occurredAt: Date | undefined,
+  rawData: any,
+): void {
+  const nextStatus = updateData.status as string | undefined;
+  if (!nextStatus || nextStatus === previousStatus) return;
+  updateData.approvalStatusChangedAt = occurredAt ?? new Date();
+  // Prefer an explicit reason/note from HCP if present (e.g. customer rejection
+  // notes), otherwise fall back to a structured "<event>: <prev> → <next>" tag
+  // so reports always have something useful to display.
+  const explicit = (rawData?.reason || rawData?.note || rawData?.decline_reason || '').toString().trim();
+  updateData.mostRecentStatusChangeReason = explicit
+    ? `${eventType}: ${explicit}`
+    : `${eventType}: ${previousStatus} → ${nextStatus}`;
+}
+
 export async function handleEstimateEvent(
   contractorId: string,
   event_type: string,
@@ -47,6 +74,7 @@ export async function handleEstimateEvent(
         updateData.scheduledEnd = fetchedEnd ? new Date(fetchedEnd) : null;
         updateData.scheduledEmployeeId = extractHcpScheduledEmployeeId(fetched);
       }
+      stampStatusChangeMeta(updateData, estimate.status, event_type, occurredAt, data);
       const updated = await storage.updateEstimate(estimate.id, updateData, contractorId);
       if (updated) {
         broadcastToContractor(contractorId, { type: 'estimate_updated', estimateId: updated.id });
@@ -198,6 +226,7 @@ export async function handleEstimateEvent(
         updateData.scheduledEnd = fetched.schedule?.scheduled_end ? new Date(fetched.schedule.scheduled_end) : (fetched.scheduled_end ? new Date(fetched.scheduled_end) : updateData.scheduledEnd);
         updateData.scheduledEmployeeId = extractHcpScheduledEmployeeId(fetched);
       }
+      stampStatusChangeMeta(updateData, estimate.status, event_type, occurredAt, data);
       const updated = await storage.updateEstimate(estimate.id, updateData, contractorId);
       if (updated) {
         broadcastToContractor(contractorId, { type: 'estimate_updated', estimateId: updated.id });
@@ -237,6 +266,7 @@ export async function handleEstimateEvent(
         updateData.scheduledEnd = sentFetchedEnd ? new Date(sentFetchedEnd) : null;
         updateData.scheduledEmployeeId = extractHcpScheduledEmployeeId(fetched);
       }
+      stampStatusChangeMeta(updateData, estimate.status, event_type, occurredAt, data);
       const updated = await storage.updateEstimate(estimate.id, updateData, contractorId);
       if (updated) {
         broadcastToContractor(contractorId, { type: 'estimate_updated', estimateId: updated.id });
@@ -258,6 +288,7 @@ export async function handleEstimateEvent(
         status: resolveHcpEstimateStatus('in_progress', estimate.status, estimate.statusManuallySet ?? false),
         syncedAt: new Date(),
       };
+      stampStatusChangeMeta(updateData, estimate.status, event_type, occurredAt, data);
       const updated = await storage.updateEstimate(estimate.id, updateData, contractorId);
       if (updated) {
         broadcastToContractor(contractorId, { type: 'estimate_updated', estimateId: updated.id });
@@ -369,6 +400,7 @@ export async function handleEstimateEvent(
       // fires so workflow authors can react to the option event itself.
       let updated = estimate;
       if (updateData.status) {
+        stampStatusChangeMeta(updateData, estimate.status, event_type, occurredAt, data);
         const result = await storage.updateEstimate(estimate.id, updateData, contractorId);
         if (result) {
           updated = result;
@@ -420,6 +452,7 @@ export async function handleEstimateEvent(
         scheduledEmployeeId: null,
         syncedAt: new Date(),
       };
+      stampStatusChangeMeta(updateData, estimate.status, event_type, occurredAt, data);
       const updated = await storage.updateEstimate(estimate.id, updateData, contractorId);
       if (updated) {
         broadcastToContractor(contractorId, { type: 'estimate_updated', estimateId: updated.id });

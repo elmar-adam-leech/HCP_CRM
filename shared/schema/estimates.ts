@@ -62,6 +62,17 @@ export const estimates = pgTable("estimates", {
   // user_contractors.user_id. Nullable when the HCP employee is not linked to
   // a CRM user yet (or no employee was assigned).
   salespersonUserId: varchar("salesperson_user_id"),
+  // Top-level timestamp of the most recent estimate-level status change. Updated
+  // by HCP webhook handlers and the polling sync whenever the resolved local
+  // `status` flips. Distinct from per-option `hcpOptions[].approval_status_changed_at`
+  // (which is a per-option signal) — this column reflects the parent estimate's
+  // status transition timestamp and is what reports / SLA queries should join on.
+  approvalStatusChangedAt: timestamp("approval_status_changed_at"),
+  // Free-form reason for the most recent status change. Populated from the HCP
+  // webhook event type (e.g. `estimate.option.approval_status_changed`) or any
+  // explicit reason/note string the webhook supplies. Used by reports and the
+  // estimate detail UI to surface "why did this estimate move to <status>?".
+  mostRecentStatusChangeReason: text("most_recent_status_change_reason"),
   syncedAt: timestamp("synced_at"), // Last sync time with Housecall Pro
   // Status-transition timestamps. Populated the first time an estimate moves into
   // approved/rejected. Used by the Time-to-Close report so later edits to the
