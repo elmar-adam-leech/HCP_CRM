@@ -1,13 +1,59 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { EmptyState } from "@/components/EmptyState";
-import { AlertCircle, Calendar, ExternalLink, FileText, Briefcase, LayoutTemplate, AlertTriangle } from "lucide-react";
+import { AlertCircle, Calendar, ExternalLink, FileText, Briefcase, LayoutTemplate, AlertTriangle, ShieldAlert } from "lucide-react";
 import { format } from "date-fns";
 import type { Lead } from "@shared/schema";
 import { Link } from "wouter";
 import { formatLeadSource } from "@/lib/lead-source";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+
+const GLS_DISPUTE_REASONS: { value: string; label: string }[] = [
+  { value: "SPAM", label: "Spam / fake lead" },
+  { value: "WRONG_GEO", label: "Outside service area" },
+  { value: "WRONG_JOB_TYPE", label: "Wrong job type" },
+  { value: "WRONG_BUSINESS", label: "Wrong business contacted" },
+  { value: "DUPLICATE", label: "Duplicate lead" },
+  { value: "NO_CONTACT_INFO", label: "Bad / missing contact info" },
+  { value: "OTHER", label: "Other (explain below)" },
+];
+
+function describeGlsDisputeStatus(status: string): { label: string; variant: "default" | "secondary" | "destructive" | "outline" } {
+  switch (status) {
+    case "submitted":
+      return { label: "Dispute submitted", variant: "secondary" };
+    case "approved":
+      return { label: "Dispute approved", variant: "default" };
+    case "rejected":
+      return { label: "Dispute rejected", variant: "destructive" };
+    case "failed":
+      return { label: "Dispute failed", variant: "destructive" };
+    default:
+      return { label: status, variant: "outline" };
+  }
+}
 
 interface LeadSubmissionHistoryProps {
   contactId: string;
@@ -129,31 +175,9 @@ export function LeadSubmissionHistory({ contactId }: LeadSubmissionHistoryProps)
               );
             })()}
 
-            {lead.source === 'google_local_services' && (() => {
-              let glsLeadId: string | undefined;
-              let glsLeadType: string | undefined;
-              try {
-                const raw = JSON.parse(lead.rawPayload ?? '{}');
-                glsLeadId = raw._gls_lead_id ? String(raw._gls_lead_id) : undefined;
-                glsLeadType = raw._gls_lead_type ? String(raw._gls_lead_type) : undefined;
-              } catch {
-                // ignore parse errors
-              }
-              if (!glsLeadId) return null;
-              return (
-                <div className="flex items-center gap-2" data-testid={`lead-gls-info-${lead.id}`}>
-                  <LayoutTemplate className="h-4 w-4 text-muted-foreground shrink-0" />
-                  <span className="text-sm font-medium text-muted-foreground">Google Local Services:</span>
-                  <span className="text-sm">
-                    {glsLeadType ? (
-                      <>{glsLeadType.toLowerCase().replace('_', ' ')} <span className="text-xs text-muted-foreground font-mono">({glsLeadId})</span></>
-                    ) : (
-                      <span className="font-mono text-xs">{glsLeadId}</span>
-                    )}
-                  </span>
-                </div>
-              );
-            })()}
+            {lead.source === 'google_local_services' && (
+              <GoogleLocalServicesLeadSection lead={lead} contactId={contactId} />
+            )}
 
             {lead.message && (
               <div data-testid={`lead-message-${lead.id}`}>
@@ -270,6 +294,178 @@ export function LeadSubmissionHistory({ contactId }: LeadSubmissionHistoryProps)
           </CardContent>
         </Card>
       ))}
+    </div>
+  );
+}
+
+interface GoogleLocalServicesLeadSectionProps {
+  lead: Lead;
+  contactId: string;
+}
+
+function GoogleLocalServicesLeadSection({ lead, contactId }: GoogleLocalServicesLeadSectionProps) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState<string>("");
+  const [notes, setNotes] = useState<string>("");
+
+  let glsLeadId: string | undefined;
+  let glsLeadType: string | undefined;
+  let disputeStatus: string | undefined;
+  let disputeReason: string | undefined;
+  let disputeSubmittedAt: string | undefined;
+  let disputeError: string | undefined;
+  try {
+    const raw = JSON.parse(lead.rawPayload ?? '{}');
+    glsLeadId = raw._gls_lead_id ? String(raw._gls_lead_id) : undefined;
+    glsLeadType = raw._gls_lead_type ? String(raw._gls_lead_type) : undefined;
+    disputeStatus = raw._gls_dispute_status ? String(raw._gls_dispute_status) : undefined;
+    disputeReason = raw._gls_dispute_reason ? String(raw._gls_dispute_reason) : undefined;
+    disputeSubmittedAt = raw._gls_dispute_submitted_at ? String(raw._gls_dispute_submitted_at) : undefined;
+    disputeError = raw._gls_dispute_error ? String(raw._gls_dispute_error) : undefined;
+  } catch {
+    // ignore parse errors
+  }
+  if (!glsLeadId) return null;
+
+  const disputeMutation = useMutation({
+    mutationFn: async (vars: { reason: string; notes: string }) => {
+      const res = await apiRequest(
+        "POST",
+        `/api/integrations/google-local-services/leads/${lead.id}/dispute`,
+        { reason: vars.reason, notes: vars.notes || undefined },
+      );
+      return res.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: data?.status === "already_disputed" ? "Already disputed" : "Dispute submitted",
+        description:
+          data?.status === "already_disputed"
+            ? "Google reports this lead is already in a disputed state."
+            : "Google has received the dispute and will review it.",
+      });
+      setOpen(false);
+      setReason("");
+      setNotes("");
+      queryClient.invalidateQueries({ queryKey: [`/api/contacts/${contactId}/leads`] });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Could not submit dispute",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const canDispute = !disputeStatus || disputeStatus === "failed";
+  const submitDisabled =
+    !reason || disputeMutation.isPending || (reason === "OTHER" && !notes.trim());
+  const statusInfo = disputeStatus ? describeGlsDisputeStatus(disputeStatus) : null;
+
+  return (
+    <div className="space-y-2" data-testid={`lead-gls-info-${lead.id}`}>
+      <div className="flex items-center gap-2">
+        <LayoutTemplate className="h-4 w-4 text-muted-foreground shrink-0" />
+        <span className="text-sm font-medium text-muted-foreground">Google Local Services:</span>
+        <span className="text-sm">
+          {glsLeadType ? (
+            <>{glsLeadType.toLowerCase().replace('_', ' ')} <span className="text-xs text-muted-foreground font-mono">({glsLeadId})</span></>
+          ) : (
+            <span className="font-mono text-xs">{glsLeadId}</span>
+          )}
+        </span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        {statusInfo && (
+          <Badge variant={statusInfo.variant} data-testid={`lead-gls-dispute-status-${lead.id}`}>
+            {statusInfo.label}
+            {disputeReason ? ` · ${disputeReason.toLowerCase().replace(/_/g, ' ')}` : ''}
+          </Badge>
+        )}
+        {disputeSubmittedAt && (
+          <span className="text-xs text-muted-foreground" data-testid={`lead-gls-dispute-time-${lead.id}`}>
+            on {format(new Date(disputeSubmittedAt), "PPP 'at' p")}
+          </span>
+        )}
+        {canDispute && (
+          <Dialog open={open} onOpenChange={setOpen}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setOpen(true)}
+              data-testid={`button-dispute-gls-${lead.id}`}
+            >
+              <ShieldAlert className="h-3.5 w-3.5 mr-1" />
+              {disputeStatus === "failed" ? "Retry dispute" : "Dispute lead"}
+            </Button>
+            <DialogContent data-testid={`dialog-dispute-gls-${lead.id}`}>
+              <DialogHeader>
+                <DialogTitle>Dispute this Google Local Services lead</DialogTitle>
+                <DialogDescription>
+                  Send this lead back to Google for credit review (e.g. spam, wrong service area). Google
+                  decides whether to approve the credit; you'll see the outcome here once it's available.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor={`gls-dispute-reason-${lead.id}`}>Reason</Label>
+                  <Select value={reason} onValueChange={setReason}>
+                    <SelectTrigger id={`gls-dispute-reason-${lead.id}`} data-testid={`select-dispute-reason-${lead.id}`}>
+                      <SelectValue placeholder="Select a reason" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {GLS_DISPUTE_REASONS.map((r) => (
+                        <SelectItem key={r.value} value={r.value} data-testid={`option-dispute-reason-${r.value}`}>
+                          {r.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor={`gls-dispute-notes-${lead.id}`}>
+                    Notes {reason === "OTHER" ? <span className="text-destructive">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                  </Label>
+                  <Textarea
+                    id={`gls-dispute-notes-${lead.id}`}
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder="Add details Google should consider when reviewing this dispute."
+                    rows={3}
+                    data-testid={`input-dispute-notes-${lead.id}`}
+                  />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="ghost"
+                  onClick={() => setOpen(false)}
+                  disabled={disputeMutation.isPending}
+                  data-testid={`button-dispute-cancel-${lead.id}`}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => disputeMutation.mutate({ reason, notes })}
+                  disabled={submitDisabled}
+                  data-testid={`button-dispute-submit-${lead.id}`}
+                >
+                  {disputeMutation.isPending ? "Submitting…" : "Submit dispute"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )}
+      </div>
+
+      {disputeStatus === "failed" && disputeError && (
+        <p className="text-xs text-destructive" data-testid={`lead-gls-dispute-error-${lead.id}`}>
+          {disputeError}
+        </p>
+      )}
     </div>
   );
 }

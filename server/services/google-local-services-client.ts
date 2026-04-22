@@ -50,6 +50,23 @@ export interface GlsAccountSummary {
   currencyCode?: string;
 }
 
+/**
+ * Dispute reason codes accepted by GLS. The set Google publishes evolves; we
+ * keep ours intentionally small and map directly to GLS's documented values
+ * (https://support.google.com/localservices/answer/7641956 — "Dispute a lead").
+ * `OTHER` requires a free-text note so contractors can explain unusual cases.
+ */
+export const GLS_DISPUTE_REASONS = [
+  'SPAM',
+  'WRONG_GEO',
+  'WRONG_JOB_TYPE',
+  'WRONG_BUSINESS',
+  'DUPLICATE',
+  'NO_CONTACT_INFO',
+  'OTHER',
+] as const;
+export type GlsDisputeReason = typeof GLS_DISPUTE_REASONS[number];
+
 export type GlsLeadType = 'MESSAGE' | 'PHONE_CALL' | 'BOOKING' | string;
 export type GlsLeadCategory = string;
 export type GlsChargeStatus = 'CHARGED' | 'NOT_CHARGED' | string;
@@ -403,6 +420,63 @@ export const googleLocalServicesClient = {
       }
     }
     return Array.from(map.values());
+  },
+
+  /**
+   * Submit a dispute for a single GLS lead so Google can review it for
+   * credit. Mirrors the "Dispute" action available in the GLS dashboard.
+   *
+   * Endpoint:
+   *   POST {GLS_BASE_URL}/accounts/{accountId}/leads/{leadId}:dispute
+   *   Body: { disputeReason, disputeNotes? }
+   *
+   * Notes:
+   * - Requires the same OAuth scope + developer token as the read endpoints.
+   * - Google rejects duplicate disputes for the same lead with HTTP 409 — the
+   *   caller surfaces that as "already disputed" rather than treating it as
+   *   a hard failure. All other 4xx responses are surfaced verbatim so the
+   *   contractor sees Google's explanation (e.g. "lead is too old to
+   *   dispute").
+   * - The full Google response body is returned (and persisted by the
+   *   caller) for audit.
+   */
+  async disputeLead(opts: {
+    creds: GlsCredentials;
+    refreshToken: string;
+    accountId: string;
+    leadId: string;
+    reason: GlsDisputeReason;
+    notes?: string;
+  }): Promise<{ status: 'submitted' | 'already_disputed'; response: Record<string, unknown> }> {
+    const { creds, refreshToken, accountId, leadId, reason, notes } = opts;
+    const accessToken = await this.getAccessToken(creds, refreshToken);
+    const url = `${GLS_BASE_URL}/accounts/${encodeURIComponent(accountId)}/leads/${encodeURIComponent(leadId)}:dispute`;
+    const body: Record<string, unknown> = { disputeReason: reason };
+    if (notes) body.disputeNotes = notes;
+
+    try {
+      const data = await withRetry('disputeLead', async () => {
+        const res = await axios.post(url, body, {
+          headers: buildHeaders(accessToken, creds.developerToken),
+          timeout: 15000,
+        });
+        return res.data;
+      });
+      return { status: 'submitted', response: (data ?? {}) as Record<string, unknown> };
+    } catch (err) {
+      const ax = err as AxiosError<any>;
+      const status = ax?.response?.status;
+      // Google returns 409 (conflict) when the lead is already in a disputed
+      // state. Treat that as a benign no-op so the CRM can still record local
+      // metadata without surfacing a scary error.
+      if (status === 409) {
+        return {
+          status: 'already_disputed',
+          response: (ax.response?.data ?? { code: 409, message: 'Lead is already disputed.' }) as Record<string, unknown>,
+        };
+      }
+      throw err;
+    }
   },
 
   /**

@@ -117,6 +117,44 @@ OAuth scope used: `https://www.googleapis.com/auth/adwords`
   poll failure (typically a Google API auth/permission problem) so it is
   visible to the contractor without needing server logs.
 
+## Disputing leads back to Google
+
+Contractors can dispute a GLS lead from the lead's submission card in the
+contact drawer. The action POSTs to:
+
+```
+POST /api/integrations/google-local-services/leads/:id/dispute
+Body: { reason: GlsDisputeReason, notes?: string }
+```
+
+which calls `googleLocalServicesClient.disputeLead`
+(`POST {GLS_BASE_URL}/accounts/{accountId}/leads/{leadId}:dispute`). The
+result is persisted in the lead's `rawPayload` under internal
+`_gls_dispute_*` markers — there is no schema change. Markers used:
+
+| Key | Purpose |
+| --- | --- |
+| `_gls_dispute_status` | `submitted` / `approved` / `rejected` / `failed`. |
+| `_gls_dispute_reason` | Reason code submitted (e.g. `SPAM`). |
+| `_gls_dispute_notes` | Optional free-text the user supplied. |
+| `_gls_dispute_submitted_at` | ISO timestamp the dispute was sent. |
+| `_gls_dispute_response` | Google's raw response body (audit). |
+| `_gls_dispute_error` / `_gls_dispute_error_status` | Set when the dispute call failed; cleared on retry success. |
+
+The poller (`processGlsLead`) preserves these markers across re-ingestion
+and additionally maps Google's authoritative `disputeStatus` field back
+onto `_gls_dispute_status`:
+
+| Google `disputeStatus` | Mapped to `_gls_dispute_status` |
+| --- | --- |
+| `DISPUTED` | `submitted` (only when no local marker exists — covers disputes filed from the GLS dashboard directly). |
+| `DISPUTE_APPROVED` | `approved` (and the lead's CRM status moves to `disqualified`). |
+| `DISPUTE_REJECTED` | `rejected`. |
+
+Because the existing 5-minute poller already re-checks the trailing 60-day
+window, dispute outcomes flow back into the CRM automatically without a
+separate nightly job.
+
 ## HCP source mapping
 
 The canonical UI source key for GLS in `lead_source_mapping` is `google`

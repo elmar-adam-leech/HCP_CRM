@@ -150,8 +150,40 @@ export async function processGlsLead(
 ): Promise<'created' | 'updated' | 'skipped'> {
   const existing = await findLeadByGoogleId(contractorId, glsLead.leadId);
 
+  // Preserve internal `_gls_dispute_*` markers across re-ingestion. The
+  // poller overwrites the lead's rawPayload with Google's latest state on
+  // every cycle; without this merge we'd lose any dispute submission this
+  // CRM made between polls.
+  let preservedMarkers: Record<string, unknown> = {};
+  if (existing?.rawPayload) {
+    try {
+      const prev = JSON.parse(existing.rawPayload);
+      for (const k of Object.keys(prev)) {
+        if (k.startsWith('_gls_dispute_')) preservedMarkers[k] = prev[k];
+      }
+    } catch { /* ignore corrupt payload */ }
+  }
+
+  // Mirror Google's authoritative dispute outcome onto our internal status
+  // marker so the UI reflects approval/rejection without us having to add a
+  // dedicated column. (Google's poller is the source of truth here.)
+  if (glsLead.disputeStatus === 'DISPUTE_APPROVED') {
+    preservedMarkers._gls_dispute_status = 'approved';
+  } else if (glsLead.disputeStatus === 'DISPUTE_REJECTED') {
+    preservedMarkers._gls_dispute_status = 'rejected';
+  } else if (glsLead.disputeStatus === 'DISPUTED' && !preservedMarkers._gls_dispute_status) {
+    // Lead was disputed directly in the GLS dashboard (not via this CRM) —
+    // record it so the UI shows "Submitted" instead of a dispute button.
+    preservedMarkers._gls_dispute_status = 'submitted';
+  }
+
   // Embed the Google leadId so future polls can locate this CRM lead.
-  const payload = JSON.stringify({ ...glsLead.raw, _gls_lead_id: glsLead.leadId, _gls_lead_type: glsLead.leadType });
+  const payload = JSON.stringify({
+    ...glsLead.raw,
+    ...preservedMarkers,
+    _gls_lead_id: glsLead.leadId,
+    _gls_lead_type: glsLead.leadType,
+  });
 
   if (existing) {
     const inferredStatus = inferStatusFromGls(glsLead);

@@ -30,13 +30,13 @@ import { asyncHandler } from '../../utils/async-handler';
 import { logger } from '../../utils/logger';
 import { storage } from '../../storage';
 import { syncScheduler } from '../../sync-scheduler';
-import { googleLocalServicesClient } from '../../services/google-local-services-client';
+import { googleLocalServicesClient, GLS_DISPUTE_REASONS } from '../../services/google-local-services-client';
 import {
   resolveGlsCredentials,
   hasAnyTenantCredentials,
   TENANT_CRED_KEYS,
 } from '../../services/google-local-services-credentials';
-import { syncGoogleLocalServicesLeads, GLS_SERVICE } from '../../sync/google-local-services-leads';
+import { syncGoogleLocalServicesLeads, GLS_SERVICE, GLS_SOURCE } from '../../sync/google-local-services-leads';
 import { parseBody } from '../../utils/validate-body';
 import { z } from 'zod';
 
@@ -295,6 +295,136 @@ export function registerGoogleLocalServicesIntegrationRoutes(app: Express): void
         tenantDeveloperTokenSet: !!tenantDevToken,
         platformClientConfigured,
         platformDeveloperTokenSet,
+      });
+    }));
+
+  /**
+   * Dispute a single GLS lead with Google. Reads `_gls_lead_id` from the CRM
+   * lead's rawPayload and POSTs to Google's dispute endpoint via the GLS
+   * client. Persists the dispute outcome back into rawPayload so the UI can
+   * show "Dispute submitted" without waiting for Google's nightly status
+   * update to flow back through the poller.
+   */
+  app.post('/api/integrations/google-local-services/leads/:id/dispute',
+    requireGlsAccess,
+    asyncHandler(async (req: AuthedRequest, res: Response) => {
+      const body = parseBody(z.object({
+        reason: z.enum(GLS_DISPUTE_REASONS),
+        notes: z.string().max(2000).optional(),
+      }), req, res);
+      if (!body) return;
+      // GLS requires notes for OTHER so contractors explain unusual cases.
+      if (body.reason === 'OTHER' && !body.notes?.trim()) {
+        res.status(400).json({ message: 'Dispute notes are required when the reason is "Other".' });
+        return;
+      }
+
+      const tenantId = req.user.contractorId;
+      const lead = await storage.getLead(req.params.id, tenantId);
+      if (!lead) {
+        res.status(404).json({ message: 'Lead not found.' });
+        return;
+      }
+      if (lead.source !== GLS_SOURCE) {
+        res.status(400).json({ message: 'This lead did not come from Google Local Services and cannot be disputed.' });
+        return;
+      }
+
+      let glsLeadId: string | undefined;
+      let glsAccountId: string | undefined;
+      let parsedPayload: Record<string, unknown> = {};
+      try {
+        parsedPayload = JSON.parse(lead.rawPayload ?? '{}');
+        glsLeadId = parsedPayload._gls_lead_id ? String(parsedPayload._gls_lead_id) : undefined;
+        glsAccountId = (parsedPayload.accountId ?? parsedPayload.account_id) as string | undefined;
+      } catch {
+        // fall through — handled below
+      }
+      if (!glsLeadId) {
+        res.status(400).json({ message: 'This lead is missing its Google lead identifier and cannot be disputed.' });
+        return;
+      }
+
+      const [refreshToken, accountIdCred] = await Promise.all([
+        CredentialService.getCredential(tenantId, GLS_SERVICE, 'refresh_token'),
+        CredentialService.getCredential(tenantId, GLS_SERVICE, 'account_id'),
+      ]);
+      const accountId = glsAccountId || accountIdCred;
+      if (!refreshToken || !accountId) {
+        res.status(400).json({ message: 'Google Local Services is not connected. Connect and select an account first.' });
+        return;
+      }
+
+      const creds = await resolveGlsCredentials(tenantId);
+      if (!creds.configured) {
+        res.status(400).json({ message: 'Google Local Services credentials are not configured (missing OAuth client or developer token).' });
+        return;
+      }
+
+      let outcome: { status: 'submitted' | 'already_disputed'; response: Record<string, unknown> };
+      try {
+        outcome = await googleLocalServicesClient.disputeLead({
+          creds,
+          refreshToken,
+          accountId,
+          leadId: glsLeadId,
+          reason: body.reason,
+          notes: body.notes,
+        });
+      } catch (err: any) {
+        const status = err?.response?.status;
+        const apiMsg =
+          err?.response?.data?.error?.message ||
+          (typeof err?.response?.data === 'string' ? err.response.data : undefined) ||
+          err?.message || 'Unknown error';
+        log.warn(`[dispute] contractor=${tenantId} lead=${lead.id} gls=${glsLeadId} failed (status=${status ?? 'n/a'}): ${apiMsg}`);
+
+        // Record the failure in rawPayload so the UI can surface it without
+        // requiring server logs. Re-trying the same dispute is safe — Google
+        // dedupes on its end (see `disputeLead`'s 409 handling).
+        const failedPayload = JSON.stringify({
+          ...parsedPayload,
+          _gls_dispute_status: 'failed',
+          _gls_dispute_reason: body.reason,
+          _gls_dispute_notes: body.notes ?? null,
+          _gls_dispute_attempted_at: new Date().toISOString(),
+          _gls_dispute_error: apiMsg,
+          _gls_dispute_error_status: status ?? null,
+        });
+        await storage.updateLead(lead.id, { rawPayload: failedPayload }, tenantId);
+
+        // Pass through Google's 4xx (user-actionable, e.g. "lead too old to
+        // dispute") so the UI can show it accurately. 5xx / network blips
+        // surface as 502 so the contractor knows it's worth retrying.
+        const outStatus = typeof status === 'number' && status >= 400 && status < 500 ? status : 502;
+        res.status(outStatus).json({ message: `Google rejected the dispute: ${apiMsg}` });
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+      const updatedPayload = JSON.stringify({
+        ...parsedPayload,
+        _gls_dispute_status: outcome.status === 'already_disputed' ? 'submitted' : 'submitted',
+        _gls_dispute_reason: body.reason,
+        _gls_dispute_notes: body.notes ?? null,
+        _gls_dispute_submitted_at: nowIso,
+        _gls_dispute_response: outcome.response,
+        // Clear any prior failure marker so the UI no longer shows the error.
+        _gls_dispute_error: null,
+        _gls_dispute_error_status: null,
+        // Reflect Google's own dispute state too — the poller will overwrite
+        // this with the authoritative value on the next sync.
+        disputeStatus: 'DISPUTED',
+      });
+      await storage.updateLead(lead.id, { rawPayload: updatedPayload }, tenantId);
+
+      log.info(`[dispute] contractor=${tenantId} lead=${lead.id} gls=${glsLeadId} reason=${body.reason} → ${outcome.status}`);
+      res.json({
+        success: true,
+        status: outcome.status,
+        glsLeadId,
+        reason: body.reason,
+        submittedAt: nowIso,
       });
     }));
 
