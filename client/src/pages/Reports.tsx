@@ -1,7 +1,6 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, lazy, Suspense, type ReactNode } from "react";
 import { useLocation, useSearch } from "wouter";
-import { LeadsTrendChart } from "@/components/dashboard/LeadsTrendChart";
-import { SpeedToLeadReport } from "@/components/reports/SpeedToLeadReport";
+import { Loader2 } from "lucide-react";
 import {
   ReportsTabLayout,
   type ReportItem,
@@ -10,23 +9,86 @@ import {
   EstimatesReportsFiltersProvider,
   usePrefetchEstimatesReports,
 } from "@/components/reports/estimates/shared";
-import { RevenueReport } from "@/components/reports/estimates/RevenueReport";
-import { LostRevenueReport } from "@/components/reports/estimates/LostRevenueReport";
-import { PipelineForecastReport } from "@/components/reports/estimates/PipelineForecastReport";
-import {
-  CloseRateBySalespersonReport,
-  CloseRateBySourceReport,
-} from "@/components/reports/estimates/CloseRateReports";
-import { TimeToCloseReport } from "@/components/reports/estimates/TimeToCloseReport";
-import {
-  PendingReport,
-  InProgressReport,
-} from "@/components/reports/estimates/OutstandingReports";
-import { SalesActivityReport } from "@/components/reports/estimates/SalesActivityReport";
-import { GeographicReport } from "@/components/reports/estimates/GeographicReport";
 import { PageHeader } from "@/components/ui/page-header-v2";
 import { PageLayout } from "@/components/ui/page-layout";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
+// Each individual report (and the recharts code it pulls in) is lazy-loaded
+// so that landing on /reports doesn't have to download the ~352 KB charts
+// vendor bundle before the page can paint. Reports that don't use recharts
+// are also lazy so the initial Reports chunk stays small.
+const LeadsTrendChart = lazy(() =>
+  import("@/components/dashboard/LeadsTrendChart").then((m) => ({
+    default: m.LeadsTrendChart,
+  })),
+);
+const SpeedToLeadReport = lazy(() =>
+  import("@/components/reports/SpeedToLeadReport").then((m) => ({
+    default: m.SpeedToLeadReport,
+  })),
+);
+const RevenueReport = lazy(() =>
+  import("@/components/reports/estimates/RevenueReport").then((m) => ({
+    default: m.RevenueReport,
+  })),
+);
+const LostRevenueReport = lazy(() =>
+  import("@/components/reports/estimates/LostRevenueReport").then((m) => ({
+    default: m.LostRevenueReport,
+  })),
+);
+const PipelineForecastReport = lazy(() =>
+  import("@/components/reports/estimates/PipelineForecastReport").then((m) => ({
+    default: m.PipelineForecastReport,
+  })),
+);
+const CloseRateBySalespersonReport = lazy(() =>
+  import("@/components/reports/estimates/CloseRateReports").then((m) => ({
+    default: m.CloseRateBySalespersonReport,
+  })),
+);
+const CloseRateBySourceReport = lazy(() =>
+  import("@/components/reports/estimates/CloseRateReports").then((m) => ({
+    default: m.CloseRateBySourceReport,
+  })),
+);
+const TimeToCloseReport = lazy(() =>
+  import("@/components/reports/estimates/TimeToCloseReport").then((m) => ({
+    default: m.TimeToCloseReport,
+  })),
+);
+const PendingReport = lazy(() =>
+  import("@/components/reports/estimates/OutstandingReports").then((m) => ({
+    default: m.PendingReport,
+  })),
+);
+const InProgressReport = lazy(() =>
+  import("@/components/reports/estimates/OutstandingReports").then((m) => ({
+    default: m.InProgressReport,
+  })),
+);
+const SalesActivityReport = lazy(() =>
+  import("@/components/reports/estimates/SalesActivityReport").then((m) => ({
+    default: m.SalesActivityReport,
+  })),
+);
+const GeographicReport = lazy(() =>
+  import("@/components/reports/estimates/GeographicReport").then((m) => ({
+    default: m.GeographicReport,
+  })),
+);
+
+function ReportFallback() {
+  return (
+    <div className="flex items-center justify-center h-[300px]">
+      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+    </div>
+  );
+}
+
+function lazyRender(node: ReactNode) {
+  return <Suspense fallback={<ReportFallback />}>{node}</Suspense>;
+}
 
 type TabId = "leads" | "sales" | "estimates";
 
@@ -83,39 +145,39 @@ const TAB_REPORTS: Record<TabId, ReportItem[]> = {
     {
       slug: "leads-trend",
       name: "Leads Trend",
-      render: () => <LeadsTrendChart />,
+      render: () => lazyRender(<LeadsTrendChart />),
     },
   ],
   sales: [
     {
       slug: "speed-to-lead",
       name: "Speed to Lead",
-      render: () => <SpeedToLeadReport />,
+      render: () => lazyRender(<SpeedToLeadReport />),
     },
   ],
   estimates: [
-    { slug: "revenue", name: "Revenue", render: () => <RevenueReport /> },
-    { slug: "lost-revenue", name: "Lost Revenue", render: () => <LostRevenueReport /> },
+    { slug: "revenue", name: "Revenue", render: () => lazyRender(<RevenueReport />) },
+    { slug: "lost-revenue", name: "Lost Revenue", render: () => lazyRender(<LostRevenueReport />) },
     {
       slug: "pipeline-forecast",
       name: "Pipeline Forecast",
-      render: () => <PipelineForecastReport />,
+      render: () => lazyRender(<PipelineForecastReport />),
     },
     {
       slug: "close-rate-salesperson",
       name: "Close Rate by Salesperson",
-      render: () => <CloseRateBySalespersonReport />,
+      render: () => lazyRender(<CloseRateBySalespersonReport />),
     },
     {
       slug: "close-rate-source",
       name: "Close Rate by Lead Source",
-      render: () => <CloseRateBySourceReport />,
+      render: () => lazyRender(<CloseRateBySourceReport />),
     },
-    { slug: "time-to-close", name: "Time to Close", render: () => <TimeToCloseReport /> },
-    { slug: "pending", name: "Pending Estimates", render: () => <PendingReport /> },
-    { slug: "in-progress", name: "In-Progress Estimates", render: () => <InProgressReport /> },
-    { slug: "sales-activity", name: "Sales Activity", render: () => <SalesActivityReport /> },
-    { slug: "geographic", name: "Geographic", render: () => <GeographicReport /> },
+    { slug: "time-to-close", name: "Time to Close", render: () => lazyRender(<TimeToCloseReport />) },
+    { slug: "pending", name: "Pending Estimates", render: () => lazyRender(<PendingReport />) },
+    { slug: "in-progress", name: "In-Progress Estimates", render: () => lazyRender(<InProgressReport />) },
+    { slug: "sales-activity", name: "Sales Activity", render: () => lazyRender(<SalesActivityReport />) },
+    { slug: "geographic", name: "Geographic", render: () => lazyRender(<GeographicReport />) },
   ],
 };
 
