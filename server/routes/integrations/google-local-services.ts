@@ -39,6 +39,14 @@ import {
 import { syncGoogleLocalServicesLeads, GLS_SERVICE, GLS_SOURCE } from '../../sync/google-local-services-leads';
 import { parseBody } from '../../utils/validate-body';
 import { z } from 'zod';
+import {
+  glsAutoDisputeRulesSchema,
+  type GlsAutoDisputeRule,
+} from '@shared/google-local-services-rules';
+import {
+  GLS_AUTO_DISPUTE_RULES_KEY,
+  loadAutoDisputeRules,
+} from '../../services/google-local-services-auto-dispute';
 
 const log = logger('GoogleLocalServicesIntegration');
 
@@ -426,6 +434,56 @@ export function registerGoogleLocalServicesIntegrationRoutes(app: Express): void
         reason: body.reason,
         submittedAt: nowIso,
       });
+    }));
+
+  /**
+   * List the per-tenant auto-dispute rules used by the poller.
+   * Empty array means "no rules configured" (manual disputes only).
+   */
+  app.get('/api/integrations/google-local-services/auto-dispute-rules',
+    requireGlsAccess,
+    asyncHandler(async (req: AuthedRequest, res: Response) => {
+      const rules = await loadAutoDisputeRules(req.user.contractorId, GLS_SERVICE);
+      res.json({ rules });
+    }));
+
+  /**
+   * Replace the per-tenant auto-dispute rule list. We persist the entire
+   * array as a single JSON blob — the rule count is small and edits almost
+   * always touch multiple rules at once (re-ordering, toggling), so a
+   * full-replace API is simpler than per-rule CRUD.
+   */
+  app.put('/api/integrations/google-local-services/auto-dispute-rules',
+    requireGlsAccess,
+    asyncHandler(async (req: AuthedRequest, res: Response) => {
+      const body = parseBody(z.object({
+        rules: glsAutoDisputeRulesSchema,
+      }), req, res);
+      if (!body) return;
+
+      // Reject duplicate rule ids — the UI uses them as React keys and as
+      // the value stored in `_gls_auto_dispute_rule_id` on disputed leads.
+      const ids = new Set<string>();
+      for (const r of body.rules) {
+        if (ids.has(r.id)) {
+          res.status(400).json({ message: `Duplicate rule id: ${r.id}` });
+          return;
+        }
+        ids.add(r.id);
+      }
+
+      const tenantId = req.user.contractorId;
+      if (body.rules.length === 0) {
+        // Clearing all rules → drop the credential entirely so future loads
+        // skip the JSON parse path.
+        await CredentialService.disableCredential(tenantId, GLS_SERVICE, GLS_AUTO_DISPUTE_RULES_KEY);
+      } else {
+        await CredentialService.setCredential(
+          tenantId, GLS_SERVICE, GLS_AUTO_DISPUTE_RULES_KEY, JSON.stringify(body.rules),
+        );
+      }
+      log.info(`[auto-dispute-rules] contractor=${tenantId} saved ${body.rules.length} rule(s)`);
+      res.json({ rules: body.rules satisfies GlsAutoDisputeRule[] });
     }));
 
   app.put('/api/integrations/google-local-services/credentials',

@@ -29,6 +29,11 @@ import { db } from '../db';
 import { leads, type InsertLead } from '@shared/schema';
 import { and, eq } from 'drizzle-orm';
 import { storage } from '../storage';
+import {
+  loadAutoDisputeRules,
+  maybeAutoDisputeLead,
+} from '../services/google-local-services-auto-dispute';
+import type { GlsAutoDisputeRule } from '@shared/google-local-services-rules';
 
 const log = logger('GoogleLocalServicesSync');
 
@@ -147,6 +152,7 @@ function inferStatusFromGls(lead: GlsDetailedLead): 'new' | 'qualified' | 'disqu
 export async function processGlsLead(
   contractorId: string,
   glsLead: GlsDetailedLead,
+  autoDisputeRules: GlsAutoDisputeRule[] = [],
 ): Promise<'created' | 'updated' | 'skipped'> {
   const existing = await findLeadByGoogleId(contractorId, glsLead.leadId);
 
@@ -239,6 +245,26 @@ export async function processGlsLead(
   // poll's findLeadByGoogleId hits the partial unique index instead of a
   // sequential scan (task #490).
   await storage.updateLead(ingestResult.lead.id, { googleLeadId: glsLead.leadId }, contractorId);
+
+  // Auto-dispute step (task #532). Runs only on freshly created leads so
+  // disputes never fire twice for the same Google lead, even when the
+  // status-recheck window re-touches the lead on later polls.
+  if (autoDisputeRules.length > 0) {
+    try {
+      await maybeAutoDisputeLead({
+        tenantId: contractorId,
+        service: GLS_SERVICE,
+        crmLeadId: ingestResult.lead.id,
+        glsLead,
+        rules: autoDisputeRules,
+      });
+    } catch (err: any) {
+      // Defense-in-depth: maybeAutoDisputeLead already swallows its own
+      // errors, but a thrown anything here must not break the poller.
+      log.warn(`[auto] contractor=${contractorId} lead=${ingestResult.lead.id} unexpected auto-dispute failure: ${err?.message || err}`);
+    }
+  }
+
   return 'created';
 }
 
@@ -308,10 +334,16 @@ export async function syncGoogleLocalServicesLeads(tenantId: string): Promise<vo
     return;
   }
 
+  // Auto-dispute rules are loaded once per poll and passed into every
+  // processGlsLead call. Rules are tiny (≤ 50 entries), reads are encrypted
+  // single-row credential lookups, and a per-lead reload would multiply the
+  // round-trips for high-volume tenants.
+  const autoDisputeRules = await loadAutoDisputeRules(tenantId, GLS_SERVICE);
+
   const summary: ProcessedSummary = { created: 0, updated: 0, skipped: 0, errors: 0 };
   for (const lead of detailedLeads) {
     try {
-      const outcome = await processGlsLead(tenantId, lead);
+      const outcome = await processGlsLead(tenantId, lead, autoDisputeRules);
       summary[outcome]++;
     } catch (err: any) {
       summary.errors++;

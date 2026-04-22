@@ -5,7 +5,15 @@ import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { CheckCircle, XCircle, Info, AlertTriangle, Clock, RefreshCw, Copy, ChevronDown, ChevronUp, KeyRound } from "lucide-react";
+import { CheckCircle, XCircle, Info, AlertTriangle, Clock, RefreshCw, Copy, ChevronDown, ChevronUp, KeyRound, Plus, Trash2, ShieldAlert } from "lucide-react";
+import {
+  GLS_AUTO_DISPUTE_REASONS,
+  type GlsAutoDisputeConditionType,
+  type GlsAutoDisputeReason,
+  type GlsAutoDisputeRule,
+} from "@shared/google-local-services-rules";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { SiGoogle } from "react-icons/si";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -224,6 +232,57 @@ export function GoogleLocalServicesCard() {
       toast({ title: 'Clear failed', description: err.message || 'Could not clear credentials.', variant: 'destructive' });
     },
   });
+
+  // ----- Auto-dispute rules (task #532) -----
+  const { data: rulesData } = useQuery<{ rules: GlsAutoDisputeRule[] }>({
+    queryKey: ['/api/integrations/google-local-services/auto-dispute-rules'],
+  });
+  // Local working copy so edits feel snappy without a round-trip per keystroke.
+  const [rules, setRules] = useState<GlsAutoDisputeRule[]>([]);
+  const [rulesDirty, setRulesDirty] = useState(false);
+  useEffect(() => {
+    if (rulesData?.rules) {
+      setRules(rulesData.rules);
+      setRulesDirty(false);
+    }
+  }, [rulesData]);
+
+  const saveRulesMutation = useMutation({
+    mutationFn: async (next: GlsAutoDisputeRule[]) => {
+      const res = await apiRequest('PUT', '/api/integrations/google-local-services/auto-dispute-rules', { rules: next });
+      return res.json() as Promise<{ rules: GlsAutoDisputeRule[] }>;
+    },
+    onSuccess: () => {
+      toast({ title: 'Auto-dispute rules saved', description: 'Newly arriving Google leads will be evaluated against these rules.' });
+      setRulesDirty(false);
+      queryClient.invalidateQueries({ queryKey: ['/api/integrations/google-local-services/auto-dispute-rules'] });
+    },
+    onError: (err: any) => {
+      toast({ title: 'Could not save rules', description: err?.message || 'Please try again.', variant: 'destructive' });
+    },
+  });
+
+  const updateRule = (id: string, patch: Partial<GlsAutoDisputeRule>) => {
+    setRules(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r));
+    setRulesDirty(true);
+  };
+  const removeRule = (id: string) => {
+    setRules(prev => prev.filter(r => r.id !== id));
+    setRulesDirty(true);
+  };
+  const addRule = () => {
+    const id = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+      ? crypto.randomUUID()
+      : `rule-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setRules(prev => [...prev, {
+      id,
+      enabled: true,
+      conditionType: 'message_contains',
+      values: [],
+      reason: 'SPAM',
+    }]);
+    setRulesDirty(true);
+  };
 
   const fullyConnected = !!status?.connected && !!status?.accountSelected;
   const usingTenant = status?.credentialsSource === 'tenant' || status?.oauthSource === 'tenant';
@@ -510,6 +569,182 @@ export function GoogleLocalServicesCard() {
             <p className="text-sm font-medium text-destructive">Last sync failed</p>
             <p className="text-xs text-muted-foreground break-all">{status.lastError}</p>
           </div>
+        </div>
+      )}
+
+      {/* Auto-dispute rules — task #532 */}
+      {fullyConnected && (
+        <div className="rounded-md border bg-muted/30 p-3 space-y-3" data-testid="gls-auto-dispute-rules">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 min-w-0">
+              <ShieldAlert className="h-4 w-4 text-muted-foreground shrink-0" />
+              <p className="text-sm font-medium truncate">Auto-dispute rules</p>
+              <Badge variant="secondary" className="shrink-0">{rules.length}</Badge>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={addRule}
+              data-testid="button-gls-add-auto-dispute-rule"
+            >
+              <Plus className="h-3.5 w-3.5 mr-1" />
+              Add rule
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Newly arriving Google leads that match a rule are disputed automatically with the chosen reason — no human click required. Rules are evaluated top-to-bottom; the first match wins.
+          </p>
+          {rules.length === 0 ? (
+            <p className="text-xs text-muted-foreground italic">
+              No rules yet. Click "Add rule" to auto-dispute leads that match a condition (e.g. ZIP outside your service area, spam keywords).
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {rules.map((rule, idx) => {
+                const isAllowlist = rule.conditionType === 'zip_not_in';
+                const valuesPlaceholder =
+                  rule.conditionType === 'zip_in' || rule.conditionType === 'zip_not_in'
+                    ? '94102, 94103, 94110'
+                    : rule.conditionType === 'message_contains'
+                    ? 'free quote, scam, lottery'
+                    : rule.conditionType === 'lead_type_in'
+                    ? 'PHONE_CALL, MESSAGE, BOOKING'
+                    : 'Plumbing, Drain Cleaning';
+                return (
+                  <div
+                    key={rule.id}
+                    className="rounded-md border bg-background p-3 space-y-2"
+                    data-testid={`gls-auto-dispute-rule-${idx}`}
+                  >
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={rule.enabled}
+                          onCheckedChange={(v) => updateRule(rule.id, { enabled: v })}
+                          data-testid={`switch-gls-rule-enabled-${idx}`}
+                        />
+                        <span className="text-xs text-muted-foreground">
+                          {rule.enabled ? 'Active' : 'Disabled'}
+                        </span>
+                      </div>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => removeRule(rule.id)}
+                        data-testid={`button-gls-remove-rule-${idx}`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <Label className="text-xs">When</Label>
+                        <Select
+                          value={rule.conditionType}
+                          onValueChange={(v) => updateRule(rule.id, { conditionType: v as GlsAutoDisputeConditionType })}
+                        >
+                          <SelectTrigger data-testid={`select-gls-rule-condition-${idx}`}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="zip_not_in">ZIP is NOT in (service-area allowlist)</SelectItem>
+                            <SelectItem value="zip_in">ZIP is in</SelectItem>
+                            <SelectItem value="message_contains">Message contains keyword</SelectItem>
+                            <SelectItem value="job_type_in">Job type is in</SelectItem>
+                            <SelectItem value="lead_type_in">Lead type is in</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Dispute reason</Label>
+                        <Select
+                          value={rule.reason}
+                          onValueChange={(v) => updateRule(rule.id, { reason: v as GlsAutoDisputeReason })}
+                        >
+                          <SelectTrigger data-testid={`select-gls-rule-reason-${idx}`}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {GLS_AUTO_DISPUTE_REASONS.map(r => (
+                              <SelectItem key={r} value={r}>{r}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">
+                        {isAllowlist ? 'Allowed values (comma-separated)' : 'Match values (comma-separated)'}
+                      </Label>
+                      <Input
+                        value={rule.values.join(', ')}
+                        placeholder={valuesPlaceholder}
+                        onChange={(e) => {
+                          const next = e.target.value
+                            .split(',')
+                            .map(v => v.trim())
+                            .filter(Boolean);
+                          updateRule(rule.id, { values: next });
+                        }}
+                        data-testid={`input-gls-rule-values-${idx}`}
+                      />
+                    </div>
+                    {rule.reason === 'OTHER' && (
+                      <div className="space-y-1">
+                        <Label className="text-xs">Notes (required for "Other")</Label>
+                        <Textarea
+                          rows={2}
+                          value={rule.notes ?? ''}
+                          onChange={(e) => updateRule(rule.id, { notes: e.target.value })}
+                          placeholder="Explain why these leads should be disputed"
+                          data-testid={`input-gls-rule-notes-${idx}`}
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {rulesDirty && (
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setRules(rulesData?.rules ?? []);
+                  setRulesDirty(false);
+                }}
+                data-testid="button-gls-rules-discard"
+              >
+                Discard
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => {
+                  // Block save when any enabled rule is missing values — the
+                  // backend Zod schema would reject it anyway and the error
+                  // toast is harder to act on than this inline guard.
+                  const invalid = rules.find(r =>
+                    r.enabled && r.values.filter(v => v.trim()).length === 0
+                  );
+                  if (invalid) {
+                    toast({
+                      title: 'Rule missing values',
+                      description: 'Active rules need at least one match value. Disable the rule or add a value.',
+                      variant: 'destructive',
+                    });
+                    return;
+                  }
+                  saveRulesMutation.mutate(rules);
+                }}
+                disabled={saveRulesMutation.isPending}
+                data-testid="button-gls-rules-save"
+              >
+                {saveRulesMutation.isPending ? 'Saving...' : 'Save rules'}
+              </Button>
+            </div>
+          )}
         </div>
       )}
 
