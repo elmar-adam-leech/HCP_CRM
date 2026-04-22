@@ -378,13 +378,17 @@ export async function getPipelineForecastReport(
   contractorId: string,
   f: EstimatesReportFilters,
 ): Promise<PipelineForecastReport> {
-  // Pipeline is an "as of now" snapshot of pending estimates. We still honour the
-  // date range as the lookback window for computing each salesperson's
-  // historical close rate.
+  // Pipeline is a snapshot of pending estimates created within the selected
+  // date range. The same date range is also the lookback window for computing
+  // each salesperson's historical close rate, plus a tenant-wide fallback rate
+  // used for unassigned pipeline (or any salesperson with no decided history
+  // in the window).
   const pendingWhere = (() => {
     const parts: SQL[] = [
       sql.raw(`e.contractor_id = `).append(sql`${contractorId}`),
       sql.raw(`e.status IN `).append(PENDING_STATUSES),
+      sql`e.created_at >= ${f.startDate.toISOString()}`,
+      sql`e.created_at < ${f.endDate.toISOString()}`,
     ];
     if (f.salespersonId) parts.push(sql.raw(`e.salesperson_user_id = `).append(sql`${f.salespersonId}`));
     if (f.leadSource) {
@@ -394,6 +398,12 @@ export async function getPipelineForecastReport(
     return sql.join(parts, sql.raw(" AND "));
   })();
   const histWhere = buildEstimatesWhere(contractorId, f);
+  // The fallback close rate is intentionally tenant-wide: it ignores the
+  // salesperson filter so that an unassigned (or no-history) row still gets a
+  // sensible rate even when the user is filtering to one salesperson. We keep
+  // the date window and lead-source filter so the fallback stays scoped to
+  // the same pipeline the user is looking at.
+  const fallbackHistWhere = buildEstimatesWhere(contractorId, { ...f, salespersonId: null });
   const result = await db.execute<{
     pending_value: string | null;
     pending_count: string | number;
@@ -420,6 +430,13 @@ export async function getPipelineForecastReport(
       LEFT JOIN contacts c ON c.id = e.contact_id
       WHERE ${histWhere} AND e.status IN ('approved', 'rejected')
     ),
+    tenant_hist AS (
+      SELECT e.status
+      FROM ${canonicalEstimates(contractorId)} e
+      LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
+      LEFT JOIN contacts c ON c.id = e.contact_id
+      WHERE ${fallbackHistWhere} AND e.status IN ('approved', 'rejected')
+    ),
     rates AS (
       SELECT
         salesperson_user_id AS user_id,
@@ -445,11 +462,20 @@ export async function getPipelineForecastReport(
     SELECT
       COALESCE((SELECT SUM(amount::numeric) FROM pending), 0)::float8 AS pending_value,
       (SELECT COUNT(*) FROM pending)::int AS pending_count,
+      (SELECT COUNT(*) FROM tenant_hist)::int AS tenant_decided,
+      (SELECT COUNT(*) FROM tenant_hist WHERE status = 'approved')::int AS tenant_won,
       (SELECT json_agg(sp) FROM sp) AS rows
   `);
-  const r = result.rows[0];
+  const r = result.rows[0] as (typeof result.rows)[0] & {
+    tenant_decided: string | number;
+    tenant_won: string | number;
+  };
+  const tenantDecided = num(r?.tenant_decided);
+  const tenantWon = num(r?.tenant_won);
+  const tenantCloseRate = tenantDecided > 0 ? tenantWon / tenantDecided : 0;
   const rows = (r?.rows ?? []).map((s) => {
-    const closeRate = s.decided > 0 ? s.won / s.decided : 0;
+    const hasOwnHistory = s.decided > 0;
+    const closeRate = hasOwnHistory ? s.won / s.decided : tenantCloseRate;
     const weighted = num(s.pending_value) * closeRate;
     return {
       userId: s.user_id,

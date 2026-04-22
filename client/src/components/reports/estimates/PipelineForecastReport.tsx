@@ -37,7 +37,7 @@ function PipelineForecastReportInner() {
   return (
     <ReportShell
       title="Pipeline forecast"
-      description="Open pending estimates plus a weighted forecast based on each salesperson's historical close rate."
+      description="Pending estimates created in the selected date range, plus a weighted forecast using each salesperson's close rate over that same window (with a tenant-wide fallback for unassigned pipeline)."
       isLoading={isLoading}
       isError={isError}
       isEmpty={isEmpty}
