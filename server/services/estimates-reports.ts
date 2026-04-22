@@ -15,6 +15,9 @@
 import { db } from "../db";
 import { sql, type SQL } from "drizzle-orm";
 
+export type OutstandingSortField = "created_at" | "amount" | "age" | "salesperson";
+export type OutstandingSortDir = "asc" | "desc";
+
 export interface EstimatesReportFilters {
   startDate: Date;
   endDate: Date;
@@ -22,6 +25,8 @@ export interface EstimatesReportFilters {
   leadSource?: string | null;
   page?: number;
   pageSize?: number;
+  sortBy?: OutstandingSortField | null;
+  sortDir?: OutstandingSortDir | null;
 }
 
 const num = (v: unknown): number => {
@@ -750,6 +755,35 @@ async function getOutstanding(
   const pageSize = Math.min(OUTSTANDING_MAX_PAGE_SIZE, Math.max(1, rawSize));
   const offset = page * pageSize;
 
+  // Build ORDER BY based on the requested sort. Default is created_at ASC
+  // (oldest first), which matches the "age desc" interpretation users expect
+  // for a "stuck estimate" worklist. Age is just the inverse of created_at.
+  // We always append a stable e.id tiebreak so pagination doesn't shuffle
+  // rows that share the primary sort value.
+  const sortField: OutstandingSortField = f.sortBy ?? "created_at";
+  const sortDir: OutstandingSortDir = f.sortDir ?? (sortField === "created_at" ? "asc" : "desc");
+  const dir = sortDir === "asc" ? sql.raw("ASC") : sql.raw("DESC");
+  let orderBy: SQL;
+  switch (sortField) {
+    case "amount":
+      orderBy = sql`e.amount::numeric ${dir} NULLS LAST, e.id ASC`;
+      break;
+    case "age":
+      // Age desc = oldest first = created_at ASC. Flip the SQL direction.
+      orderBy =
+        sortDir === "desc"
+          ? sql`e.created_at ASC, e.id ASC`
+          : sql`e.created_at DESC, e.id ASC`;
+      break;
+    case "salesperson":
+      orderBy = sql`u.name ${dir} NULLS LAST, e.created_at ASC, e.id ASC`;
+      break;
+    case "created_at":
+    default:
+      orderBy = sql`e.created_at ${dir}, e.id ASC`;
+      break;
+  }
+
   // Aggregate query: totals + age bucket counts across the full filtered set.
   const aggResult = await db.execute<{
     total: string | number;
@@ -803,7 +837,7 @@ async function getOutstanding(
     LEFT JOIN users u ON u.id = e.salesperson_user_id
     LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
     WHERE ${where}
-    ORDER BY e.created_at ASC
+    ORDER BY ${orderBy}
     LIMIT ${pageSize} OFFSET ${offset}
   `);
   const rows: OutstandingEstimateRow[] = rowResult.rows.map((r) => {

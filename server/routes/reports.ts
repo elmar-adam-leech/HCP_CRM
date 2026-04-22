@@ -37,6 +37,8 @@ const estimatesReportQuerySchema = z.object({
   leadSource: z.string().min(1).optional(),
   page: z.coerce.number().int().min(0).optional(),
   pageSize: z.coerce.number().int().min(1).max(100).optional(),
+  sortBy: z.enum(["created_at", "amount", "age", "salesperson"]).optional(),
+  sortDir: z.enum(["asc", "desc"]).optional(),
 });
 
 // Resolve a report-filters object out of the query string. Default window is the
@@ -48,7 +50,7 @@ function resolveFilters(req: AuthedRequest, res: Response): EstimatesReportFilte
     res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid query parameters" });
     return null;
   }
-  const { startDate, endDate, salespersonId, leadSource, page, pageSize } = parsed.data;
+  const { startDate, endDate, salespersonId, leadSource, page, pageSize, sortBy, sortDir } = parsed.data;
   let start: Date;
   let end: Date;
   if (startDate && endDate) {
@@ -73,6 +75,8 @@ function resolveFilters(req: AuthedRequest, res: Response): EstimatesReportFilte
     leadSource: leadSource ?? null,
     page: page ?? 0,
     pageSize: pageSize ?? 25,
+    sortBy: sortBy ?? null,
+    sortDir: sortDir ?? null,
   };
 }
 
@@ -88,6 +92,8 @@ function serializeFilters(args: [EstimatesReportFilters]): string {
     f.leadSource ?? "",
     f.page ?? 0,
     f.pageSize ?? 25,
+    f.sortBy ?? "",
+    f.sortDir ?? "",
   ].join("|");
 }
 

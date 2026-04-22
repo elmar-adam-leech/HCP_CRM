@@ -877,6 +877,10 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `CREATE UNIQUE INDEX IF NOT EXISTS "leads_google_lead_id_unique_idx" ON "leads"("contractor_id", "google_lead_id") WHERE "google_lead_id" IS NOT NULL`,
       description: 'leads (contractor_id, google_lead_id) partial unique index (task #490)',
     },
+    {
+      sql: `ALTER TABLE "sales_process_task_instances" ALTER COLUMN "lead_id" DROP NOT NULL`,
+      description: 'sales_process_task_instances.lead_id nullable (XOR with estimate_id)',
+    },
   ];
 
 export async function applyColumnMigrations(

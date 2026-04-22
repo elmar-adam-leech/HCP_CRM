@@ -1,5 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useLocation, useSearch } from "wouter";
+import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -25,6 +28,7 @@ import {
   useEstimatesReportFilters,
   useReportQuery,
 } from "./shared";
+import { cn } from "@/lib/utils";
 
 interface OutstandingEstimate {
   id: string;
@@ -47,6 +51,102 @@ interface OutstandingData {
 }
 
 export const PAGE_SIZE = 25;
+
+type SortField = "created_at" | "amount" | "age" | "salesperson";
+type SortDir = "asc" | "desc";
+
+interface SortState {
+  field: SortField;
+  dir: SortDir;
+}
+
+const SORTABLE_FIELDS: SortField[] = ["created_at", "amount", "age", "salesperson"];
+
+// Sort state lives in the URL so refreshing the page (or sharing the URL)
+// preserves the user's choice. Each report has its own URL param prefix so the
+// Pending and In-progress tables sort independently.
+function useSortFromUrl(prefix: string, defaultField: SortField = "created_at"): {
+  sort: SortState;
+  setSort: (next: SortState) => void;
+  toggle: (field: SortField) => void;
+} {
+  const search = useSearch();
+  const [, setLocation] = useLocation();
+  const params = new URLSearchParams(search);
+  const fieldParam = params.get(`${prefix}SortBy`);
+  const dirParam = params.get(`${prefix}SortDir`);
+  const field: SortField = SORTABLE_FIELDS.includes(fieldParam as SortField)
+    ? (fieldParam as SortField)
+    : defaultField;
+  const dir: SortDir =
+    dirParam === "asc" || dirParam === "desc"
+      ? dirParam
+      : field === "created_at"
+        ? "asc"
+        : "desc";
+
+  const setSort = useCallback(
+    (next: SortState) => {
+      const p = new URLSearchParams(window.location.search);
+      // Default sort is omitted from the URL to keep it clean.
+      if (next.field === "created_at" && next.dir === "asc") {
+        p.delete(`${prefix}SortBy`);
+        p.delete(`${prefix}SortDir`);
+      } else {
+        p.set(`${prefix}SortBy`, next.field);
+        p.set(`${prefix}SortDir`, next.dir);
+      }
+      const qs = p.toString();
+      setLocation(`${window.location.pathname}${qs ? `?${qs}` : ""}`, { replace: true });
+    },
+    [prefix, setLocation],
+  );
+
+  const toggle = useCallback(
+    (clicked: SortField) => {
+      // Same column → flip direction. New column → start at the most useful
+      // direction (DESC for amount/age/salesperson, ASC for created_at).
+      if (clicked === field) {
+        setSort({ field, dir: dir === "asc" ? "desc" : "asc" });
+      } else {
+        setSort({ field: clicked, dir: clicked === "created_at" ? "asc" : "desc" });
+      }
+    },
+    [field, dir, setSort],
+  );
+
+  return { sort: { field, dir }, setSort, toggle };
+}
+
+interface SortableHeaderProps {
+  label: string;
+  field: SortField;
+  current: SortState;
+  onToggle: (field: SortField) => void;
+  align?: "left" | "right";
+  testId?: string;
+}
+
+function SortableHeader({ label, field, current, onToggle, align = "left", testId }: SortableHeaderProps) {
+  const isActive = current.field === field;
+  const Icon = !isActive ? ArrowUpDown : current.dir === "asc" ? ArrowUp : ArrowDown;
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={() => onToggle(field)}
+      className={cn(
+        "-ml-3 h-8 data-[state=open]:bg-accent",
+        align === "right" && "ml-0 -mr-3",
+      )}
+      data-testid={testId}
+      aria-sort={isActive ? (current.dir === "asc" ? "ascending" : "descending") : "none"}
+    >
+      <span>{label}</span>
+      <Icon className={cn("ml-2 h-3.5 w-3.5", !isActive && "opacity-50")} />
+    </Button>
+  );
+}
 
 const BUCKET_LABEL: Record<OutstandingEstimate["ageBucket"], string> = {
   "0-7": "Under 1 week",
@@ -71,7 +171,14 @@ function ageBadge(b: OutstandingEstimate["ageBucket"]) {
   );
 }
 
-function OutstandingTable({ rows, testId }: { rows: OutstandingEstimate[]; testId: string }) {
+interface OutstandingTableProps {
+  rows: OutstandingEstimate[];
+  testId: string;
+  sort: SortState;
+  onToggleSort: (field: SortField) => void;
+}
+
+function OutstandingTable({ rows, testId, sort, onToggleSort }: OutstandingTableProps) {
   return (
     <div className="overflow-x-auto">
       <Table data-testid={testId}>
@@ -79,11 +186,37 @@ function OutstandingTable({ rows, testId }: { rows: OutstandingEstimate[]; testI
           <TableRow>
             <TableHead>Title</TableHead>
             <TableHead>Contact</TableHead>
-            <TableHead>Salesperson</TableHead>
+            <TableHead>
+              <SortableHeader
+                label="Salesperson"
+                field="salesperson"
+                current={sort}
+                onToggle={onToggleSort}
+                testId={`${testId}-sort-salesperson`}
+              />
+            </TableHead>
             <TableHead>Created</TableHead>
-            <TableHead className="text-right">Age</TableHead>
+            <TableHead className="text-right">
+              <SortableHeader
+                label="Age"
+                field="age"
+                current={sort}
+                onToggle={onToggleSort}
+                align="right"
+                testId={`${testId}-sort-age`}
+              />
+            </TableHead>
             <TableHead>Bucket</TableHead>
-            <TableHead className="text-right">Amount</TableHead>
+            <TableHead className="text-right">
+              <SortableHeader
+                label="Amount"
+                field="amount"
+                current={sort}
+                onToggle={onToggleSort}
+                align="right"
+                testId={`${testId}-sort-amount`}
+              />
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -227,10 +360,23 @@ export function useResetOnFilterChange(reset: () => void) {
 
 export function PendingReport() {
   const [page, setPage] = useState(0);
+  const { sort, toggle } = useSortFromUrl("pending");
   useResetOnFilterChange(() => setPage(0));
+  // Reset to page 0 whenever the sort changes — otherwise a sort flip while
+  // sitting on page 5 could leave the user on an out-of-range OFFSET.
+  useEffect(() => {
+    setPage(0);
+  }, [sort.field, sort.dir]);
   const { data, isLoading, isError } = useReportQuery<OutstandingData>(
     "/api/reports/estimates/pending",
-    { extraParams: { page, pageSize: PAGE_SIZE } },
+    {
+      extraParams: {
+        page,
+        pageSize: PAGE_SIZE,
+        sortBy: sort.field,
+        sortDir: sort.dir,
+      },
+    },
   );
   const isEmpty = !!data && data.total === 0;
   const b = buildBucketStats(data?.buckets ?? []);
@@ -253,7 +399,12 @@ export function PendingReport() {
             <Stat label="1–2 weeks" value={b.week.toString()} testId="stat-pending-week" />
             <Stat label="Over 30 days" value={b.stale.toString()} testId="stat-pending-stale" />
           </div>
-          <OutstandingTable rows={data.estimates} testId="table-pending-estimates" />
+          <OutstandingTable
+            rows={data.estimates}
+            testId="table-pending-estimates"
+            sort={sort}
+            onToggleSort={toggle}
+          />
           <TablePagination
             page={page}
             total={data.total}
@@ -268,10 +419,21 @@ export function PendingReport() {
 
 export function InProgressReport() {
   const [page, setPage] = useState(0);
+  const { sort, toggle } = useSortFromUrl("inProgress");
   useResetOnFilterChange(() => setPage(0));
+  useEffect(() => {
+    setPage(0);
+  }, [sort.field, sort.dir]);
   const { data, isLoading, isError } = useReportQuery<OutstandingData>(
     "/api/reports/estimates/in-progress",
-    { extraParams: { page, pageSize: PAGE_SIZE } },
+    {
+      extraParams: {
+        page,
+        pageSize: PAGE_SIZE,
+        sortBy: sort.field,
+        sortDir: sort.dir,
+      },
+    },
   );
   const isEmpty = !!data && data.total === 0;
   return (
@@ -295,7 +457,12 @@ export function InProgressReport() {
               testId="stat-ip-avg"
             />
           </div>
-          <OutstandingTable rows={data.estimates} testId="table-in-progress-estimates" />
+          <OutstandingTable
+            rows={data.estimates}
+            testId="table-in-progress-estimates"
+            sort={sort}
+            onToggleSort={toggle}
+          />
           <TablePagination
             page={page}
             total={data.total}
