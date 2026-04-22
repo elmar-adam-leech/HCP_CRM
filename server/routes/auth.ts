@@ -434,7 +434,8 @@ export function registerAuthRoutes(app: Express): void {
       getContractorCached(req.user.contractorId),
     ]);
 
-    res.json({
+    const { sendJsonWithEtag } = await import('../utils/etag');
+    sendJsonWithEtag(req, res, {
       user: {
         id: req.user.userId,
         username: req.user.username,

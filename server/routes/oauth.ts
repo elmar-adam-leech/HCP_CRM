@@ -336,8 +336,9 @@ export function registerOAuthRoutes(app: Express): void {
 
   app.get("/api/user/contractors", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const { getUserContractorsWithDetailsCached } = await import('../services/cache');
+    const { sendJsonWithEtag } = await import('../utils/etag');
     const contractorsWithDetails = await getUserContractorsWithDetailsCached(req.user.userId);
-    res.json(contractorsWithDetails);
+    sendJsonWithEtag(req, res, contractorsWithDetails);
   }));
 
   app.post("/api/user/switch-contractor", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
