@@ -6,6 +6,11 @@ import { type Server } from "http";
 import viteConfig from "../vite.config";
 import { nanoid } from "nanoid";
 import { PRERENDERED_ROUTE_PATHS } from "@shared/prerendered-routes.mjs";
+import {
+  createBookingSsrHandler,
+  createDevBookingSsrLoader,
+  createProdBookingSsrLoader,
+} from "./booking-ssr";
 
 // Cache-Control for pre-rendered marketing HTML. Short max-age + must-revalidate
 // keeps mobile visitors hitting an edge POP for the typical session, but lets
@@ -58,17 +63,34 @@ export async function setupVite(app: Express, _server: Server) {
   });
 
   app.use(vite.middlewares);
+
+  const clientTemplate = path.resolve(
+    import.meta.dirname,
+    "..",
+    "client",
+    "index.html",
+  );
+  const ssrEntry = path.resolve(
+    import.meta.dirname,
+    "..",
+    "client",
+    "src",
+    "prerender-entry.tsx",
+  );
+
+  // Per-tenant SSR for the public booking page so the branded card paints
+  // before the React bundle loads. Falls through to the SPA shell on miss.
+  const bookingSsr = createBookingSsrHandler({
+    templatePath: clientTemplate,
+    loadSsrModule: createDevBookingSsrLoader(vite, ssrEntry),
+    transformTemplate: (url, html) => vite.transformIndexHtml(url, html),
+  });
+  app.get("/book/:slug", (req, res, next) => bookingSsr(req, res, next));
+
   app.use("*", async (req, res, next) => {
     const url = req.originalUrl;
 
     try {
-      const clientTemplate = path.resolve(
-        import.meta.dirname,
-        "..",
-        "client",
-        "index.html",
-      );
-
       // always reload the index.html file from disk incase it changes
       let template = await fs.promises.readFile(clientTemplate, "utf-8");
       template = template.replace(
@@ -139,6 +161,15 @@ export function serveStatic(app: Express) {
   const spaShellPath = fs.existsSync(path.resolve(distPath, "spa.html"))
     ? path.resolve(distPath, "spa.html")
     : path.resolve(distPath, "index.html");
+
+  // Per-tenant SSR for /book/:slug — paints the branded booking card before
+  // any JavaScript loads. Uses the same SSR bundle the build-time prerender
+  // produced (dist/prerender/prerender-entry.mjs).
+  const bookingSsr = createBookingSsrHandler({
+    templatePath: spaShellPath,
+    loadSsrModule: createProdBookingSsrLoader(path.resolve(distPath, "..")),
+  });
+  app.get("/book/:slug", (req, res, next) => bookingSsr(req, res, next));
 
   app.use("*", (req, res) => {
     const prerendered = PRERENDERED_ROUTES[req.path];

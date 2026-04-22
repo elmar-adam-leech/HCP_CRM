@@ -1,7 +1,31 @@
 import { createRoot, hydrateRoot } from "react-dom/client";
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import App from "./App";
+import { queryClient } from "./lib/queryClient";
 import "./index.css";
+
+// The server SSRs the public booking page (/book/:slug) per tenant and ships
+// the contractor data via window.__BOOKING_DATA__. Pre-populate react-query's
+// cache here, BEFORE hydration, so the client's first render matches the
+// server-rendered DOM (otherwise hydration would mismatch the contractor name
+// vs the loading skeleton).
+type BookingBootstrap = {
+  slug: string;
+  contractor: {
+    name: string;
+    bookingSlug: string;
+    bookingRedirectUrl: string | null;
+  };
+};
+const bookingBootstrap = (window as unknown as {
+  __BOOKING_DATA__?: BookingBootstrap;
+}).__BOOKING_DATA__;
+if (bookingBootstrap?.slug && bookingBootstrap.contractor) {
+  queryClient.setQueryData(
+    ["/api/public/book", bookingBootstrap.slug],
+    { contractor: bookingBootstrap.contractor },
+  );
+}
 
 // Top-level error boundary — catches any crash that escapes the router-level
 // boundary inside App.tsx (e.g. a broken context provider or sidebar crash).
