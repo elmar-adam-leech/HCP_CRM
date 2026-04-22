@@ -2,6 +2,11 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { getUserContractorCached, getUserCached } from './services/cache';
+import {
+  getCachedValidation,
+  cacheValidation,
+  evictAuthCache,
+} from './services/auth-cache';
 import { db } from './db';
 import { revokedTokens } from '@shared/schema';
 import { eq, lt } from 'drizzle-orm';
@@ -201,6 +206,9 @@ export class AuthService {
     // Immediately mark as revoked in the in-memory cache so the current
     // session is blocked right away without waiting for the TTL to expire.
     jtiCache.set(decoded.jti, true);
+    // Also flush any cached validation result so the fast-path in requireAuth
+    // doesn't keep waving this jti through for up to AUTH_CACHE_TTL_MS.
+    evictAuthCache(decoded.jti);
   }
 
   /**
@@ -271,6 +279,30 @@ export class AuthService {
         return;
       }
 
+      // Fast path: if we already validated this jti recently, skip both the
+      // revoked_tokens lookup AND the users lookup. The cache entry is only
+      // populated after a full successful validation, so a hit means the jti
+      // was not revoked and the JWT's tokenVersion matched the user's row at
+      // the moment of caching. The TTL (default 30s) is the worst-case
+      // propagation window for revocation actions; explicit revokeToken()
+      // calls evictAuthCache() so logout still takes effect immediately.
+      // We also skip the fast path when the token is due for refresh so the
+      // sliding-expiration code below still gets fresh permissions from the
+      // user-contractor cache.
+      if (decoded.jti && !AuthService.shouldRefreshToken(decoded)) {
+        const cached = getCachedValidation(decoded.jti);
+        if (
+          cached &&
+          cached.tokenVersion === decoded.tokenVersion &&
+          cached.contractorId === decoded.contractorId &&
+          cached.userId === decoded.userId
+        ) {
+          req.user = decoded;
+          next();
+          return;
+        }
+      }
+
       // Check if token has been explicitly revoked (e.g., via logout).
       // The in-memory JTI cache (15-min TTL, max 10k entries) is checked first to
       // avoid a DB hit on every request. On a cache miss, the DB is queried and the
@@ -304,6 +336,10 @@ export class AuthService {
 
       // Check tokenVersion — protects against stolen devices via "sign out all"
       if (decoded.tokenVersion !== user.tokenVersion) {
+        // Defensive eviction: covers the rare race where two concurrent
+        // requests for the same jti both reached the slow path and the first
+        // to populate the cache did so with what is now a stale tokenVersion.
+        if (decoded.jti) evictAuthCache(decoded.jti);
         res.status(401).json({ message: 'Session invalidated — please log in again' });
         return;
       }
@@ -325,7 +361,17 @@ export class AuthService {
         canManageIntegrations: userContractor.canManageIntegrations,
         allowedIntegrations: userContractor.allowedIntegrations ?? null,
       };
-      
+
+      // Cache the validated jti so subsequent requests with the same token
+      // can short-circuit both DB queries above for AUTH_CACHE_TTL_MS.
+      if (decoded.jti) {
+        cacheValidation(decoded.jti, {
+          userId: decoded.userId,
+          tokenVersion: decoded.tokenVersion,
+          contractorId: decoded.contractorId,
+        });
+      }
+
       // Sliding expiration: Refresh token if it's more than halfway to expiration.
       // Always re-issue from the current membership record (not stale JWT claims)
       // so that role/permission changes are picked up at refresh time.

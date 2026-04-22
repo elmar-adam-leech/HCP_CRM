@@ -8,6 +8,7 @@ import { providerService } from "./providers/provider-service";
 import { syncScheduler } from "./sync-scheduler";
 import { messageCleanupService } from "./services/message-cleanup";
 import { AuthService } from "./auth-service";
+import { startAuthCacheSweeper } from "./services/auth-cache";
 import { workflowEngine } from "./workflow-engine";
 import { initDb, db, pool } from "./db";
 import { startHcpWebhookHealthCheck, stopHcpWebhookHealthCheck } from "./services/hcp-webhook-health";
@@ -320,6 +321,9 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   const { salesProcessCron } = await import("./services/sales-process-cron");
   salesProcessCron.start();
   log("SalesProcessCron registered (runs every 60s)");
+
+  // Periodic sweep of the in-process JWT validation cache (drops expired entries).
+  timerRegistry.push(startAuthCacheSweeper(60 * 1000));
 
   // Hourly cleanup of expired revoked_tokens rows (prevents unbounded table growth)
   timerRegistry.push(setInterval(() => {
