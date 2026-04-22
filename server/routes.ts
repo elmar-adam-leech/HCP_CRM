@@ -45,6 +45,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.use(cookieParser());
 
   app.use((req, res, next) => {
+    // Content-hashed Vite bundles under /assets/* are immutable. We MUST NOT
+    // touch their headers here — serveStatic in server/vite.ts applies
+    // `public, max-age=31536000, immutable`, and send.js only sets
+    // Cache-Control if it isn't already set. Pre-setting anything (even a
+    // `max-age=300`) silently neuters the long-cache.
+    if (req.path.startsWith('/assets/')) {
+      return next();
+    }
+
     if (req.path.endsWith('.html') || req.path === '/' || req.path.startsWith('/api/')) {
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
       res.setHeader('Pragma', 'no-cache');
@@ -52,13 +61,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.setHeader('Surrogate-Control', 'no-store');
     }
     else if (req.path.match(/\.(js|css|png|jpg|jpeg|gif|ico|svg)$/)) {
-      // Content-hashed Vite bundles under /assets/* are immutable — let
-      // serveStatic apply its own `public, max-age=1y, immutable` header
-      // (send.js only sets Cache-Control when it isn't already set, so we
-      // must NOT pre-set anything here for those paths).
-      if (!req.path.startsWith('/assets/')) {
-        res.setHeader('Cache-Control', 'max-age=300, must-revalidate');
-      }
+      // Non-hashed static files (manifest.json, icons, booking-widget.js, etc.)
+      // get a short cache so iteration on those still propagates quickly.
+      res.setHeader('Cache-Control', 'max-age=300, must-revalidate');
     }
     next();
   });

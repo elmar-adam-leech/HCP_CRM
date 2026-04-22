@@ -204,6 +204,10 @@ export function registerGoogleLocalServicesIntegrationRoutes(app: Express): void
         CredentialService.setCredential(req.user.contractorId, GLS_SERVICE, 'account_name', body.accountName ?? ''),
       ]);
       await storage.enableTenantIntegration(req.user.contractorId, GLS_SERVICE, req.user.userId);
+      {
+        const { invalidateContractorCache } = await import('../../services/cache');
+        invalidateContractorCache(req.user.contractorId);
+      }
 
       try {
         await syncScheduler.onIntegrationEnabled(req.user.contractorId, GLS_SERVICE);
@@ -240,6 +244,10 @@ export function registerGoogleLocalServicesIntegrationRoutes(app: Express): void
       }
       // Mark integration as disabled so the UI reflects the change.
       try { await storage.disableTenantIntegration(req.user.contractorId, GLS_SERVICE); } catch { /* optional */ }
+      try {
+        const { invalidateContractorCache } = await import('../../services/cache');
+        invalidateContractorCache(req.user.contractorId);
+      } catch { /* optional */ }
       res.json({ success: true });
     }));
 

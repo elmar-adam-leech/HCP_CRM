@@ -39,6 +39,10 @@ export function registerLeadCaptureRoutes(app: Express): void {
       return;
     }
     await storage.disableTenantIntegration(req.user.contractorId, 'lead-capture');
+    {
+      const { invalidateContractorCache } = await import('../services/cache');
+      invalidateContractorCache(req.user.contractorId);
+    }
     log.info(`[OAuthRoutes] INFO lead-capture integration disabled for contractor ${req.user.contractorId} by user ${req.user.userId}`);
     await syncScheduler.onIntegrationDisabled(req.user.contractorId, 'lead-capture');
     res.json({ success: true, message: "Lead capture inbox disconnected" });

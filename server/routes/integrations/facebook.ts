@@ -292,6 +292,10 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
         await Promise.all(credentialWrites);
         // Create/update contractor_integrations row so the integration appears in the admin view
         await storage.enableTenantIntegration(contractorId, 'facebook-leads', userId);
+        {
+          const { invalidateContractorCache } = await import('../../services/cache');
+          invalidateContractorCache(contractorId);
+        }
         log.info(`[callback] Step 4 OK: saved credentials and enabled integration for contractor ${contractorId}, page "${page.name}" (${page.id})`);
 
         // Schedule automatic 5-minute polling as a fallback for missed webhook deliveries.

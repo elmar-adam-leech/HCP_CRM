@@ -418,14 +418,19 @@ export function registerAuthRoutes(app: Express): void {
       return;
     }
 
-    const { getContractorCached } = await import('../services/cache'); // intentional: avoids circular dep at module init
-    const [fullUser, enabledIntegrations, userContractor, contractor] = await Promise.all([
-      storage.getUser(req.user.userId),
-      storage.getEnabledIntegrations(req.user.contractorId).catch((err) => {
-        log.warn('getEnabledIntegrations failed, returning []', { error: err?.message ?? err });
-        return [];
-      }),
-      storage.getUserContractor(req.user.userId, req.user.contractorId),
+    // Intentional dynamic import: avoids the cache module pulling in the full
+    // storage layer at startup, which can create a circular dep at boot time.
+    const {
+      getContractorCached,
+      getUserSupplementalCached,
+      getEnabledIntegrationsCached,
+      getUserContractorCached,
+    } = await import('../services/cache');
+
+    const [supplemental, enabledIntegrations, userContractor, contractor] = await Promise.all([
+      getUserSupplementalCached(req.user.userId),
+      getEnabledIntegrationsCached(req.user.contractorId),
+      getUserContractorCached(req.user.userId, req.user.contractorId),
       getContractorCached(req.user.contractorId),
     ]);
 
@@ -440,9 +445,9 @@ export function registerAuthRoutes(app: Express): void {
         contractorName: contractor?.name || '',
         canManageIntegrations: req.user.canManageIntegrations,
         allowedIntegrations: req.user.allowedIntegrations ?? null,
-        dialpadDefaultNumber: fullUser?.dialpadDefaultNumber || undefined,
-        gmailConnected: fullUser?.gmailConnected || false,
-        gmailEmail: fullUser?.gmailEmail || undefined,
+        dialpadDefaultNumber: supplemental?.dialpadDefaultNumber || undefined,
+        gmailConnected: supplemental?.gmailConnected || false,
+        gmailEmail: supplemental?.gmailEmail || undefined,
         hasActiveCompanyIntegrations: enabledIntegrations.length > 0,
         callPreference: userContractor?.callPreference || 'integration',
       }

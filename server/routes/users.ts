@@ -83,6 +83,7 @@ export function registerUserRoutes(app: Express): void {
         role: role || 'user',
         canManageIntegrations: role === 'admin' || (role as string) === 'super_admin',
       });
+      cacheInvalidation.invalidateUser(existingGlobalUser.id);
       res.status(201).json({
         id: existingGlobalUser.id,
         name: existingGlobalUser.name,
@@ -113,6 +114,8 @@ export function registerUserRoutes(app: Express): void {
       role: role || 'user',
       canManageIntegrations: role === 'admin' || (role as string) === 'super_admin',
     });
+
+    cacheInvalidation.invalidateUser(newUser.id);
 
     res.status(201).json({
       id: newUser.id,
@@ -194,6 +197,8 @@ export function registerUserRoutes(app: Express): void {
       .set({ dialpadDefaultNumber })
       .where(eq(users.id, userId))
       .returning();
+
+    cacheInvalidation.invalidateUser(userId);
 
     if (dialpadDefaultNumber && targetUser[0].role !== 'admin' && targetUser[0].role !== 'manager') {
       const phoneNumber = await storage.getDialpadPhoneNumberByNumber(req.user.contractorId, dialpadDefaultNumber);
@@ -313,6 +318,9 @@ export function registerUserRoutes(app: Express): void {
       .where(and(eq(userContractors.userId, userId), eq(userContractors.contractorId, req.user.contractorId)))
       .returning();
 
+    cacheInvalidation.invalidateUserContractor(userId, req.user.contractorId);
+    cacheInvalidation.invalidateUser(userId);
+
     res.json({
       userId,
       role: updated[0].role,
@@ -344,6 +352,9 @@ export function registerUserRoutes(app: Express): void {
       .set({ canManageIntegrations })
       .where(and(eq(userContractors.userId, userId), eq(userContractors.contractorId, req.user.contractorId)))
       .returning();
+
+    cacheInvalidation.invalidateUserContractor(userId, req.user.contractorId);
+    cacheInvalidation.invalidateUser(userId);
 
     res.json({
       userId,
@@ -380,6 +391,8 @@ export function registerUserRoutes(app: Express): void {
       return;
     }
 
+    cacheInvalidation.invalidateUser(req.user.userId);
+
     res.json({
       dialpadDefaultNumber: result[0].dialpadDefaultNumber,
       message: dialpadDefaultNumber ? "Default number updated successfully" : "Default number cleared successfully"
@@ -411,6 +424,8 @@ export function registerUserRoutes(app: Express): void {
       .set({ dialpadDefaultNumber: dialpadDefaultNumber || null })
       .where(eq(users.id, userId))
       .returning();
+
+    cacheInvalidation.invalidateUser(userId);
 
     res.json({
       dialpadDefaultNumber: result[0].dialpadDefaultNumber,
@@ -476,6 +491,8 @@ export function registerUserRoutes(app: Express): void {
       res.status(404).json({ message: "User contractor record not found" });
       return;
     }
+
+    cacheInvalidation.invalidateUserContractor(req.user.userId, req.user.contractorId);
 
     res.json({ callPreference: result[0].callPreference, message: "Call preference updated" });
   }));

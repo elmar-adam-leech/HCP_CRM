@@ -1,6 +1,6 @@
 import type { Express, Response } from "express";
 import { storage } from "../../storage";
-import { isIntegrationEnabledCached } from "../../services/cache";
+import { isIntegrationEnabledCached, invalidateContractorCache } from "../../services/cache";
 import { dialpadEnhancedService } from "../../dialpad";
 import { providerService, INTEGRATION_NAMES, isIntegrationName } from "../../providers/provider-service";
 import { requireManagerOrAdmin, type AuthedRequest } from "../../auth-service";
@@ -94,7 +94,9 @@ export function registerIntegrationRoutes(app: Express): void {
       integrationName, 
       req.user.userId
     );
-    
+
+    invalidateContractorCache(req.user.contractorId);
+
     if (integrationName === 'housecall-pro') {
       try {
         await syncScheduler.onIntegrationEnabled(req.user.contractorId, 'housecall-pro');
@@ -155,7 +157,9 @@ export function registerIntegrationRoutes(app: Express): void {
     }
     
     await storage.disableTenantIntegration(req.user.contractorId, integrationName);
-    
+
+    invalidateContractorCache(req.user.contractorId);
+
     if (integrationName === 'housecall-pro') {
       try {
         await syncScheduler.onIntegrationDisabled(req.user.contractorId, 'housecall-pro');

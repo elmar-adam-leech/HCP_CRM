@@ -89,6 +89,63 @@ export const getUserCached = memoizee(
   }
 );
 
+// Cache the supplemental user fields surfaced by /api/auth/me (60s TTL).
+// These fields change on rare user actions (gmail connect/disconnect, dialpad
+// number update). Mutation handlers MUST call invalidateUserCache(userId) to
+// avoid stale auth payloads.
+export const getUserSupplementalCached = memoizee(
+  async (userId: string) => {
+    const user = await storage.getUser(userId);
+    if (!user) return null;
+    return {
+      dialpadDefaultNumber: user.dialpadDefaultNumber || undefined,
+      gmailConnected: user.gmailConnected || false,
+      gmailEmail: user.gmailEmail || undefined,
+    };
+  },
+  {
+    promise: true,
+    maxAge: 60 * 1000, // 60 seconds
+    max: 2000,
+  }
+);
+
+// Cache the enabled-integrations list per contractor (60s TTL).
+// /api/auth/me only needs `length > 0`, but other call sites read the rows.
+// Invalidated on enable/disable via invalidateContractorCache.
+export const getEnabledIntegrationsCached = memoizee(
+  async (contractorId: string) => {
+    try {
+      return await storage.getEnabledIntegrations(contractorId);
+    } catch {
+      return [];
+    }
+  },
+  {
+    promise: true,
+    maxAge: 60 * 1000, // 60 seconds
+    max: 1000,
+  }
+);
+
+// Cache the joined user-contractors-with-details payload returned by
+// GET /api/user/contractors. Mutation paths (add/remove/switch) MUST call
+// invalidateUserCache(userId) so the dropdown reflects new memberships.
+export const getUserContractorsWithDetailsCached = memoizee(
+  async (userId: string) => {
+    const memberships = await storage.getUserContractors(userId);
+    if (memberships.length === 0) return [];
+    const contractorList = await storage.getContractorsByIds(memberships.map((uc) => uc.contractorId));
+    const contractorMap = new Map(contractorList.map((c) => [c.id, c]));
+    return memberships.map((uc) => ({ ...uc, contractor: contractorMap.get(uc.contractorId) }));
+  },
+  {
+    promise: true,
+    maxAge: 60 * 1000, // 60 seconds
+    max: 1000,
+  }
+);
+
 /**
  * Cache invalidation helpers
  * Call these when data changes to ensure cache consistency
@@ -104,6 +161,8 @@ export const cacheInvalidation = {
   invalidateUser: (userId: string) => {
     getUserCached.delete(userId);
     getUserContractorsCached.delete(userId);
+    getUserSupplementalCached.delete(userId);
+    getUserContractorsWithDetailsCached.delete(userId);
   },
 
   // Invalidate contractor settings cache
@@ -111,6 +170,7 @@ export const cacheInvalidation = {
     getContractorCached.delete(contractorId);
     getTerminologySettingsCached.delete(contractorId);
     getBusinessTargetsCached.delete(contractorId);
+    getEnabledIntegrationsCached.delete(contractorId);
   },
 
   // Invalidate terminology settings cache specifically
@@ -134,8 +194,15 @@ export const cacheInvalidation = {
     getUserCached.clear();
     getContactCached.clear();
     isIntegrationEnabledCached.clear();
+    getUserSupplementalCached.clear();
+    getEnabledIntegrationsCached.clear();
+    getUserContractorsWithDetailsCached.clear();
   },
 };
+
+// Convenience aliases that match the naming in task #595's spec.
+export const invalidateUserCache = (userId: string) => cacheInvalidation.invalidateUser(userId);
+export const invalidateContractorCache = (contractorId: string) => cacheInvalidation.invalidateContractor(contractorId);
 
 // Cache workflow steps for 5 minutes.
 // Workflow steps are fetched on every execution but rarely change mid-run.

@@ -59,6 +59,8 @@ export function registerOAuthRoutes(app: Express): void {
     const enabled = await storage.isIntegrationEnabled(contractorId, 'gmail');
     if (!enabled) {
       await storage.enableTenantIntegration(contractorId, 'gmail', account.connectedByUserId ?? undefined);
+      const { invalidateContractorCache } = await import('../services/cache');
+      invalidateContractorCache(contractorId);
     }
     const schedule = await storage.getSyncSchedule(contractorId, 'gmail');
     if (!schedule) {
@@ -210,6 +212,10 @@ export function registerOAuthRoutes(app: Express): void {
         // shared inbox (no per-user Gmail). Safe to call repeatedly — both
         // enable and scheduleSync upsert.
         await storage.enableTenantIntegration(contractorId, 'gmail', initiatingUserId ?? undefined);
+        {
+          const { invalidateContractorCache } = await import('../services/cache');
+          invalidateContractorCache(contractorId);
+        }
         await syncScheduler.onIntegrationEnabled(contractorId, 'gmail');
         log.info(`Shared company email connected for contractor ${contractorId}: ${maskEmail(result.email)}`);
         res.redirect(`${protocol}://${redirectHost}/settings?tab=integrations&shared_email=success`);
@@ -245,6 +251,10 @@ export function registerOAuthRoutes(app: Express): void {
           spamFilterEnabled: false,
         });
         await storage.enableTenantIntegration(contractorId, 'lead-capture', initiatingUserId ?? undefined);
+        {
+          const { invalidateContractorCache } = await import('../services/cache');
+          invalidateContractorCache(contractorId);
+        }
         log.info(`[OAuthRoutes] INFO lead-capture integration enabled for contractor ${contractorId} by user ${initiatingUserId}`);
         await syncScheduler.onIntegrationEnabled(contractorId, 'lead-capture');
         log.info(`Lead capture inbox connected for contractor ${contractorId}: ${maskEmail(result.email)}`);
@@ -290,7 +300,12 @@ export function registerOAuthRoutes(app: Express): void {
       log.info(`Enabled automatic email syncing for contractor ${contractorId}`);
       await storage.enableTenantIntegration(contractorId, 'gmail', userId);
       log.info(`Recorded gmail integration for contractor ${contractorId}`);
+      const { invalidateContractorCache } = await import('../services/cache');
+      invalidateContractorCache(contractorId);
     }
+
+    const { invalidateUserCache } = await import('../services/cache');
+    invalidateUserCache(userId);
 
     res.redirect(`${protocol}://${redirectHost}/settings?gmail=connected`);
   }));
@@ -313,17 +328,15 @@ export function registerOAuthRoutes(app: Express): void {
 
     log.info(`User ${req.user.userId} disconnected Gmail`);
 
+    const { invalidateUserCache } = await import('../services/cache');
+    invalidateUserCache(req.user.userId);
+
     res.json({ message: "Gmail disconnected successfully" });
   }));
 
   app.get("/api/user/contractors", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    const userContractors = await storage.getUserContractors(req.user.userId);
-
-    // Batch-fetch all contractors in a single query instead of N individual lookups
-    const contractorList = await storage.getContractorsByIds(userContractors.map(uc => uc.contractorId));
-    const contractorMap = new Map(contractorList.map(c => [c.id, c]));
-    const contractorsWithDetails = userContractors.map(uc => ({ ...uc, contractor: contractorMap.get(uc.contractorId) }));
-
+    const { getUserContractorsWithDetailsCached } = await import('../services/cache');
+    const contractorsWithDetails = await getUserContractorsWithDetailsCached(req.user.userId);
     res.json(contractorsWithDetails);
   }));
 
@@ -367,6 +380,9 @@ export function registerOAuthRoutes(app: Express): void {
       maxAge: 7 * 24 * 60 * 60 * 1000,
       path: '/',
     });
+
+    const { invalidateUserCache } = await import('../services/cache');
+    invalidateUserCache(req.user.userId);
 
     res.json({
       message: "Contractor switched successfully",
