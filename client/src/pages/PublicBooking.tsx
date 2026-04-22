@@ -56,6 +56,7 @@ interface ContractorInfo {
   name: string;
   bookingSlug: string;
   bookingRedirectUrl: string | null;
+  logoUrl: string | null;
 }
 
 interface TimeSlot {
@@ -319,6 +320,18 @@ export default function PublicBooking() {
       <div className="max-w-2xl mx-auto">
         <Card>
           <CardHeader className="text-center">
+            {/* Reserve a fixed-height slot for the logo so missing/loading logos
+                don't shift layout when the image resolves. */}
+            <div className="flex items-center justify-center min-h-[64px] mb-2">
+              {contractorData?.contractor.logoUrl ? (
+                <img
+                  src={contractorData.contractor.logoUrl}
+                  alt={`${contractorData.contractor.name} logo`}
+                  className="max-h-16 max-w-[200px] object-contain"
+                  data-testid="img-contractor-logo"
+                />
+              ) : null}
+            </div>
             <CardTitle className="text-2xl flex items-center justify-center gap-2">
               <CalendarIcon className="h-6 w-6" />
               Schedule an Appointment

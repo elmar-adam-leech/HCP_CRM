@@ -132,6 +132,7 @@ export function createBookingSsrHandler(opts: BookingSsrHandlerOptions) {
         name: contractor.name,
         bookingSlug: contractor.bookingSlug ?? slug,
         bookingRedirectUrl: contractor.bookingRedirectUrl ?? null,
+        logoUrl: contractor.logoUrl ?? null,
       };
 
       let template = await fs.readFile(opts.templatePath, "utf-8");

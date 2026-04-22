@@ -37,6 +37,7 @@ export interface BookingContractor {
   name: string;
   bookingSlug: string;
   bookingRedirectUrl: string | null;
+  logoUrl: string | null;
 }
 
 /**
