@@ -117,7 +117,7 @@ export function CloseRateBySalespersonReport() {
   return (
     <ReportShell
       title="Close rate by salesperson"
-      description="Estimates sent, won, lost and still open per salesperson — sortable by volume or rate."
+      description="Won as a percentage of all estimates sent. Open estimates count against the rate until they're decided."
       isLoading={isLoading}
       isError={isError}
       isEmpty={isEmpty}
@@ -154,7 +154,7 @@ export function CloseRateBySourceReport() {
   return (
     <ReportShell
       title="Close rate by lead source"
-      description="Same metrics grouped by the originating lead's source. Estimates with no lead are 'Unknown'."
+      description="Won as a percentage of all estimates sent, grouped by the originating lead's source. Open estimates count against the rate until they're decided."
       showLeadSource={false}
       isLoading={isLoading}
       isError={isError}

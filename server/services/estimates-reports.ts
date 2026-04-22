@@ -509,27 +509,27 @@ async function getCloseRate(
   `);
   const r = result.rows[0];
   const rows: CloseRateRow[] = (r?.rows ?? []).map((g) => {
-    const decided = num(g.won) + num(g.lost);
+    const sent = num(g.sent);
     return {
       key: g.key,
       name: g.name,
-      sent: num(g.sent),
+      sent,
       won: num(g.won),
       lost: num(g.lost),
       open: num(g.open),
-      closeRate: decided > 0 ? round1((num(g.won) / decided) * 100) : 0,
+      closeRate: sent > 0 ? round1((num(g.won) / sent) * 100) : 0,
     };
   });
   const totals = r?.totals;
-  const tDecided = num(totals?.won) + num(totals?.lost);
+  const tSent = num(totals?.sent);
   return {
     rows,
     totals: {
-      sent: num(totals?.sent),
+      sent: tSent,
       won: num(totals?.won),
       lost: num(totals?.lost),
       open: num(totals?.open),
-      closeRate: tDecided > 0 ? round1((num(totals?.won) / tDecided) * 100) : 0,
+      closeRate: tSent > 0 ? round1((num(totals?.won) / tSent) * 100) : 0,
     },
   };
 }
