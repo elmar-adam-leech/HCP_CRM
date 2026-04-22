@@ -5,6 +5,7 @@ This project is a multi-tenant Customer Relationship Management (CRM) system des
 
 ## User Preferences
 Preferred communication style: Simple, everyday language.
+Performance is a first-class requirement — every change is evaluated for impact on load time, payload size, and end-user device resources. See "Performance & Resource Standards" below.
 
 ## System Architecture
 
@@ -37,6 +38,32 @@ The `migrations/` folder contains only the historical drizzle-kit bootstrap (`00
 A `runSchemaDriftCheck()` step runs at the end of `initDb()` and crashes startup loudly when any Drizzle-declared table or column is missing from the live database, so drift surfaces immediately at deploy time instead of as a 500 on a user-facing page later. The fix when it fires is always the same: add an idempotent statement to `columnMigrations` and redeploy.
 
 **Process rule:** any new column added to `shared/schema/*` MUST ship in the same PR with a matching `columnMigrations` entry in `server/schema-drift.ts`. When `npm run db:push --force` is blocked (e.g. by an unrelated drizzle-kit interactive prompt), the `columnMigrations` entry is the **only** acceptable substitute — never roll out columns via ad-hoc psql or new files in `migrations/`. Task #473 is the canonical example of what happens when this is skipped (deploy promote fails on schema drift).
+
+### Performance & Resource Standards
+Every change must pull its weight in load time, network bytes, JS bundle size, DB time, and battery on the end user's device — the same way every change is held to tenant isolation.
+
+**Always do:**
+- Paginate any list endpoint that can grow; keep `LIMIT` on every list query.
+- Use TanStack Query caching with correct, array-form query keys for hierarchical data so invalidation is precise.
+- Lazy-load route components and code-split per route; gate optional/heavy features behind dynamic imports.
+- Prefer server-side aggregation (SQL `GROUP BY`, CTEs, window functions) over shipping rows to the client to be summed.
+- Prefer `EXISTS` subqueries (or single joined aggregates) over per-row API calls or N+1 fetches in render paths.
+- Debounce expensive inputs (search boxes, autocomplete, filter changes).
+- Virtualize lists that can render ≥200 rows.
+- Ship images at the resolution actually rendered; respect viewport pixel width.
+
+**Never do:**
+- No unbounded list fetches (no endpoint that returns "all rows for the tenant" without `LIMIT`/cursor).
+- No per-row API calls inside a render path or map.
+- No synchronous heavy work on the main thread (parse, hash, large transforms — push to a worker or to the server).
+- No shipping >100KB of vendor JS for a single feature without a written justification.
+- No polling intervals < 30s without a strong reason documented in the task.
+- No rendering 500+ DOM nodes when a paginated or virtualized list will do.
+- No images larger than the viewport pixel width they're rendered at.
+
+**When in doubt:** every task plan includes a one-line "Performance note" explaining how the change satisfies these standards — even if it's just "no impact — pure UI text change."
+
+**In-repo precedents to model after:** server-side pagination on Pending/In-progress/Lost reports (#561, #564); the canonical-row CTE that eliminated ~6,000 phantom rows in reports (#552); `EXISTS` subqueries powering the `autoDisputed` flag on contacts (#574).
 
 ### System Design Choices
 - **Frontend**: React, TypeScript, Vite, Wouter, TanStack Query, Radix UI, Tailwind CSS.
