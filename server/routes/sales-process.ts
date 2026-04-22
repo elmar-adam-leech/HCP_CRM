@@ -134,6 +134,7 @@ export function registerSalesProcessRoutes(app: Express): void {
   // round trip.
   app.get("/api/sales-process/tasks", asyncHandler(async (req: AuthedRequest, res: Response) => {
     const leadId = typeof req.query.leadId === 'string' ? req.query.leadId : undefined;
+    const contactId = typeof req.query.contactId === 'string' ? req.query.contactId : undefined;
     const from = typeof req.query.from === 'string' ? new Date(req.query.from) : undefined;
     const to = typeof req.query.to === 'string' ? new Date(req.query.to) : undefined;
     const fromDate = from && !isNaN(from.getTime()) ? from : undefined;
@@ -153,6 +154,7 @@ export function registerSalesProcessRoutes(app: Express): void {
     if (req.query.withLead === '1' || req.query.withLead === 'true') {
       const tasks = await storage.listTaskInstancesWithLeadSummary(req.user.contractorId, {
         leadId,
+        contactId,
         statuses,
         from: fromDate,
         to: toDate,

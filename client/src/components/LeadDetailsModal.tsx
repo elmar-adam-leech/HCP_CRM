@@ -7,6 +7,7 @@ import { BookingHistory } from "@/components/BookingHistory";
 import { CommunicationActionButtons } from "@/components/CommunicationActionButtons";
 import { Mail, Phone, MapPin, Globe, StickyNote, Plus, User, FileText, Calendar, MoreHorizontal, Edit, Settings, CalendarClock } from "lucide-react";
 import { WorkflowEnrollmentBadges } from "./WorkflowEnrollmentBadges";
+import { LeadSalesProcessTasks } from "./LeadSalesProcessTasks";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -281,6 +282,10 @@ function LeadDetailsContent({ contact, onSendEmail, onSchedule, onEdit, onEditSt
         </h3>
         <WorkflowEnrollmentBadges contactId={contact.id} variant="full" />
       </section>
+
+      <div className="border-t" />
+
+      <LeadSalesProcessTasks contactId={contact.id} />
 
       <div className="border-t" />
 

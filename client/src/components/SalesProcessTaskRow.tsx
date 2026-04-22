@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Check, Phone, Mail, Bot, Clock } from "lucide-react";
+import { Check, Phone, Mail, Bot, Clock, SkipForward } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { CallButton } from "@/components/CallButton";
@@ -32,6 +32,49 @@ export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
   onComposeEmail,
 }: SalesProcessTaskRowProps) {
   const { toast } = useToast();
+
+  // Optimistic-remove helper shared by Complete and Skip — both immediately
+  // drop the task from every cached "/api/sales-process/tasks" list and
+  // capture the previous snapshots so we can roll back on error.
+  type RemoveContext = { previous: ReadonlyArray<[readonly unknown[], TaskInstanceWithLead[] | undefined]> };
+  const optimisticRemove = async (): Promise<RemoveContext> => {
+    await queryClient.cancelQueries({ queryKey: ["/api/sales-process/tasks"] });
+    const previous = queryClient.getQueriesData<TaskInstanceWithLead[]>({
+      queryKey: ["/api/sales-process/tasks"],
+    });
+    previous.forEach(([key, data]) => {
+      if (Array.isArray(data)) {
+        queryClient.setQueryData(
+          key,
+          data.filter((t) => t.id !== task.id),
+        );
+      }
+    });
+    return { previous };
+  };
+
+  const skipMutation = useMutation<unknown, Error, void, RemoveContext>({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/sales-process/tasks/${task.id}/skip`);
+      return res.json();
+    },
+    onMutate: optimisticRemove,
+    onError: (err, _vars, context) => {
+      if (context?.previous) {
+        for (const [key, data] of context.previous) {
+          queryClient.setQueryData(key, data);
+        }
+      }
+      toast({
+        title: "Couldn't skip task",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/sales-process/tasks"] });
+    },
+  });
 
   const completeMutation = useMutation({
     mutationFn: async () => {
@@ -202,11 +245,23 @@ export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
             size="sm"
             variant="outline"
             onClick={() => completeMutation.mutate()}
-            disabled={completeMutation.isPending}
+            disabled={completeMutation.isPending || skipMutation.isPending}
             data-testid={`button-mark-done-${task.id}`}
           >
             <Check className="h-3.5 w-3.5 mr-1.5" />
             Done
+          </Button>
+        )}
+        {!isAuto && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => skipMutation.mutate()}
+            disabled={completeMutation.isPending || skipMutation.isPending}
+            data-testid={`button-skip-${task.id}`}
+          >
+            <SkipForward className="h-3.5 w-3.5 mr-1.5" />
+            Skip
           </Button>
         )}
       </div>

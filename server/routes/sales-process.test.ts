@@ -16,6 +16,9 @@ vi.mock('../storage', () => {
     upsertSalesProcess: vi.fn(),
     countOpenLeadsForBackfill: vi.fn(),
     listTaskInstances: vi.fn(),
+    listTaskInstancesWithLeadSummary: vi.fn(),
+    countCompletedTasksSince: vi.fn(),
+    retryFailedTask: vi.fn(),
     markTaskCompleted: vi.fn(),
     markTaskSkipped: vi.fn(),
     getTaskInstance: vi.fn(),
@@ -52,11 +55,17 @@ function makeApp(): Express {
 async function call(app: Express, method: string, url: string, body?: any) {
   // Minimal in-process invoker — we don't need supertest for this smoke.
   return new Promise<{ status: number; body: any }>((resolve, reject) => {
+    const [pathOnly, queryString] = url.split('?');
+    const query: Record<string, string> = {};
+    if (queryString) {
+      for (const [k, v] of new URLSearchParams(queryString)) query[k] = v;
+    }
     const req: any = {
       method, url, body: body ?? {},
-      headers: {}, query: {}, params: {},
+      headers: {}, query, params: {},
       get: () => undefined,
     };
+    void pathOnly;
     const chunks: any[] = [];
     const res: any = {
       statusCode: 200,
@@ -154,6 +163,27 @@ describe('Settings → Sales Process tab API smoke', () => {
     expect(r.status).toBe(200);
     expect(r.body.backfillStarted).toBe(true);
     expect(r.body.backfill).toEqual({ leadsTouched: 0, tasksCreated: 0 });
+  });
+
+  it('GET /api/sales-process/tasks?contactId=...&withLead=1 forwards contactId filter to storage', async () => {
+    (storage.listTaskInstancesWithLeadSummary as any).mockResolvedValue([
+      {
+        id: 't1', contractorId: 'tenant-1', leadId: 'lead-A', stepId: 's1',
+        actionType: 'call', mode: 'manual', status: 'pending',
+        dueAt: new Date().toISOString(),
+        lead: { id: 'lead-A', contactId: 'c-1', status: 'new', source: null, createdAt: null, name: 'Jane', email: null, phone: null },
+      },
+    ]);
+    const app = makeApp();
+    const r = await call(app, 'GET', '/api/sales-process/tasks?withLead=1&contactId=c-1&status=pending,failed');
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body)).toBe(true);
+    const callArgs = (storage.listTaskInstancesWithLeadSummary as any).mock.calls[0];
+    expect(callArgs[0]).toBe('tenant-1');
+    expect(callArgs[1].contactId).toBe('c-1');
+    expect(callArgs[1].statuses).toEqual(['pending', 'failed']);
+    // leadId must NOT be set when only contactId was passed.
+    expect(callArgs[1].leadId).toBeUndefined();
   });
 
   it('PUT /api/sales-process rejects auto+call with a 400 validation error', async () => {

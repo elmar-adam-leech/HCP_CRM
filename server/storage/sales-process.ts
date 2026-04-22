@@ -240,11 +240,13 @@ async function listTaskInstancesWithLeadSummary(
     from?: Date;
     to?: Date;
     leadId?: string;
+    contactId?: string;
     statuses?: Array<'pending' | 'completed' | 'skipped' | 'failed'>;
   } = {},
 ): Promise<TaskInstanceWithLead[]> {
   const conds = [eq(salesProcessTaskInstances.contractorId, contractorId)];
   if (options.leadId) conds.push(eq(salesProcessTaskInstances.leadId, options.leadId));
+  if (options.contactId) conds.push(eq(leads.contactId, options.contactId));
   if (options.statuses && options.statuses.length > 0) {
     conds.push(inArray(salesProcessTaskInstances.status, options.statuses));
   }
