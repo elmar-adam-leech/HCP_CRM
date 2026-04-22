@@ -27,7 +27,7 @@ import { logger } from '../utils/logger';
 import { normalizePhoneForStorage } from '../utils/phone-normalizer';
 import { db } from '../db';
 import { leads, type InsertLead } from '@shared/schema';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { storage } from '../storage';
 
 const log = logger('GoogleLocalServicesSync');
@@ -110,20 +110,19 @@ function mapGlsLead(lead: GlsDetailedLead): {
 
 /**
  * Look up an existing CRM lead for this contractor that was ingested from a
- * specific Google leadId. We embed the leadId in `rawPayload` and search for
- * the marker substring. This is the cheapest cross-process key — no schema
- * change required, and lead volume per contractor stays low enough that the
- * LIKE-scan over `source = 'google_local_services'` rows is acceptable.
+ * specific Google leadId. Backed by the partial unique index
+ * `leads_google_lead_id_unique_idx` on (contractor_id, google_lead_id) — an
+ * O(1) index hit per poll iteration even for tenants with thousands of GLS
+ * leads (task #490). The previous implementation LIKE-scanned `rawPayload`,
+ * which degraded linearly with lead volume.
  */
 async function findLeadByGoogleId(contractorId: string, googleLeadId: string) {
-  const marker = `"_gls_lead_id":"${googleLeadId}"`;
   const rows = await db
     .select()
     .from(leads)
     .where(and(
       eq(leads.contractorId, contractorId),
-      eq(leads.source, GLS_SOURCE),
-      sql`${leads.rawPayload} LIKE ${'%' + marker + '%'}`,
+      eq(leads.googleLeadId, googleLeadId),
     ))
     .limit(1);
   return rows[0];
@@ -158,18 +157,22 @@ export async function processGlsLead(
     const inferredStatus = inferStatusFromGls(glsLead);
     const statusChanged = !!inferredStatus && existing.status !== inferredStatus;
     const payloadChanged = (existing.rawPayload ?? '') !== payload;
+    // Backfill the indexed column on the fly for rows ingested before
+    // task #490 promoted google_lead_id to a first-class column.
+    const googleIdMissing = existing.googleLeadId !== glsLead.leadId;
 
     // Skip the write entirely when nothing material changed. This is critical
     // because the trailing 60-day status-recheck window touches every recent
     // lead on every poll — without change-detection that would generate
     // pointless DB writes and updatedAt churn for every active tenant.
-    if (!statusChanged && !payloadChanged) {
+    if (!statusChanged && !payloadChanged && !googleIdMissing) {
       return 'skipped';
     }
 
     const updates: Partial<InsertLead> = {};
     if (payloadChanged) updates.rawPayload = payload;
     if (statusChanged) updates.status = inferredStatus!;
+    if (googleIdMissing) updates.googleLeadId = glsLead.leadId;
 
     await storage.updateLead(existing.id, updates, contractorId);
     log.info(`[gls] Updated existing CRM lead ${existing.id} from Google leadId=${glsLead.leadId} (status=${statusChanged ? inferredStatus : 'unchanged'}, payload=${payloadChanged ? 'changed' : 'unchanged'})`);
@@ -179,7 +182,7 @@ export async function processGlsLead(
   const mapped = mapGlsLead(glsLead);
   const normalizedPhone = mapped.phone ? normalizePhoneForStorage(mapped.phone) : '';
 
-  const result = await ingestLead(contractorId, {
+  const ingestResult = await ingestLead(contractorId, {
     name: mapped.name,
     emails: mapped.email ? [mapped.email] : [],
     phones: normalizedPhone ? [normalizedPhone] : [],
@@ -198,7 +201,13 @@ export async function processGlsLead(
     },
   });
 
-  return result.skippedDuplicateLead ? 'skipped' : 'created';
+  if (ingestResult.skippedDuplicateLead) return 'skipped';
+
+  // Stamp the indexed Google leadId on the freshly ingested lead so the next
+  // poll's findLeadByGoogleId hits the partial unique index instead of a
+  // sequential scan (task #490).
+  await storage.updateLead(ingestResult.lead.id, { googleLeadId: glsLead.leadId }, contractorId);
+  return 'created';
 }
 
 /**

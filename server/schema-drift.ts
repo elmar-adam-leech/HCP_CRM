@@ -808,6 +808,25 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `CREATE INDEX IF NOT EXISTS "activities_contractor_type_contact_created_idx" ON "activities" ("contractor_id", "type", "contact_id", "created_at")`,
       description: 'activities composite index (contractor_id, type, contact_id, created_at) for Speed-to-Lead report',
     },
+    {
+      sql: `ALTER TABLE "leads" ADD COLUMN IF NOT EXISTS "google_lead_id" varchar`,
+      description: 'leads.google_lead_id (task #490: O(1) GLS poller lookups)',
+    },
+    {
+      // Backfill from rawPayload for any rows ingested before the column existed
+      // so the GLS poller can immediately switch to indexed lookups without
+      // re-creating duplicate leads on the next poll.
+      sql: `UPDATE "leads"
+              SET "google_lead_id" = substring("raw_payload" FROM '"_gls_lead_id":"([^"]+)"')
+            WHERE "source" = 'google_local_services'
+              AND "google_lead_id" IS NULL
+              AND "raw_payload" LIKE '%"_gls_lead_id":"%'`,
+      description: 'leads.google_lead_id backfill from raw_payload (task #490)',
+    },
+    {
+      sql: `CREATE UNIQUE INDEX IF NOT EXISTS "leads_google_lead_id_unique_idx" ON "leads"("contractor_id", "google_lead_id") WHERE "google_lead_id" IS NOT NULL`,
+      description: 'leads (contractor_id, google_lead_id) partial unique index (task #490)',
+    },
   ];
 
 export async function applyColumnMigrations(

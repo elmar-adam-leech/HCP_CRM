@@ -19,6 +19,10 @@ export const leads = pgTable("leads", {
   source: text("source"), // Where this specific lead submission came from
   message: text("message"), // Message or notes from this submission
   housecallProLeadId: varchar("housecall_pro_lead_id"), // HCP lead ID for syncing
+  // Google Local Services lead ID (when source = 'google_local_services').
+  // First-class column so the GLS poller can locate previously ingested
+  // leads by O(1) index lookup instead of LIKE-scanning rawPayload (task #490).
+  googleLeadId: varchar("google_lead_id"),
   // Reason this lead was not pushed to Housecall Pro (skip code or failure code).
   // null when push succeeded or HCP sync was never attempted (e.g. integration off + skipHcpSync used).
   // Skip codes: integration_disabled, send_leads_off, skip_tag_matched, no_email_or_phone, integration_credentials_missing.
@@ -61,6 +65,11 @@ export const leads = pgTable("leads", {
   housecallProLeadIdUniqueIdx: uniqueIndex("leads_housecall_pro_lead_id_unique_idx")
     .on(table.contractorId, table.housecallProLeadId)
     .where(sql`housecall_pro_lead_id IS NOT NULL`),
+  // O(1) lookup for the Google Local Services poller (task #490). Partial &
+  // unique because each Google leadId appears at most once per contractor.
+  googleLeadIdUniqueIdx: uniqueIndex("leads_google_lead_id_unique_idx")
+    .on(table.contractorId, table.googleLeadId)
+    .where(sql`google_lead_id IS NOT NULL`),
 }));
 
 export const insertLeadSchema = createInsertSchema(leads).omit({
