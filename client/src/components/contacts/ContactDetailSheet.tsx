@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import {
   Sheet,
   SheetContent,
@@ -7,11 +8,24 @@ import {
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { Mail, Phone, MapPin, Trash2, Users, Briefcase, FileText, ExternalLink, Download, ShieldOff } from "lucide-react";
+import { Mail, Phone, MapPin, Trash2, Users, Briefcase, FileText, ExternalLink, Download, ShieldOff, Tag, Pencil, Check, X } from "lucide-react";
 import { getInitials } from "@/lib/utils";
 import { Link } from "wouter";
+import { useMutation } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import type { Contact } from "@shared/schema";
+
+function formatSource(source: string | null | undefined): string {
+  if (!source || !source.trim()) return "Unknown";
+  return source
+    .split(/[\s_-]+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
 
 type ContactWithCounts = Contact & {
   leadCount: number;
@@ -36,6 +50,50 @@ export function ContactDetailSheet({
   onExportData,
   onEraseData,
 }: ContactDetailSheetProps) {
+  const { toast } = useToast();
+  const [isEditingSource, setIsEditingSource] = useState(false);
+  const [sourceDraft, setSourceDraft] = useState("");
+
+  useEffect(() => {
+    setIsEditingSource(false);
+    setSourceDraft(contact?.source ?? "");
+    setOptimisticSource(undefined);
+  }, [contact?.id, contact?.source]);
+
+  const isHcpContact = !!contact?.housecallProCustomerId;
+  const canEditSource = !!contact && !isHcpContact;
+
+  const [optimisticSource, setOptimisticSource] = useState<string | null | undefined>(undefined);
+  const displayedSource = optimisticSource !== undefined ? optimisticSource : contact?.source;
+
+  const updateSource = useMutation({
+    mutationFn: async (newSource: string) => {
+      if (!contact) throw new Error("No contact selected");
+      return apiRequest("PATCH", `/api/contacts/${contact.id}`, {
+        source: newSource.trim() || null,
+      });
+    },
+    onSuccess: (_res, newSource) => {
+      const saved = newSource.trim() || null;
+      setOptimisticSource(saved);
+      toast({ title: "Source updated" });
+      queryClient.invalidateQueries({ queryKey: ["/api/contacts/with-counts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/contacts/paginated"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/contacts/status-counts"] });
+      if (contact) {
+        queryClient.invalidateQueries({ queryKey: ["/api/contacts", contact.id] });
+      }
+      setIsEditingSource(false);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to update source",
+        description: error.message || "Something went wrong.",
+        variant: "destructive",
+      });
+    },
+  });
+
   return (
     <Sheet open={!!contact} onOpenChange={(open) => { if (!open) onClose(); }}>
       <SheetContent className="w-full sm:max-w-md overflow-y-auto">
@@ -75,9 +133,73 @@ export function ContactDetailSheet({
                     <span className="text-muted-foreground">{contact.address}</span>
                   </div>
                 )}
-                {contact.source && (
-                  <div className="text-sm text-muted-foreground">Source: {contact.source}</div>
-                )}
+                <div className="flex items-center gap-2 text-sm" data-testid="contact-source-row">
+                  <Tag className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <span className="text-muted-foreground">Source:</span>
+                  {isEditingSource ? (
+                    <div className="flex items-center gap-1 flex-1">
+                      <Input
+                        value={sourceDraft}
+                        onChange={(e) => setSourceDraft(e.target.value)}
+                        placeholder="e.g. referral, website"
+                        className="h-8"
+                        autoFocus
+                        disabled={updateSource.isPending}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            if (!updateSource.isPending) updateSource.mutate(sourceDraft);
+                          } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            setSourceDraft(contact.source ?? "");
+                            setIsEditingSource(false);
+                          }
+                        }}
+                        data-testid="input-contact-source"
+                      />
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => updateSource.mutate(sourceDraft)}
+                        disabled={updateSource.isPending}
+                        data-testid="button-save-contact-source"
+                      >
+                        <Check className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => {
+                          setSourceDraft(contact.source ?? "");
+                          setIsEditingSource(false);
+                        }}
+                        disabled={updateSource.isPending}
+                        data-testid="button-cancel-contact-source"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <>
+                      <Badge variant="secondary" data-testid="badge-contact-source">
+                        {formatSource(displayedSource)}
+                      </Badge>
+                      {canEditSource && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          onClick={() => {
+                            setSourceDraft(displayedSource ?? "");
+                            setIsEditingSource(true);
+                          }}
+                          data-testid="button-edit-contact-source"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
 
               <Separator />
