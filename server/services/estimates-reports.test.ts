@@ -16,8 +16,10 @@ import {
   getRevenueReport,
   getPipelineForecastReport,
   getCloseRateBySalesperson,
+  getCloseRateBySource,
   getPendingReport,
 } from "./estimates-reports";
+import { backfillContactLeadSourcesFromHcp } from "../sync/hcp-backfill-foundation";
 
 const RUN = !!process.env.DATABASE_URL;
 const d = RUN ? describe : describe.skip;
@@ -117,6 +119,51 @@ d("estimates reports — option-row dedup", () => {
     // Close rate: 1/3 sent = 33.3%. Decision rate: 1/(1+0) = 100%.
     expect(r.totals.closeRate).toBeCloseTo(33.3, 1);
     expect(r.totals.decisionRate).toBe(100);
+  });
+
+  it("getCloseRateBySource buckets by contacts.source when the estimate has no lead", async () => {
+    // Seed two extra contacts with distinct sources and one estimate each (no
+    // lead linked → l.source IS NULL; the report must fall back to c.source).
+    const fbContact = await db.execute<{ id: string }>(sql`
+      INSERT INTO contacts (name, contractor_id, source, external_source)
+      VALUES ('FB Contact', ${contractorId}, 'facebook', 'housecall-pro')
+      RETURNING id
+    `);
+    const refContact = await db.execute<{ id: string }>(sql`
+      INSERT INTO contacts (name, contractor_id, source)
+      VALUES ('Ref Contact', ${contractorId}, 'referral')
+      RETURNING id
+    `);
+    await db.execute(sql`
+      INSERT INTO estimates (title, amount, status, contact_id, contractor_id,
+        created_at, updated_at)
+      VALUES ('FB Est', '500', 'sent', ${fbContact.rows[0].id}, ${contractorId},
+        '2026-06-04T00:00:00Z', '2026-06-04T00:00:00Z')
+    `);
+    await db.execute(sql`
+      INSERT INTO estimates (title, amount, status, contact_id, contractor_id,
+        created_at, updated_at)
+      VALUES ('Ref Est', '600', 'approved', ${refContact.rows[0].id}, ${contractorId},
+        '2026-06-04T00:00:00Z', '2026-06-04T00:00:00Z')
+    `);
+    const r = await getCloseRateBySource(contractorId, filters);
+    const names = (r.rows ?? []).map((row) => row.name).sort();
+    expect(names).toContain('facebook');
+    expect(names).toContain('referral');
+    // Cleanup these extras so the other tests see the original totals.
+    await db.execute(sql`DELETE FROM estimates WHERE title IN ('FB Est', 'Ref Est') AND contractor_id = ${contractorId}`);
+    await db.execute(sql`DELETE FROM contacts WHERE id IN (${fbContact.rows[0].id}, ${refContact.rows[0].id})`);
+  });
+
+  it("backfillContactLeadSourcesFromHcp is idempotent on a no-op contact set", async () => {
+    // No HCP-origin contacts exist for this tenant in the seed (Test Contact
+    // has no external_source), so two consecutive runs both report 0 scanned.
+    const first = await backfillContactLeadSourcesFromHcp(contractorId);
+    const second = await backfillContactLeadSourcesFromHcp(contractorId);
+    expect(second.scanned).toBe(first.scanned);
+    expect(second.updated).toBe(0);
+    expect(second.cleared).toBe(0);
+    expect(second.failed).toBe(0);
   });
 
   it("getCloseRateBySalesperson decisionRate is 0 when nothing is decided", async () => {

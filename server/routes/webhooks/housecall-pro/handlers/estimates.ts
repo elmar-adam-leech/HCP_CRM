@@ -145,7 +145,7 @@ export async function handleEstimateEvent(
                 zip: estZip,
                 type: 'customer',
                 status: 'active',
-                source: 'housecall-pro',
+                source: estimateCustomer.lead_source ?? null,
                 externalId: customerId,
                 externalSource: 'housecall-pro',
                 housecallProCustomerId: customerId,

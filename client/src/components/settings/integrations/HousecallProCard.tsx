@@ -192,6 +192,22 @@ export function HousecallProCard() {
     onError: (error: any) => toast({ title: 'Failed to save sync start date', description: error.message, variant: 'destructive' }),
   });
 
+  const backfillLeadSourcesMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest('POST', '/api/integrations/hcp/backfill-lead-sources');
+      return res.json() as Promise<{ ok: boolean; summary: { scanned: number; updated: number; cleared: number; unchanged: number; failed: number } }>;
+    },
+    onSuccess: (data) => {
+      const s = data.summary;
+      toast({
+        title: 'HCP lead sources backfilled',
+        description: `Scanned ${s.scanned}, updated ${s.updated}, cleared ${s.cleared}, unchanged ${s.unchanged}, failed ${s.failed}.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/contacts'] });
+    },
+    onError: (error: any) => toast({ title: 'Backfill failed', description: error?.message ?? 'Failed to backfill HCP lead sources', variant: 'destructive' }),
+  });
+
   const isSyncing = syncMutation.isPending || syncStatus.isRunning;
 
   const currentSkipTags = hcpLeadSettings?.hcpSyncSkipTags ?? [];
@@ -521,10 +537,22 @@ export function HousecallProCard() {
                     </div>
                   </div>
                 </div>
-                <Button variant="outline" size="sm" onClick={() => syncMutation.mutate()} disabled={isSyncing} data-testid="button-hcp-sync">
-                  <RefreshCw className={`h-4 w-4 mr-2 ${isSyncing ? 'animate-spin' : ''}`} />
-                  {isSyncing ? 'Syncing...' : 'Sync Housecall Pro'}
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" onClick={() => syncMutation.mutate()} disabled={isSyncing} data-testid="button-hcp-sync">
+                    <RefreshCw className={`h-4 w-4 mr-2 ${isSyncing ? 'animate-spin' : ''}`} />
+                    {isSyncing ? 'Syncing...' : 'Sync Housecall Pro'}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => backfillLeadSourcesMutation.mutate()}
+                    disabled={backfillLeadSourcesMutation.isPending}
+                    data-testid="button-hcp-backfill-lead-sources"
+                  >
+                    <RefreshCw className={`h-4 w-4 mr-2 ${backfillLeadSourcesMutation.isPending ? 'animate-spin' : ''}`} />
+                    {backfillLeadSourcesMutation.isPending ? 'Backfilling...' : 'Backfill HCP Lead Sources'}
+                  </Button>
+                </div>
               </div>
             )}
           </div>

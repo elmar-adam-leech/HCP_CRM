@@ -25,6 +25,7 @@
 
 import { db } from '../db';
 import {
+  contacts,
   contractors,
   employees,
   estimates,
@@ -33,7 +34,7 @@ import {
   users,
   type HcpOptionEntry,
 } from '@shared/schema';
-import { and, eq, isNull, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, isNull, isNotNull, or, sql } from 'drizzle-orm';
 import { logger } from '../utils/logger';
 import { housecallProService } from '../hcp/index';
 import { resolveSalespersonForHcpEntity } from './hcp-mappers';
@@ -348,6 +349,75 @@ export async function backfillEstimateStatusMetadata(tenantId: string): Promise<
   }
   log.info(`[backfill-foundation] tenant ${tenantId}: stamped approvalStatusChangedAt on ${stamped} estimates`);
   return stamped;
+}
+
+export interface BackfillLeadSourcesResult {
+  scanned: number;
+  updated: number;
+  cleared: number;
+  unchanged: number;
+  failed: number;
+}
+
+/**
+ * backfillContactLeadSourcesFromHcp — for every HCP-origin contact whose
+ * `contacts.source` is either NULL or the legacy system marker
+ * `'housecall-pro'`, refetch the live HCP customer record and write its
+ * `lead_source` into `contacts.source` (or NULL when HCP returns nothing).
+ * Idempotent — re-running is a no-op once every candidate has been resolved.
+ */
+export async function backfillContactLeadSourcesFromHcp(
+  tenantId: string,
+): Promise<BackfillLeadSourcesResult> {
+  const rows = await db
+    .select({
+      id: contacts.id,
+      externalId: contacts.externalId,
+      currentSource: contacts.source,
+    })
+    .from(contacts)
+    .where(and(
+      eq(contacts.contractorId, tenantId),
+      eq(contacts.externalSource, 'housecall-pro'),
+      isNotNull(contacts.externalId),
+      or(isNull(contacts.source), eq(contacts.source, 'housecall-pro')),
+    ));
+
+  let updated = 0;
+  let cleared = 0;
+  let unchanged = 0;
+  let failed = 0;
+
+  for (const row of rows) {
+    const externalId = row.externalId;
+    if (!externalId) continue;
+    try {
+      const resp = await housecallProService.getCustomer(tenantId, externalId);
+      if (!resp.success || !resp.data) {
+        failed++;
+        continue;
+      }
+      const leadSource = (resp.data.lead_source ?? null) as string | null;
+      const nextValue = leadSource && leadSource.trim() !== '' ? leadSource : null;
+      // Only write when the value actually changes — keeps re-runs idempotent
+      // and avoids touching updated_at unnecessarily.
+      if (nextValue === row.currentSource) {
+        unchanged++;
+        continue;
+      }
+      await db
+        .update(contacts)
+        .set({ source: nextValue, updatedAt: new Date() })
+        .where(and(eq(contacts.id, row.id), eq(contacts.contractorId, tenantId)));
+      if (nextValue === null) cleared++; else updated++;
+    } catch (err) {
+      failed++;
+      log.warn(`[backfill-lead-sources] tenant ${tenantId}: getCustomer(${externalId}) failed`, err as Error);
+    }
+  }
+
+  log.info(`[backfill-lead-sources] tenant ${tenantId}: scanned=${rows.length} updated=${updated} cleared=${cleared} unchanged=${unchanged} failed=${failed}`);
+  return { scanned: rows.length, updated, cleared, unchanged, failed };
 }
 
 /**

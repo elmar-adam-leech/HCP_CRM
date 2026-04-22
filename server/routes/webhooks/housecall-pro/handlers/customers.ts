@@ -22,9 +22,22 @@ export async function handleCustomerEvent(
     } else {
       const contact = await storage.getContactByExternalId(data.id, 'housecall-pro', contractorId);
       if (contact) {
+        // Sync HCP lead_source onto contacts.source for existing HCP contacts.
+        // We only overwrite if the local value is null or the legacy system
+        // marker 'housecall-pro' so admin-set values are preserved.
+        const incomingSource = (typeof data.lead_source === 'string' && data.lead_source.trim() !== '')
+          ? data.lead_source.trim()
+          : null;
+        const localSource = contact.source ?? null;
+        const isLegacyOrEmpty = localSource === null || localSource === 'housecall-pro';
+        let effectiveContact = contact;
+        if (isLegacyOrEmpty && incomingSource !== localSource) {
+          const updated = await storage.updateContact(contact.id, { source: incomingSource }, contractorId);
+          if (updated) effectiveContact = updated;
+        }
         const eventKey = event_type === 'customer.created' ? 'contact_created' : 'contact_updated';
-        broadcastToContractor(contractorId, { type: eventKey, contactId: contact.id });
-        workflowEngine.triggerWorkflowsForEvent(eventKey, toWorkflowEvent(contact), contractorId).catch(err =>
+        broadcastToContractor(contractorId, { type: eventKey, contactId: effectiveContact.id });
+        workflowEngine.triggerWorkflowsForEvent(eventKey, toWorkflowEvent(effectiveContact), contractorId).catch(err =>
           log.error(`${eventKey} trigger error`, err));
       } else if (event_type === 'customer.created') {
         // No local contact linked to this HCP customer ID yet.
@@ -44,10 +57,18 @@ export async function handleCustomerEvent(
           if (resolvedContact) {
             // Phone match found — link this HCP customer ID to the existing contact.
             log.info(`customer.created: phone match found for HCP customer ${data.id} → contact ${resolvedContact.id}, updating housecallProCustomerId`);
+            const incomingSource = (typeof data.lead_source === 'string' && data.lead_source.trim() !== '')
+              ? data.lead_source.trim()
+              : null;
+            const localSource = resolvedContact.source ?? null;
+            const sourcePatch = (localSource === null || localSource === 'housecall-pro')
+              ? { source: incomingSource }
+              : {};
             const updated = await storage.updateContact(resolvedContact.id, {
               housecallProCustomerId: data.id,
               externalId: data.id,
               externalSource: 'housecall-pro',
+              ...sourcePatch,
             }, contractorId);
             const effectiveContact = updated || resolvedContact;
             broadcastToContractor(contractorId, { type: 'contact_updated', contactId: effectiveContact.id });
@@ -75,7 +96,7 @@ export async function handleCustomerEvent(
               zip: custZip,
               type: 'customer',
               status: 'active',
-              source: 'housecall-pro',
+              source: data.lead_source ?? null,
               externalId: data.id,
               externalSource: 'housecall-pro',
               housecallProCustomerId: data.id,

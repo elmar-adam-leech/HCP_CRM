@@ -16,6 +16,7 @@ import { asyncHandler } from "../../utils/async-handler";
 import { db } from "../../db";
 import { estimates as estimatesTable } from "@shared/schema";
 import { and, eq } from "drizzle-orm";
+import { backfillContactLeadSourcesFromHcp } from "../../sync/hcp-backfill-foundation";
 
 const log = logger('HcpSync');
 
@@ -486,4 +487,32 @@ export function registerHcpSyncRoutes(app: Express): void {
       res.status(500).json({ ok: false, error: String(err?.message ?? err) });
     }
   }));
+
+  /**
+   * POST /api/integrations/hcp/backfill-lead-sources
+   *
+   * Re-fetches each HCP-origin contact whose `source` is null or the legacy
+   * system-marker `'housecall-pro'` and copies the live HCP `lead_source`
+   * value into `contacts.source`. Idempotent — see
+   * `backfillContactLeadSourcesFromHcp` for details.
+   */
+  app.post(
+    "/api/integrations/hcp/backfill-lead-sources",
+    requireIntegrationManager,
+    asyncHandler(async (req, res) => {
+      const contractorId = req.user.contractorId;
+      const enabled = await isIntegrationEnabledCached(contractorId, 'housecall-pro');
+      if (!enabled) {
+        res.status(403).json({ message: "Housecall Pro integration is not enabled." });
+        return;
+      }
+      try {
+        const summary = await backfillContactLeadSourcesFromHcp(contractorId);
+        res.json({ ok: true, summary });
+      } catch (err: any) {
+        log.error(`[backfill-lead-sources] tenant ${contractorId}: failed`, err);
+        res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+      }
+    }),
+  );
 }

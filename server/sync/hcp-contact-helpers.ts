@@ -23,6 +23,26 @@ export function isExcludedResult(result: string | null): boolean {
   return result === EXCLUDED_SENTINEL;
 }
 
+/**
+ * Builds the patch fragment that syncs a local contact's `source` from the
+ * HCP customer's `lead_source`. Only overwrites when the local value is null
+ * or the legacy system marker `'housecall-pro'` so admin-set values are
+ * preserved. Returns `{}` when nothing should change.
+ */
+function buildSourcePatch(
+  localSource: string | null | undefined,
+  hcpLeadSource: string | null | undefined,
+): { source?: string | null } {
+  const incoming = (typeof hcpLeadSource === 'string' && hcpLeadSource.trim() !== '')
+    ? hcpLeadSource.trim()
+    : null;
+  const local = localSource ?? null;
+  const isLegacyOrEmpty = local === null || local === 'housecall-pro';
+  if (!isLegacyOrEmpty) return {};
+  if (incoming === local) return {};
+  return { source: incoming };
+}
+
 export async function resolveHcpContact(
   hcpCustomerId: string | undefined,
   hcpCustomer: HcpCustomer | undefined,
@@ -36,7 +56,13 @@ export async function resolveHcpContact(
     }
 
     const existing = await storage.getContactByHousecallProCustomerId(hcpCustomerId, tenantId);
-    if (existing) return existing.id;
+    if (existing) {
+      const patch = buildSourcePatch(existing.source, hcpCustomer?.lead_source);
+      if (patch.source !== undefined) {
+        await storage.updateContact(existing.id, patch, tenantId);
+      }
+      return existing.id;
+    }
   }
 
   if (!hcpCustomer) return null;
@@ -49,8 +75,11 @@ export async function resolveHcpContact(
   if (customerPhone) {
     const phoneMatch = await storage.getContactByPhone(customerPhone, tenantId);
     if (phoneMatch) {
-      if (hcpCustomerId) {
-        await storage.updateContact(phoneMatch.id, { housecallProCustomerId: hcpCustomerId }, tenantId);
+      const patch = buildSourcePatch(phoneMatch.source, hcpCustomer.lead_source);
+      const updates: { housecallProCustomerId?: string; source?: string | null } = { ...patch };
+      if (hcpCustomerId) updates.housecallProCustomerId = hcpCustomerId;
+      if (Object.keys(updates).length > 0) {
+        await storage.updateContact(phoneMatch.id, updates, tenantId);
       }
       return phoneMatch.id;
     }
@@ -59,8 +88,12 @@ export async function resolveHcpContact(
   if (customerEmail) {
     const emailMatch = await storage.findMatchingContact(tenantId, [customerEmail], undefined);
     if (emailMatch) {
-      if (hcpCustomerId) {
-        await storage.updateContact(emailMatch, { housecallProCustomerId: hcpCustomerId }, tenantId);
+      const emailContact = await storage.getContact(emailMatch, tenantId);
+      const patch = buildSourcePatch(emailContact?.source, hcpCustomer.lead_source);
+      const updates: { housecallProCustomerId?: string; source?: string | null } = { ...patch };
+      if (hcpCustomerId) updates.housecallProCustomerId = hcpCustomerId;
+      if (Object.keys(updates).length > 0) {
+        await storage.updateContact(emailMatch, updates, tenantId);
       }
       return emailMatch;
     }

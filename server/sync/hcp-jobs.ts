@@ -164,7 +164,7 @@ export async function syncHousecallProJobs(tenantId: string): Promise<void> {
                   zip: jobZip,
                   type: 'customer',
                   status: 'new',
-                  source: 'housecall-pro',
+                  source: hcpCustomer.lead_source ?? null,
                   housecallProCustomerId: hcpCustomerId || undefined,
                   externalId: hcpCustomerId || undefined,
                   externalSource: hcpCustomerId ? 'housecall-pro' : undefined,

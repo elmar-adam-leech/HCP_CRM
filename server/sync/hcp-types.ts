@@ -28,6 +28,7 @@ export interface HcpCustomer {
   work_number?: string;
   phone_numbers?: HcpPhoneNumber[];
   address?: HcpAddress;
+  lead_source?: string | null;
 }
 
 export interface HcpSchedule {

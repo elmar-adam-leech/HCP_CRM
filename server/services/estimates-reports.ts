@@ -84,9 +84,9 @@ function buildEstimatesWhere(
   }
   if (f.leadSource) {
     if (f.leadSource === "__unknown__") {
-      parts.push(sql`l.source IS NULL`);
+      parts.push(sql`COALESCE(l.source, c.source) IS NULL`);
     } else {
-      parts.push(sql`l.source = ${f.leadSource}`);
+      parts.push(sql`COALESCE(l.source, c.source) = ${f.leadSource}`);
     }
   }
   return sql.join(parts, sql.raw(" AND "));
@@ -108,11 +108,18 @@ export async function getEstimateFilterOptions(contractorId: string): Promise<{
     ORDER BY u.name
   `);
   const ls = await db.execute<{ source: string }>(sql`
-    SELECT DISTINCT source
-    FROM leads
-    WHERE contractor_id = ${contractorId}
-      AND source IS NOT NULL
-      AND source <> ''
+    SELECT DISTINCT source FROM (
+      SELECT source FROM leads
+        WHERE contractor_id = ${contractorId}
+          AND source IS NOT NULL
+          AND source <> ''
+      UNION
+      SELECT source FROM contacts
+        WHERE contractor_id = ${contractorId}
+          AND source IS NOT NULL
+          AND source <> ''
+          AND source <> 'housecall-pro'
+    ) s
     ORDER BY source
   `);
   return {
@@ -159,9 +166,10 @@ export async function getRevenueReport(
     }[] | null;
   }>(sql`
     WITH base AS (
-      SELECT e.*, l.source AS lead_source
+      SELECT e.*, COALESCE(l.source, c.source) AS lead_source
       FROM ${canonicalEstimates(contractorId)} e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
+      LEFT JOIN contacts c ON c.id = e.contact_id
       WHERE ${where}
     ),
     monthly AS (
@@ -254,9 +262,10 @@ export async function getLostRevenueReport(
     }[] | null;
   }>(sql`
     WITH base AS (
-      SELECT e.*, l.source AS lead_source
+      SELECT e.*, COALESCE(l.source, c.source) AS lead_source
       FROM ${canonicalEstimates(contractorId)} e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
+      LEFT JOIN contacts c ON c.id = e.contact_id
       WHERE ${where} AND e.status = 'rejected'
     ),
     sp AS (
@@ -357,8 +366,8 @@ export async function getPipelineForecastReport(
     ];
     if (f.salespersonId) parts.push(sql.raw(`e.salesperson_user_id = `).append(sql`${f.salespersonId}`));
     if (f.leadSource) {
-      if (f.leadSource === "__unknown__") parts.push(sql.raw(`l.source IS NULL`));
-      else parts.push(sql.raw(`l.source = `).append(sql`${f.leadSource}`));
+      if (f.leadSource === "__unknown__") parts.push(sql.raw(`COALESCE(l.source, c.source) IS NULL`));
+      else parts.push(sql.raw(`COALESCE(l.source, c.source) = `).append(sql`${f.leadSource}`));
     }
     return sql.join(parts, sql.raw(" AND "));
   })();
@@ -376,15 +385,17 @@ export async function getPipelineForecastReport(
     }[] | null;
   }>(sql`
     WITH pending AS (
-      SELECT e.*, l.source AS lead_source
+      SELECT e.*, COALESCE(l.source, c.source) AS lead_source
       FROM ${canonicalEstimates(contractorId)} e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
+      LEFT JOIN contacts c ON c.id = e.contact_id
       WHERE ${pendingWhere}
     ),
     hist AS (
       SELECT e.salesperson_user_id, e.status
       FROM ${canonicalEstimates(contractorId)} e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
+      LEFT JOIN contacts c ON c.id = e.contact_id
       WHERE ${histWhere} AND e.status IN ('approved', 'rejected')
     ),
     rates AS (
@@ -472,11 +483,11 @@ async function getCloseRate(
   const groupExpr =
     groupBy === "salesperson"
       ? sql`COALESCE(e.salesperson_user_id, '__unassigned__')`
-      : sql`COALESCE(l.source, '__unknown__')`;
+      : sql`COALESCE(l.source, c.source, '__unknown__')`;
   const nameExpr =
     groupBy === "salesperson"
       ? sql`COALESCE(MAX(u.name), 'Unassigned')`
-      : sql`COALESCE(MAX(l.source), 'Unknown')`;
+      : sql`COALESCE(MAX(COALESCE(l.source, c.source)), 'Unknown')`;
   const join =
     groupBy === "salesperson"
       ? sql`LEFT JOIN users u ON u.id = e.salesperson_user_id`
@@ -486,9 +497,10 @@ async function getCloseRate(
     totals: { sent: number; won: number; lost: number; open: number } | null;
   }>(sql`
     WITH base AS (
-      SELECT e.*, l.source AS lead_source
+      SELECT e.*, COALESCE(l.source, c.source) AS lead_source
       FROM ${canonicalEstimates(contractorId)} e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
+      LEFT JOIN contacts c ON c.id = e.contact_id
       WHERE ${where}
     ),
     grp AS (
@@ -501,6 +513,7 @@ async function getCloseRate(
         COUNT(*) FILTER (WHERE e.status IN ('sent', 'scheduled', 'in_progress'))::int AS open
       FROM ${canonicalEstimates(contractorId)} e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
+      LEFT JOIN contacts c ON c.id = e.contact_id
       ${join}
       WHERE e.id IN (SELECT id FROM base)
       GROUP BY ${groupExpr}
@@ -598,7 +611,7 @@ export async function getTimeToCloseReport(
     histogram: { bucket: string; count: number }[] | null;
   }>(sql`
     WITH base AS (
-      SELECT e.*, l.source AS lead_source,
+      SELECT e.*, COALESCE(l.source, c.source) AS lead_source,
         EXTRACT(EPOCH FROM (
           COALESCE(
             CASE WHEN e.status = 'approved' THEN e.approved_at END,
@@ -608,6 +621,7 @@ export async function getTimeToCloseReport(
         )) / 86400.0 AS days_to_close
       FROM ${canonicalEstimates(contractorId)} e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
+      LEFT JOIN contacts c ON c.id = e.contact_id
       WHERE ${where} AND e.status IN ('approved', 'rejected')
     ),
     sp AS (
@@ -709,8 +723,8 @@ async function getOutstanding(
     parts.push(sql.raw(`e.salesperson_user_id = `).append(sql`${f.salespersonId}`));
   }
   if (f.leadSource) {
-    if (f.leadSource === "__unknown__") parts.push(sql.raw(`l.source IS NULL`));
-    else parts.push(sql.raw(`l.source = `).append(sql`${f.leadSource}`));
+    if (f.leadSource === "__unknown__") parts.push(sql.raw(`COALESCE(l.source, c.source) IS NULL`));
+    else parts.push(sql.raw(`COALESCE(l.source, c.source) = `).append(sql`${f.leadSource}`));
   }
   const where = sql.join(parts, sql.raw(" AND "));
 
@@ -841,9 +855,10 @@ export async function getSalesActivityReport(
     count: number;
   }>(sql`
     WITH base AS (
-      SELECT e.*, l.source AS lead_source
+      SELECT e.*, COALESCE(l.source, c.source) AS lead_source
       FROM estimates e
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
+      LEFT JOIN contacts c ON c.id = e.contact_id
       WHERE ${where}
     )
     SELECT
@@ -893,7 +908,93 @@ export async function getSalesActivityReport(
 }
 
 // ---------------------------------------------------------------------------
-// 9. Geographic
+// 9. Repeat customer
+// ---------------------------------------------------------------------------
+
+export interface RepeatCustomerReport {
+  totalEstimates: number;
+  repeatEstimates: number;
+  newEstimates: number;
+  repeatPercentage: number;
+  topRepeaters: {
+    contactId: string;
+    contactName: string;
+    estimateCount: number;
+    totalWon: number;
+  }[];
+}
+
+export async function getRepeatCustomerReport(
+  contractorId: string,
+  f: EstimatesReportFilters,
+): Promise<RepeatCustomerReport> {
+  const where = buildEstimatesWhere(contractorId, f);
+  const result = await db.execute<{
+    total_estimates: string | number;
+    repeat_estimates: string | number;
+    new_estimates: string | number;
+    top: {
+      contact_id: string;
+      contact_name: string;
+      estimate_count: number;
+      total_won: number;
+    }[] | null;
+  }>(sql`
+    WITH base AS (
+      SELECT e.*, COALESCE(l.source, c.source) AS lead_source
+      FROM estimates e
+      LEFT JOIN leads l ON l.converted_to_estimate_id = e.id
+      LEFT JOIN contacts c ON c.id = e.contact_id
+      WHERE ${where}
+    ),
+    flagged AS (
+      SELECT b.*,
+        EXISTS(
+          SELECT 1 FROM estimates pe
+          WHERE pe.contact_id = b.contact_id
+            AND pe.contractor_id = b.contractor_id
+            AND pe.created_at < b.created_at
+        ) AS is_repeat
+      FROM base b
+    ),
+    top AS (
+      SELECT
+        b.contact_id,
+        COALESCE(c.name, 'Unknown') AS contact_name,
+        COUNT(*)::int AS estimate_count,
+        COALESCE(SUM(b.amount::numeric) FILTER (WHERE b.status = 'approved'), 0)::float8 AS total_won
+      FROM base b
+      LEFT JOIN contacts c ON c.id = b.contact_id
+      GROUP BY b.contact_id, c.name
+      HAVING COUNT(*) > 1
+      ORDER BY estimate_count DESC, total_won DESC
+      LIMIT 25
+    )
+    SELECT
+      (SELECT COUNT(*) FROM flagged)::int AS total_estimates,
+      (SELECT COUNT(*) FROM flagged WHERE is_repeat)::int AS repeat_estimates,
+      (SELECT COUNT(*) FROM flagged WHERE NOT is_repeat)::int AS new_estimates,
+      (SELECT json_agg(top) FROM top) AS top
+  `);
+  const r = result.rows[0];
+  const total = num(r?.total_estimates);
+  const repeats = num(r?.repeat_estimates);
+  return {
+    totalEstimates: total,
+    repeatEstimates: repeats,
+    newEstimates: num(r?.new_estimates),
+    repeatPercentage: total > 0 ? round1((repeats / total) * 100) : 0,
+    topRepeaters: (r?.top ?? []).map((t) => ({
+      contactId: t.contact_id,
+      contactName: t.contact_name,
+      estimateCount: num(t.estimate_count),
+      totalWon: round2(num(t.total_won)),
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 10. Geographic
 // ---------------------------------------------------------------------------
 
 export interface GeographicReport {
@@ -922,7 +1023,7 @@ export async function getGeographicReport(
     won_value: number;
   }>(sql`
     WITH base AS (
-      SELECT e.*, c.city, c.state, l.source AS lead_source
+      SELECT e.*, c.city, c.state, COALESCE(l.source, c.source) AS lead_source
       FROM estimates e
       LEFT JOIN contacts c ON c.id = e.contact_id
       LEFT JOIN leads l ON l.converted_to_estimate_id = e.id

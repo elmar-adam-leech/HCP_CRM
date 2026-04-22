@@ -30,6 +30,8 @@ export interface HousecallProCustomer {
     country?: string;
     type?: string;
   }>;
+  lead_source?: string | null;
+  lead_source_id?: string | null;
 }
 
 export interface HousecallProEmployee {
