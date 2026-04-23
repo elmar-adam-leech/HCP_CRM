@@ -343,9 +343,16 @@ export function registerMessagingRoutes(app: Express): void {
       });
     } else {
       log.error('Call initiation failed:', callResponse.error);
-      res.status(500).json({
+      const code = callResponse.errorCode ?? 'unknown';
+      const retryAfterSeconds = callResponse.retryAfterSeconds ?? 5;
+      // Use 502 for all upstream Dialpad failures so the global 429 RateLimit
+      // handler in queryClient.ts does not swallow our parsed error body. The
+      // specific machine-readable cause is conveyed via the `code` field.
+      res.status(502).json({
         success: false,
-        error: callResponse.error
+        error: callResponse.error,
+        code,
+        retryAfterSeconds,
       });
     }
   }));

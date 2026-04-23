@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Phone } from "lucide-react";
@@ -7,6 +7,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
+import { parseCallError } from "@/lib/parseCallError";
 
 interface CallingModalProps {
   open: boolean;
@@ -30,6 +31,42 @@ export function CallingModal({
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [selectedFromNumber, setSelectedFromNumber] = useState<string>("");
+  const [cooldownRemaining, setCooldownRemaining] = useState(0);
+  const cooldownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const clearCooldown = () => {
+    if (cooldownTimerRef.current) {
+      clearInterval(cooldownTimerRef.current);
+      cooldownTimerRef.current = null;
+    }
+  };
+
+  const startCooldown = (seconds: number) => {
+    clearCooldown();
+    if (seconds <= 0) {
+      setCooldownRemaining(0);
+      return;
+    }
+    setCooldownRemaining(seconds);
+    cooldownTimerRef.current = setInterval(() => {
+      setCooldownRemaining((prev) => {
+        if (prev <= 1) {
+          clearCooldown();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  // Always clean up the timer when the modal closes or the component unmounts.
+  useEffect(() => {
+    if (!open) {
+      clearCooldown();
+      setCooldownRemaining(0);
+    }
+    return () => clearCooldown();
+  }, [open]);
 
   // Get current user data (cached and shared across the app)
   const { data: currentUser } = useCurrentUser();
@@ -86,12 +123,14 @@ export function CallingModal({
       onOpenChange(false);
       onCallCompleted?.();
     },
-    onError: (error: any) => {
+    onError: (error: unknown) => {
+      const parsed = parseCallError(error);
       toast({
         title: "Call failed",
-        description: error?.message || "Failed to initiate call",
+        description: parsed.userMessage,
         variant: "destructive",
       });
+      startCooldown(parsed.retryAfterSeconds);
     },
   });
 
@@ -144,12 +183,16 @@ export function CallingModal({
           <div className="flex gap-2 pt-4">
             <Button
               onClick={handleCall}
-              disabled={!selectedFromNumber || initiateCallMutation.isPending}
+              disabled={!selectedFromNumber || initiateCallMutation.isPending || cooldownRemaining > 0}
               className="flex-1"
               data-testid="button-initiate-call"
             >
               <Phone className="h-4 w-4 mr-2" />
-              {initiateCallMutation.isPending ? 'Calling...' : 'Call Now'}
+              {initiateCallMutation.isPending
+                ? 'Calling...'
+                : cooldownRemaining > 0
+                  ? `Try again in ${cooldownRemaining}s`
+                  : 'Call Now'}
             </Button>
             <Button
               onClick={() => onOpenChange(false)}

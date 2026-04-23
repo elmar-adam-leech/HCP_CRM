@@ -49,6 +49,8 @@ export interface CallResult {
   callId?: string;
   callUrl?: string;
   error?: string;
+  errorCode?: 'rate_limit' | 'conflict' | 'permission_denied' | 'unknown';
+  retryAfterSeconds?: number;
 }
 
 export interface CallProvider {

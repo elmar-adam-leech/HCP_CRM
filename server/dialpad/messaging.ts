@@ -10,7 +10,7 @@
  */
 
 import { getCredentials } from './client';
-import { extractErrorMessage } from './utils';
+import { extractErrorMessage, classifyDialpadCallError, type DialpadCallErrorCode } from './utils';
 import { storage } from '../storage';
 import { normalizePhoneNumber } from '../utils/phone-normalizer';
 import { logger } from '../utils/logger';
@@ -94,7 +94,7 @@ export async function initiateCall(options: {
   contractorId: string;
   userId?: string;
   dialpadUserId?: string;
-}): Promise<{ success: boolean; callId?: string; error?: string }> {
+}): Promise<{ success: boolean; callId?: string; error?: string; errorCode?: DialpadCallErrorCode; retryAfterSeconds?: number }> {
   try {
     if (options.userId) {
       const phoneNumber = await storage.getDialpadPhoneNumberByNumber(options.contractorId, options.fromNumber);
@@ -103,7 +103,9 @@ export async function initiateCall(options: {
         if (!permissionCheck.hasPermission) {
           return {
             success: false,
-            error: permissionCheck.reason || 'Permission denied',
+            error: permissionCheck.reason || "You don't have permission to call from this number.",
+            errorCode: 'permission_denied',
+            retryAfterSeconds: 0,
           };
         }
       }
@@ -130,9 +132,15 @@ export async function initiateCall(options: {
 
     if (!response.ok) {
       const errorText = await response.text();
+      const classified = classifyDialpadCallError(response.status, errorText);
+      log.error(
+        `Dialpad call failed — status=${response.status} code=${classified.code} body=${errorText}`
+      );
       return {
         success: false,
-        error: `Failed to initiate call: ${response.status} ${errorText}`,
+        error: classified.userMessage,
+        errorCode: classified.code,
+        retryAfterSeconds: classified.retryAfterSeconds,
       };
     }
 
@@ -142,9 +150,15 @@ export async function initiateCall(options: {
       callId: result.call_id || result.id,
     };
   } catch (error) {
+    // Network/transport-level failure. Log raw detail server-side; return the
+    // friendly generic message to callers so it never leaks into the UI.
+    log.error(`Dialpad call request threw — ${extractErrorMessage(error)}`);
+    const classified = classifyDialpadCallError(0, '');
     return {
       success: false,
-      error: extractErrorMessage(error),
+      error: classified.userMessage,
+      errorCode: classified.code,
+      retryAfterSeconds: classified.retryAfterSeconds,
     };
   }
 }

@@ -10,6 +10,7 @@ import {
 } from "@shared/schema";
 import { db } from "../db";
 import { eq, and, asc, desc, lte, inArray } from "drizzle-orm";
+import { normalizePhoneNumber } from "../utils/phone-normalizer";
 import type {
   UpdateDialpadPhoneNumber,
   UpdateUserPhoneNumberPermission,
@@ -30,8 +31,20 @@ async function getDialpadPhoneNumber(id: string, contractorId: string): Promise<
 }
 
 async function getDialpadPhoneNumberByNumber(contractorId: string, phoneNumber: string): Promise<DialpadPhoneNumber | undefined> {
-  const result = await db.select().from(dialpadPhoneNumbers).where(and(eq(dialpadPhoneNumbers.contractorId, contractorId), eq(dialpadPhoneNumbers.phoneNumber, phoneNumber))).limit(1);
-  return result[0];
+  // Fast path: exact match on the stored value.
+  const direct = await db.select().from(dialpadPhoneNumbers)
+    .where(and(eq(dialpadPhoneNumbers.contractorId, contractorId), eq(dialpadPhoneNumbers.phoneNumber, phoneNumber)))
+    .limit(1);
+  if (direct[0]) return direct[0];
+
+  // Fallback: numbers may be stored in different formats (E.164 from Dialpad
+  // sync vs. display format like "(443) 247-5467" from older inserts). Compare
+  // normalized values so the lookup is format-agnostic.
+  const target = normalizePhoneNumber(phoneNumber);
+  if (!target) return undefined;
+  const all = await db.select().from(dialpadPhoneNumbers)
+    .where(eq(dialpadPhoneNumbers.contractorId, contractorId));
+  return all.find((row) => normalizePhoneNumber(row.phoneNumber) === target);
 }
 
 async function getDialpadPhoneNumbersByIds(ids: string[]): Promise<DialpadPhoneNumber[]> {

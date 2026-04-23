@@ -1,7 +1,7 @@
 import type { SmsProvider, CallProvider, SmsResult, CallResult } from './interfaces';
 import { credentialService } from '../credential-service';
 import { getCredentials } from '../dialpad/client';
-import { formatToE164 } from '../dialpad/utils';
+import { formatToE164, classifyDialpadCallError } from '../dialpad/utils';
 import { storage } from '../storage';
 import { logger } from '../utils/logger';
 import { withRetry } from '../utils/retry';
@@ -131,6 +131,12 @@ export class DialpadSmsProvider implements SmsProvider {
 }
 
 /**
+ * Tracks which (contractorId, fromNumber) pairs we've already logged a
+ * "no dialpadId" message for, so we don't spam the logs on every call attempt.
+ */
+const unmappedFromNumberLogged = new Set<string>();
+
+/**
  * Dialpad provider for calling functionality
  */
 export class DialpadCallProvider implements CallProvider {
@@ -154,6 +160,8 @@ export class DialpadCallProvider implements CallProvider {
           return {
             success: false,
             error: `Phone number ${options.fromNumber} not found in your organization`,
+            errorCode: 'permission_denied',
+            retryAfterSeconds: 0,
           };
         }
       }
@@ -171,7 +179,19 @@ export class DialpadCallProvider implements CallProvider {
           dialpadUserId = phoneNumber.dialpadId;
           log.info(`Using phone number's assigned dialpad user ID (phoneId: ${phoneNumber.id})`);
         } else {
-          log.info(`Phone number lookup returned no dialpadId — fromNumber not found or unmapped`);
+          // Throttle this log: it fires on every call attempt for org-default
+          // numbers that are unmapped, which is benign (we fall back to the
+          // user-ID path). Only log once per (contractor, number) per process.
+          const key = `${options.contractorId}:${options.fromNumber}`;
+          if (!unmappedFromNumberLogged.has(key)) {
+            unmappedFromNumberLogged.add(key);
+            log.info(
+              `Phone number lookup returned no dialpadId — fromNumber unmapped ` +
+              `(contractorId=${options.contractorId}, fromNumber=${maskPhone(options.fromNumber)}). ` +
+              `Falling back to logged-in user's Dialpad ID. ` +
+              `(Logged once per process per number.)`
+            );
+          }
         }
       }
       
@@ -235,30 +255,30 @@ export class DialpadCallProvider implements CallProvider {
         action: 'dial'
       };
 
-      // Use singular /call/ endpoint like in Google Apps Script (note trailing slash)
-      const response = await withRetry(
-        async () => {
-          const r = await fetch(`${baseUrl}/call/`, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${apiKey}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload),
-          });
-          if (r.status === 429 || (r.status >= 500 && r.status < 600)) {
-            throw new Error(`Dialpad call API returned ${r.status}`);
-          }
-          return r;
+      // Use singular /call/ endpoint like in Google Apps Script (note trailing slash).
+      // no retry on write — retrying a 429/5xx risks duplicate calls and would
+      // also defeat the client-side cooldown that Task #647 added. We classify
+      // the response below and surface a friendly message instead.
+      const response = await fetch(`${baseUrl}/call/`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
         },
-        'DialpadCallProvider.initiateCall',
-      );
+        body: JSON.stringify(payload),
+      });
 
       if (!response.ok) {
         const errorText = await response.text();
+        const classified = classifyDialpadCallError(response.status, errorText);
+        log.error(
+          `Dialpad call failed — status=${response.status} code=${classified.code} body=${errorText}`
+        );
         return {
           success: false,
-          error: `Failed to initiate call: ${response.status} ${errorText}`,
+          error: classified.userMessage,
+          errorCode: classified.code,
+          retryAfterSeconds: classified.retryAfterSeconds,
         };
       }
 
@@ -269,9 +289,18 @@ export class DialpadCallProvider implements CallProvider {
         callUrl: result.call_url,
       };
     } catch (error) {
+      // Network/transport-level failure (DNS, timeout, etc). Log the raw
+      // detail server-side but surface the friendly generic message to the UI
+      // so we never leak stack traces or low-level errors into the toast.
+      log.error(
+        `Dialpad call request threw — ${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`
+      );
+      const classified = classifyDialpadCallError(0, '');
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred',
+        error: classified.userMessage,
+        errorCode: classified.code,
+        retryAfterSeconds: classified.retryAfterSeconds,
       };
     }
   }

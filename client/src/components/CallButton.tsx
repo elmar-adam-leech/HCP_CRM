@@ -4,10 +4,11 @@ import { useToast } from "@/hooks/use-toast";
 import { useProviderStatus } from "@/hooks/use-provider-config";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CallingModal } from "./CallingModal";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { dialPhone } from "@/lib/dialPhone";
+import { parseCallError } from "@/lib/parseCallError";
 
 interface CallButtonProps {
   recipientName: string;
@@ -42,6 +43,35 @@ export function CallButton({
   const queryClient = useQueryClient();
   const [isInitiating, setIsInitiating] = useState(false);
   const [showCallingModal, setShowCallingModal] = useState(false);
+  const [cooldownRemaining, setCooldownRemaining] = useState(0);
+  const cooldownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const clearCooldown = () => {
+    if (cooldownTimerRef.current) {
+      clearInterval(cooldownTimerRef.current);
+      cooldownTimerRef.current = null;
+    }
+  };
+
+  const startCooldown = (seconds: number) => {
+    clearCooldown();
+    if (seconds <= 0) {
+      setCooldownRemaining(0);
+      return;
+    }
+    setCooldownRemaining(seconds);
+    cooldownTimerRef.current = setInterval(() => {
+      setCooldownRemaining((prev) => {
+        if (prev <= 1) {
+          clearCooldown();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  useEffect(() => () => clearCooldown(), []);
 
   const initiateCallMutation = useMutation({
     mutationFn: async (data: { toNumber: string; fromNumber?: string; customerId?: string; leadId?: string }) => {
@@ -65,13 +95,15 @@ export function CallButton({
       }
       onCallCompleted?.();
     },
-    onError: (error: any) => {
+    onError: (error: unknown) => {
       setIsInitiating(false);
+      const parsed = parseCallError(error);
       toast({
         title: "Call failed",
-        description: error?.message || "Failed to initiate call",
+        description: parsed.userMessage,
         variant: "destructive",
       });
+      startCooldown(parsed.retryAfterSeconds);
     },
   });
 
@@ -121,14 +153,20 @@ export function CallButton({
     <>
       <Button
         onClick={handleCall}
-        disabled={!recipientPhone || isInitiating || initiateCallMutation.isPending}
+        disabled={!recipientPhone || isInitiating || initiateCallMutation.isPending || cooldownRemaining > 0}
         variant={variant}
         size={size}
         className={className}
         data-testid={`button-call-${recipientPhone}`}
       >
         <Phone className={`${size === 'icon' ? 'h-4 w-4' : 'h-4 w-4 mr-2'}`} />
-        {children || (size !== 'icon' && (isInitiating || initiateCallMutation.isPending ? 'Calling...' : 'Call'))}
+        {children || (size !== 'icon' && (
+          isInitiating || initiateCallMutation.isPending
+            ? 'Calling...'
+            : cooldownRemaining > 0
+              ? `Try again in ${cooldownRemaining}s`
+              : 'Call'
+        ))}
       </Button>
 
       <CallingModal
