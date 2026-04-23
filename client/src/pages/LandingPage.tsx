@@ -42,7 +42,24 @@ export default function LandingPage() {
       <header className="border-b">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-2">
-            <img src="/hcp-crm-logo.png" alt="HCP CRM" className="h-8 w-8 object-contain" />
+            <picture>
+              <source
+                type="image/avif"
+                srcSet="/hcp-crm-logo-64.avif 1x, /hcp-crm-logo-128.avif 2x"
+              />
+              <source
+                type="image/webp"
+                srcSet="/hcp-crm-logo-64.webp 1x, /hcp-crm-logo-128.webp 2x"
+              />
+              <img
+                src="/hcp-crm-logo-128.png"
+                alt="HCP CRM"
+                width={32}
+                height={32}
+                decoding="async"
+                className="h-8 w-8 object-contain"
+              />
+            </picture>
             <span className="text-xl font-bold tracking-tight">HCP CRM</span>
           </div>
         </div>
@@ -92,7 +109,19 @@ export default function LandingPage() {
       <footer className="border-t py-6 px-6">
         <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <img src="/hcp-crm-logo.png" alt="HCP CRM" className="h-4 w-4 object-contain" />
+            <picture>
+              <source type="image/avif" srcSet="/hcp-crm-logo-64.avif" />
+              <source type="image/webp" srcSet="/hcp-crm-logo-64.webp" />
+              <img
+                src="/hcp-crm-logo-128.png"
+                alt="HCP CRM"
+                width={16}
+                height={16}
+                loading="lazy"
+                decoding="async"
+                className="h-4 w-4 object-contain"
+              />
+            </picture>
             <span>&copy; {new Date().getFullYear()} HCP CRM. All rights reserved.</span>
           </div>
           <div className="flex items-center gap-4 text-sm">

@@ -81,12 +81,33 @@ async function main() {
     logLevel: "silent",
   });
 
+  // LCP image preload tags injected per route. Only the landing page has a
+  // visible above-the-fold logo (the LCP image), so it's the only route that
+  // gets the preload. The `imagesrcset` matches the `<picture>` srcset in
+  // LandingPage so the browser fetches the correct format/density.
+  // We only preload the AVIF variant. The browser uses the `type` hint to skip
+  // this preload if it can't decode AVIF, and falls back through the
+  // `<picture>` sources (WebP, then PNG). Preloading WebP would cause AVIF-
+  // capable browsers to fetch a format they then ignore.
+  const LCP_PRELOAD_BY_ROUTE = {
+    "/": [
+      `<link rel="preload" as="image" href="/hcp-crm-logo-64.avif" imagesrcset="/hcp-crm-logo-64.avif 1x, /hcp-crm-logo-128.avif 2x" type="image/avif" fetchpriority="high">`,
+    ],
+  };
+
   for (const route of PRERENDER_PATHS) {
     const html = render(route);
     let pageHtml = spaShell.replace(
       `<div id="root"></div>`,
       `<div id="root">${html}</div>`
     );
+    const preloads = LCP_PRELOAD_BY_ROUTE[route];
+    if (preloads && preloads.length) {
+      pageHtml = pageHtml.replace(
+        "</head>",
+        `    ${preloads.join("\n    ")}\n  </head>`
+      );
+    }
     try {
       pageHtml = await critters.process(pageHtml);
     } catch (err) {

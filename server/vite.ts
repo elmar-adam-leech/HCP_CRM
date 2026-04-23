@@ -100,6 +100,13 @@ export async function setupVite(app: Express, _server: Server) {
         `src="/src/main.tsx"`,
         `src="/src/main.tsx?v=${nanoid()}"`,
       );
+      // Inject the Replit dev banner here (dev only) so it never ships in
+      // production HTML. The banner adds a top notice when the dev server is
+      // opened outside the Replit editor.
+      template = template.replace(
+        "</body>",
+        `    <script type="text/javascript" src="https://replit.com/public/js/replit-dev-banner.js"></script>\n  </body>`,
+      );
       const page = await vite.transformIndexHtml(url, template);
       res.status(200).set({ "Content-Type": "text/html" }).end(page);
     } catch (e) {
@@ -131,8 +138,25 @@ export function serveStatic(app: Express) {
   );
 
   // Other static files (manifest.json, icons, booking-widget.js, robots.txt,
-  // etc.) are NOT content-hashed, so they keep the default short cache.
-  app.use(express.static(distPath));
+  // etc.) are NOT content-hashed, so they keep the default short cache,
+  // EXCEPT for the optimized landing-page logo variants and favicons —
+  // those are referenced from the prerendered HTML and the LCP preload, so
+  // a longer cache materially helps repeat-visit mobile metrics. A 30-day
+  // public cache is the sweet spot: long enough to be useful, short enough
+  // that a new build is picked up within a month even without an explicit
+  // purge. Headers are set via `setHeaders` so serve-static cannot
+  // overwrite them.
+  const LOGO_RE =
+    /^.*[\\/](hcp-crm-logo|favicon|apple-touch-icon|icon-\d+)[\w.-]*\.(avif|webp|png|svg|ico)$/i;
+  app.use(
+    express.static(distPath, {
+      setHeaders(res, filePath) {
+        if (LOGO_RE.test(filePath)) {
+          res.setHeader("Cache-Control", "public, max-age=2592000");
+        }
+      },
+    }),
+  );
 
   // Marketing/public routes are pre-rendered into per-route HTML files at
   // build time (scripts/prerender.mjs). Serve those files directly so the

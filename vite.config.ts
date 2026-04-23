@@ -37,13 +37,23 @@ export default defineConfig({
           if (/[\\/]node_modules[\\/](recharts|d3-|victory-vendor)/.test(id)) return "charts-vendor";
           if (/[\\/]node_modules[\\/](reactflow|@reactflow)[\\/]/.test(id)) return "flow-vendor";
           if (/[\\/]node_modules[\\/]date-fns/.test(id)) return "date-vendor";
-          if (/[\\/]node_modules[\\/](lucide-react|react-icons)[\\/]/.test(id)) return "icons-vendor";
+          // react-icons is grouped together (only used by integration logos in
+          // the dashboard). lucide-react is intentionally NOT grouped: each
+          // chunk should bundle only the icons it actually imports, so the
+          // marketing entry doesn't have to download every icon used anywhere
+          // in the dashboard.
+          if (/[\\/]node_modules[\\/]react-icons[\\/]/.test(id)) return "icons-vendor";
           if (/[\\/]node_modules[\\/](react-markdown|micromark|micromark-.*|mdast-.*|hast-.*|unified|vfile|vfile-.*|unist-.*|property-information|bail|trough|is-plain-obj|character-entities|character-entities-html4|character-reference-invalid|decode-named-character-reference|html-void-elements|space-separated-tokens|comma-separated-tokens|ccount|escape-string-regexp|markdown-table|zwitch|longest-streak|stringify-entities|remark-.*|rehype-.*|dompurify)[\\/]/.test(id)) return "markdown-vendor";
           if (/[\\/]node_modules[\\/](react-hook-form|@hookform)[\\/]/.test(id)) return "form-vendor";
           if (/[\\/]node_modules[\\/]@dnd-kit[\\/]/.test(id)) return "dnd-vendor";
           if (/[\\/]node_modules[\\/](react-day-picker|vaul|cmdk)[\\/]/.test(id)) return "overlay-vendor";
           if (/[\\/]node_modules[\\/](zod|drizzle-orm|drizzle-zod)[\\/]/.test(id)) return "zod-vendor";
           if (/[\\/]node_modules[\\/]lodash([._-]|[\\/])/.test(id)) return "lodash-vendor";
+          // lucide-react is intentionally excluded from the catch-all so
+          // rollup can split icons into per-entry chunks. Otherwise the
+          // marketing entry would have to load every lucide icon used
+          // anywhere in the app, just to render the six on the landing page.
+          if (/[\\/]node_modules[\\/]lucide-react[\\/]/.test(id)) return undefined;
           return "vendor";
         },
       },
