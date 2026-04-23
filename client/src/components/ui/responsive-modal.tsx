@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 
 const SHEET_BREAKPOINT = 640;
 
-function useIsBelowSm() {
+export function useIsBelowSm() {
   const [isBelow, setIsBelow] = React.useState<boolean>(() =>
     typeof window !== "undefined" && window.innerWidth < SHEET_BREAKPOINT
   );
