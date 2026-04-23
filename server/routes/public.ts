@@ -265,7 +265,7 @@ export function registerPublicRoutes(app: Express): void {
   // Create a booking from public page (stricter rate limit for submissions)
   app.post("/api/public/book/:slug", publicBookingSubmitRateLimiter, asyncHandler(async (req: Request, res: Response) => {
     const { slug } = req.params;
-    const { name, email, phone, address, customerAddressComponents, startTime, notes, source, timeZone, bookingCode } = req.body;
+    const { name, email, phone, address, customerAddressComponents, startTime, notes, source, timeZone, bookingCode, contactId: legacyContactIdParam } = req.body;
     
     // Find contractor by booking slug
     const contractor = await storage.getContractorBySlug(slug);
@@ -324,13 +324,24 @@ export function registerPublicRoutes(app: Express): void {
     // applied to the pre-existing contact.
     const existingContactId = await storage.findMatchingContact(contractor.id, emails, phones);
 
-    // Verify ownership via bookingCode when a matching contact is found.
-    const tokenContact = (existingContactId && bookingCode)
-      ? await storage.getContactByBookingCode(bookingCode as string, contractor.id)
-      : null;
-    const callerOwnsContact = tokenContact?.id === existingContactId;
+    // Verify ownership via bookingCode (preferred) or legacy contactId UUID.
+    // Both forms are equally unguessable; the prefill endpoint already accepts
+    // either, so we mirror that behavior here. Without this, customers who
+    // arrive on a workflow-rendered legacy `?contactId=<uuid>` link would be
+    // treated as unverified at submit time and a duplicate contact would be
+    // created.
+    let tokenContact: Awaited<ReturnType<typeof storage.getContactByBookingCode>> | null = null;
+    if (existingContactId && bookingCode) {
+      tokenContact = (await storage.getContactByBookingCode(bookingCode as string, contractor.id)) ?? null;
+    }
+    if (!tokenContact && existingContactId && legacyContactIdParam && typeof legacyContactIdParam === 'string') {
+      const legacy = await storage.getContact(legacyContactIdParam, contractor.id);
+      if (legacy) tokenContact = legacy;
+    }
+    const callerOwnsContact = !!tokenContact && tokenContact.id === existingContactId;
 
     let contactId: string;
+    let createdNewContact = false;
     if (existingContactId && callerOwnsContact) {
       // Caller holds a valid booking token for this exact contact.
       contactId = existingContactId;
@@ -386,24 +397,63 @@ export function registerPublicRoutes(app: Express): void {
         source: source || 'public_booking',
       }, contractor.id);
       contactId = newContact.id;
+      createdNewContact = true;
       broadcastToContractor(contractor.id, { type: 'contact_created', contactId: newContact.id });
     }
 
-    const result = await housecallSchedulingService.bookAppointment(contractor.id, {
-      startTime: appointmentStart,
-      title: `Estimate Appointment - ${name}`,
-      customerName: name,
-      customerEmail: email,
-      customerPhone: phone,
-      customerAddress: address,
-      notes: notes || `Booked via public booking page`,
-      contactId,
-      customerAddressComponents: customerAddressComponents || undefined,
-      bookingPayload: req.body as Record<string, unknown>,
-      scheduleSource: 'public_booking',
-    });
+    let result: Awaited<ReturnType<typeof housecallSchedulingService.bookAppointment>>;
+    try {
+      result = await housecallSchedulingService.bookAppointment(contractor.id, {
+        startTime: appointmentStart,
+        title: `Estimate Appointment - ${name}`,
+        customerName: name,
+        customerEmail: email,
+        customerPhone: phone,
+        customerAddress: address,
+        notes: notes || `Booked via public booking page`,
+        contactId,
+        customerAddressComponents: customerAddressComponents || undefined,
+        bookingPayload: req.body as Record<string, unknown>,
+        scheduleSource: 'public_booking',
+      });
+    } catch (err) {
+      // Surface the underlying scheduling error so this kind of failure is
+      // diagnosable from production logs (previously the log trail just
+      // stopped mid-flight).
+      log.error('[PublicBooking] bookAppointment threw:', {
+        contractorId: contractor.id,
+        contactId,
+        message: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+      if (createdNewContact) {
+        const deleted = await storage.deleteContact(contactId, contractor.id).catch(deleteErr => {
+          log.error('[PublicBooking] Failed to roll back orphan contact after booking error:', deleteErr);
+          return false;
+        });
+        if (deleted) {
+          broadcastToContractor(contractor.id, { type: 'contact_deleted', contactId });
+        }
+      }
+      res.status(502).json({ message: "Failed to book appointment" });
+      return;
+    }
 
     if (!result.success) {
+      log.error('[PublicBooking] bookAppointment returned failure:', {
+        contractorId: contractor.id,
+        contactId,
+        error: result.error,
+      });
+      if (createdNewContact) {
+        const deleted = await storage.deleteContact(contactId, contractor.id).catch(deleteErr => {
+          log.error('[PublicBooking] Failed to roll back orphan contact after booking failure:', deleteErr);
+          return false;
+        });
+        if (deleted) {
+          broadcastToContractor(contractor.id, { type: 'contact_deleted', contactId });
+        }
+      }
       res.status(400).json({ message: result.error || "Failed to book appointment" });
       return;
     }

@@ -66,7 +66,7 @@ export function getEntityVariables(entityType: 'lead' | 'estimate' | 'job' | 'cu
           { key: 'notes', label: 'Notes', type: 'string', example: 'Interested in HVAC installation' },
           { key: 'tags', label: 'Tags', type: 'array', example: 'VIP, repeat' },
           { key: 'followUpDate', label: 'Follow-up Date', type: 'date', example: '2025-02-01' },
-          { key: 'booking_link', label: 'Booking Link', type: 'string', example: 'https://yoursite.com/book/my-company?contact=abc-123' },
+          { key: 'booking_link', label: 'Booking Link', type: 'string', example: 'https://yoursite.com/book/my-company?c=ab12cd34' },
         ],
       };
 
@@ -82,7 +82,7 @@ export function getEntityVariables(entityType: 'lead' | 'estimate' | 'job' | 'cu
           { key: 'validUntil', label: 'Valid Until', type: 'date', example: '2025-02-15' },
           { key: 'followUpDate', label: 'Follow-up Date', type: 'date', example: '2025-01-20' },
           { key: 'contactId', label: 'Contact ID', type: 'string', example: 'contact-789' },
-          { key: 'booking_link', label: 'Booking Link', type: 'string', example: 'https://yoursite.com/book/my-company?contact=contact-789' },
+          { key: 'booking_link', label: 'Booking Link', type: 'string', example: 'https://yoursite.com/book/my-company?c=ab12cd34' },
         ],
         contactVariables,
       };
@@ -101,7 +101,7 @@ export function getEntityVariables(entityType: 'lead' | 'estimate' | 'job' | 'cu
           { key: 'scheduledDate', label: 'Scheduled Date', type: 'date', example: '2025-01-18' },
           { key: 'contactId', label: 'Contact ID', type: 'string', example: 'contact-789' },
           { key: 'estimateId', label: 'Estimate ID', type: 'string', example: 'estimate-456' },
-          { key: 'booking_link', label: 'Booking Link', type: 'string', example: 'https://yoursite.com/book/my-company?contact=contact-789' },
+          { key: 'booking_link', label: 'Booking Link', type: 'string', example: 'https://yoursite.com/book/my-company?c=ab12cd34' },
         ],
         contactVariables,
       };
@@ -166,7 +166,11 @@ export async function extractVariablesFromEntity(entity: Record<string, unknown>
       ? (entity.bookingCode as string | undefined)
       : ((entity.contact as Record<string, unknown> | undefined)?.bookingCode as string | undefined);
 
-    // Lazy migration: if the entity doesn't have a bookingCode yet, generate one and persist it
+    // Lazy migration: if the entity doesn't have a bookingCode yet, generate one and persist it.
+    // We intentionally do NOT fall back to a legacy `?contactId=<uuid>` link if this fails —
+    // workflow-rendered links are required to be short-code links so the public-booker submit
+    // endpoint can verify ownership consistently. A loud warning lets us notice and fix the
+    // underlying migration problem rather than silently shipping legacy links.
     if (!bookingCode && options?.contractorId) {
       const contactIdForLazy = (resolvedType === 'lead' || resolvedType === 'customer')
         ? (entity.id as string | undefined)
@@ -178,21 +182,16 @@ export async function extractVariablesFromEntity(entity: Record<string, unknown>
           const newCode = generateBookingCode();
           const updated = await storage.updateContact(contactIdForLazy, { bookingCode: newCode }, options.contractorId);
           bookingCode = updated?.bookingCode ?? newCode;
-        } catch { /* non-fatal: fall through to contactId fallback */ }
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn('[variable-extractor] Failed to lazy-generate bookingCode for contact', contactIdForLazy, err);
+        }
       }
     }
 
-    if (bookingCode) {
-      variables.booking_link = `${options.bookingBaseUrl}?c=${bookingCode}`;
-    } else {
-      // Final fallback for contacts that still have no bookingCode
-      const contactIdForBooking = (resolvedType === 'lead' || resolvedType === 'customer')
-        ? (entity.id as string | undefined)
-        : (entity.contactId as string | undefined);
-      variables.booking_link = contactIdForBooking
-        ? `${options.bookingBaseUrl}?contactId=${contactIdForBooking}`
-        : '';
-    }
+    variables.booking_link = bookingCode
+      ? `${options.bookingBaseUrl}?c=${bookingCode}`
+      : '';
   } else {
     variables.booking_link = '';
   }

@@ -260,9 +260,13 @@ export default function PublicBooking() {
           notes: data.notes,
           source: 'public_booking',
           timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          // Pass the short booking code so the backend can verify the caller
-          // controls the pre-populated contact record (ownership token).
+          // Pass the short booking code (preferred) and/or the legacy
+          // contactId UUID so the backend can verify the caller controls the
+          // pre-populated contact record. Both forms are equally unguessable;
+          // workflow-rendered links may still use the legacy form for older
+          // contacts whose bookingCode was not yet backfilled.
           bookingCode: bookingCode || undefined,
+          contactId: legacyContactId || undefined,
         }),
       });
 
