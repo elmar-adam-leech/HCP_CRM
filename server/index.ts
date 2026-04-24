@@ -19,6 +19,7 @@ import { stopWebSocket } from "./websocket";
 import { GmailOAuthCleanupJob } from "./services/gmail-oauth-cleanup-job";
 import { RateLimitCleanupJob } from "./services/rate-limit-cleanup-job";
 import { SpamAuditCleanupJob } from "./services/spam-audit-cleanup-job";
+import { RefreshTokenCleanupJob } from "./services/refresh-token-cleanup-job";
 import { webhookEvents } from "@shared/schema";
 import { and, eq, lt, or, isNotNull, sql } from "drizzle-orm";
 import { CredentialService } from "./credential-service";
@@ -291,6 +292,7 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   //       • GmailOAuthCleanupJob    — deletes expired oauth_states rows (1 h)
   //       • RateLimitCleanupJob     — prunes expired rate-limit buckets (1 min)
   //       • SpamAuditCleanupJob     — prunes old spam_audit_log rows (24 h)
+  //       • RefreshTokenCleanupJob  — deletes expired refresh_tokens rows (24 h)
   //     Rule: ANY new periodic server job MUST extend BackgroundJob and be
   //     registered here. Do NOT add bare module-level setInterval calls.
   //
@@ -316,6 +318,10 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   const spamAuditCleanupJob = new SpamAuditCleanupJob();
   spamAuditCleanupJob.start();
   log("SpamAuditCleanupJob registered (runs every 24 h)");
+
+  const refreshTokenCleanupJob = new RefreshTokenCleanupJob();
+  refreshTokenCleanupJob.start();
+  log("RefreshTokenCleanupJob registered (runs every 24 h)");
 
   // Sales-process cron: poll for due auto-mode tasks and dispatch them.
   const { salesProcessCron } = await import("./services/sales-process-cron");
@@ -459,6 +465,7 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
       gmailOAuthCleanupJob.stop();
       rateLimitCleanupJob.stop();
       spamAuditCleanupJob.stop();
+      refreshTokenCleanupJob.stop();
       salesProcessCron.stop();
       dialpadEventPoller.stop();
       stopHcpWebhookHealthCheck();
