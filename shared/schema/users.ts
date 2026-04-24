@@ -120,6 +120,47 @@ export const insertRevokedTokenSchema = createInsertSchema(revokedTokens);
 export type InsertRevokedToken = z.infer<typeof insertRevokedTokenSchema>;
 export type RevokedToken = typeof revokedTokens.$inferSelect;
 
+// Refresh tokens — long-lived (90 day) opaque tokens used by the PWA to silently
+// re-mint a fresh `auth_token` JWT cookie when the short-lived auth cookie has
+// been evicted by iOS Safari (PWA storage partition is aggressively dropped by
+// Apple's intelligent tracking prevention plus iOS memory-pressure eviction).
+//
+// Lookup is by SHA-256 hash of the raw token; the raw token only ever lives in
+// the user's `refresh_token` httpOnly cookie. Tokens rotate on each successful
+// /api/auth/refresh call — the previous row is marked `lastUsedAt` and the new
+// hash replaces it.
+export const refreshTokens = pgTable("refresh_tokens", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  contractorId: varchar("contractor_id").notNull().references(() => contractors.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull(),
+  deviceId: text("device_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  lastUsedAt: timestamp("last_used_at"),
+  // Set when this token has been used to mint a successor (rotated). Distinct
+  // from `revokedAt` so /api/auth/refresh can permit a brief grace window where
+  // an in-flight retry / network re-send of the same token still succeeds. See
+  // REFRESH_ROTATION_GRACE_MS in server/auth-refresh.ts.
+  rotatedAt: timestamp("rotated_at"),
+  // Hard kill — set on logout, sign-out-all, and on detection of stale-token
+  // replay (use after the rotation grace window has expired).
+  revokedAt: timestamp("revoked_at"),
+  ip: text("ip"),
+  userAgent: text("user_agent"),
+}, (table) => ({
+  tokenHashIdx: index("refresh_tokens_token_hash_idx").on(table.tokenHash),
+  userIdIdx: index("refresh_tokens_user_id_idx").on(table.userId),
+  expiresAtIdx: index("refresh_tokens_expires_at_idx").on(table.expiresAt),
+}));
+
+export const insertRefreshTokenSchema = createInsertSchema(refreshTokens).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertRefreshToken = z.infer<typeof insertRefreshTokenSchema>;
+export type RefreshToken = typeof refreshTokens.$inferSelect;
+
 // User invitations table
 export const userInvitations = pgTable("user_invitations", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

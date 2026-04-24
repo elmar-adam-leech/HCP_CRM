@@ -77,6 +77,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (req.path === '/auth/forgot-password' || req.path === '/auth/reset-password') {
       return next();
     }
+    // /auth/refresh is cookie-driven and intentionally bypasses requireAuth — it
+    // exists precisely to recover from a missing/expired auth_token using the
+    // long-lived refresh_token cookie (task #650).
+    if (req.path === '/auth/refresh') {
+      return next();
+    }
     if (req.path === '/mfa/verify') {
       return next(); // Public MFA verify endpoint (uses pendingToken)
     }

@@ -29,7 +29,7 @@ The backend is built with Node.js and Express.js, providing a RESTful API. Postg
 - **Google Maps Address Autocomplete**: Integrates Google Places API for address autocomplete.
 - **Reports**: Provides reports like Leads Trend and "Speed to Lead by Salesperson".
 - **Real-time**: WebSocket-based architecture with reconnect/stale-data banner.
-- **Security**: HTTP-only cookies, role-based access control, AES-256-GCM encryption, JWT revocation, `tokenVersion` for sign-out-all-devices.
+- **Security**: HTTP-only cookies, role-based access control, AES-256-GCM encryption, JWT revocation, `tokenVersion` for sign-out-all-devices. Persistent PWA login uses a 90-day `refresh_token` httpOnly cookie alongside the 7-day `auth_token`; the SPA silently re-mints the auth token via `POST /api/auth/refresh` (single in-flight, refresh rotates the row) when any `/api/*` call returns 401, so iOS Safari evicting the auth cookie no longer logs the user out. The refresh endpoint enforces a 30-second rotation grace window — re-arrivals of an already-rotated token within that window succeed without re-rotating (covers in-flight retries / network re-sends), while reuse past the window is treated as a replay attack and hard-revokes the row. Two stacked rate limiters guard the endpoint: 10/min per-IP and 5/min per-refresh-token (so a leaked cookie cannot be brute-forced from a botnet).
 - **PWA**: Installable to home screen for field techs.
 - **Mobile UX**: Fixed bottom nav bar, mobile-first padding, responsive headers, quick actions.
 - **Call Preference**: Per-user setting for 'integration' or 'personal' calling.

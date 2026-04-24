@@ -105,6 +105,7 @@ import { settingsMethods } from "./storage/settings";
 import { workflowMethods } from "./storage/workflows";
 import { leadCaptureMethods } from "./storage/lead-capture";
 import { salesProcessMethods } from "./storage/sales-process";
+import { refreshTokenMethods } from "./storage/refresh-tokens";
 
 export interface IStorage {
   // User operations
@@ -610,6 +611,18 @@ export interface IStorage {
   incrementAttemptCount: typeof salesProcessMethods.incrementAttemptCount;
   skipPendingTasksForLead: typeof salesProcessMethods.skipPendingTasksForLead;
   claimDueAutoTasks: typeof salesProcessMethods.claimDueAutoTasks;
+
+  // Refresh tokens (task #650 — persistent PWA login)
+  createRefreshToken: typeof refreshTokenMethods.createRefreshToken;
+  findRefreshTokenByHash: typeof refreshTokenMethods.findRefreshTokenByHash;
+  findActiveRefreshTokenByHash: typeof refreshTokenMethods.findActiveRefreshTokenByHash;
+  markRefreshTokenUsed: typeof refreshTokenMethods.markRefreshTokenUsed;
+  revokeRefreshToken: typeof refreshTokenMethods.revokeRefreshToken;
+  revokeRefreshTokenByHash: typeof refreshTokenMethods.revokeRefreshTokenByHash;
+  revokeRefreshTokensForUser: typeof refreshTokenMethods.revokeRefreshTokensForUser;
+  revokeRefreshTokensForUserContractor: typeof refreshTokenMethods.revokeRefreshTokensForUserContractor;
+  revokeRefreshTokensForContractor: typeof refreshTokenMethods.revokeRefreshTokensForContractor;
+  deleteExpiredRefreshTokens: typeof refreshTokenMethods.deleteExpiredRefreshTokens;
 }
 
 export const storage: IStorage = {
@@ -628,4 +641,5 @@ export const storage: IStorage = {
   ...workflowMethods,
   ...leadCaptureMethods,
   ...salesProcessMethods,
+  ...refreshTokenMethods,
 };

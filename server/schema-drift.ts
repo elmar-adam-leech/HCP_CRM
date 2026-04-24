@@ -885,6 +885,38 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `ALTER TABLE "sales_process_task_instances" ALTER COLUMN "lead_id" DROP NOT NULL`,
       description: 'sales_process_task_instances.lead_id nullable (XOR with estimate_id)',
     },
+    {
+      sql: `CREATE TABLE IF NOT EXISTS "refresh_tokens" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "user_id" varchar NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
+        "contractor_id" varchar NOT NULL REFERENCES "contractors"("id") ON DELETE CASCADE,
+        "token_hash" text NOT NULL,
+        "device_id" text,
+        "created_at" timestamp NOT NULL DEFAULT now(),
+        "expires_at" timestamp NOT NULL,
+        "last_used_at" timestamp,
+        "revoked_at" timestamp,
+        "ip" text,
+        "user_agent" text
+      )`,
+      description: 'refresh_tokens table (long-lived refresh tokens for PWA persistent login, task #650)',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS "refresh_tokens_token_hash_idx" ON "refresh_tokens" ("token_hash")`,
+      description: 'refresh_tokens.token_hash index (lookup by hash on /api/auth/refresh)',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS "refresh_tokens_user_id_idx" ON "refresh_tokens" ("user_id")`,
+      description: 'refresh_tokens.user_id index (logout-all revocation)',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS "refresh_tokens_expires_at_idx" ON "refresh_tokens" ("expires_at")`,
+      description: 'refresh_tokens.expires_at index (cleanup of expired rows)',
+    },
+    {
+      sql: `ALTER TABLE "refresh_tokens" ADD COLUMN IF NOT EXISTS "rotated_at" timestamp`,
+      description: 'refresh_tokens.rotated_at (rotation timestamp; enables grace-window for in-flight retries vs. hard revocation)',
+    },
   ];
 
 export async function applyColumnMigrations(

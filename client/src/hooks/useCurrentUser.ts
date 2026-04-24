@@ -40,19 +40,16 @@ export function isStrictAdmin(role?: string): boolean {
 /**
  * Hook to access the current authenticated user's data.
  * This data is cached at the app level and reused across all components.
+ *
+ * Intentionally does NOT supply a custom queryFn — it relies on the default
+ * getQueryFn from `@/lib/queryClient`, which performs silent refresh on 401
+ * via /api/auth/refresh (task #650). That recovery is essential for iOS PWAs
+ * where the auth_token cookie can be evicted while the long-lived refresh
+ * cookie survives.
  */
 export function useCurrentUser() {
   return useQuery<CurrentUserResponse>({
     queryKey: ['/api/auth/me'],
-    queryFn: async () => {
-      const response = await fetch('/api/auth/me', {
-        credentials: 'include'
-      });
-      if (!response.ok) {
-        throw new Error('Failed to fetch user info');
-      }
-      return response.json();
-    },
     staleTime: 5 * 60 * 1000, // 5 minutes
     gcTime: 30 * 60 * 1000, // 30 minutes (formerly cacheTime)
     refetchOnWindowFocus: false,

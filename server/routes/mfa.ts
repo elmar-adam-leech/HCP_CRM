@@ -288,6 +288,7 @@ async function issueFinalToken(
 ) {
   const { AuthService } = await import('../auth-service');
   const { storage } = await import('../storage');
+  const { issueRefreshToken } = await import('../auth-refresh');
 
   const contractorId = decoded.contractorId ?? user.contractorId ?? '';
   const userContractorEntry = await storage.ensureUserContractorEntry(
@@ -316,6 +317,12 @@ async function issueFinalToken(
     maxAge: 7 * 24 * 60 * 60 * 1000,
     path: '/',
   });
+
+  // Issue the long-lived refresh cookie alongside the JWT so PWA users on iOS
+  // survive Safari's auth-cookie eviction (task #650).
+  if (contractorId) {
+    await issueRefreshToken(req, res, { userId: user.id, contractorId });
+  }
 
   await auditLog(req, 'login', 'user', user.id);
 

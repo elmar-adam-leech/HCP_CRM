@@ -8,11 +8,28 @@ import bcrypt from "bcrypt";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { sendGridService } from "../emails/index";
-import { authLoginRateLimiter, authRegisterRateLimiter, authForgotPasswordRateLimiter } from "../middleware/rate-limiter";
+import { authLoginRateLimiter, authRegisterRateLimiter, authForgotPasswordRateLimiter, createRateLimiter } from "../middleware/rate-limiter";
 import { asyncHandler } from "../utils/async-handler";
 import { logger } from "../utils/logger";
 import { auditLog } from "../utils/audit-log";
 import { maskEmail } from "../utils/pii-redactor";
+import {
+  REFRESH_COOKIE_NAME,
+  clearRefreshCookie,
+  handleRefreshRequest,
+  hashRefreshToken,
+  issueRefreshToken,
+  refreshTokenRateLimiter,
+} from "../auth-refresh";
+
+// Per-IP/per-token brute-force defence for the refresh endpoint. The endpoint
+// itself only does one indexed DB lookup, so the limit is generous, but capping
+// it at 10/min materially limits credential-stuffing of stolen refresh cookies.
+const authRefreshRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 10,
+  keyPrefix: 'auth-refresh',
+});
 
 async function generateUniqueUsername(email: string): Promise<string> {
   const base = email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '_');
@@ -105,6 +122,15 @@ export function registerAuthRoutes(app: Express): void {
       sameSite: 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000,
       path: '/',
+    });
+
+    // Issue a long-lived refresh token alongside the short-lived auth cookie.
+    // PWA users on iOS routinely lose the auth cookie via Safari's tracking
+    // protection / memory eviction; the refresh cookie survives those drops
+    // and lets the client silently re-mint a session via /api/auth/refresh.
+    await issueRefreshToken(req, res, {
+      userId: user.id,
+      contractorId: user.contractorId,
     });
 
     await auditLog({
@@ -373,8 +399,14 @@ export function registerAuthRoutes(app: Express): void {
     // `req.user` is undefined; the `!` assertion is redundant but kept for explicitness.
     const user = req.user!;
     await AuthService.revokeToken(user);
+    // Best-effort: revoke the refresh token row backing this device's cookie.
+    const rawRefresh = req.cookies?.[REFRESH_COOKIE_NAME] as string | undefined;
+    if (rawRefresh) {
+      await storage.revokeRefreshTokenByHash(hashRefreshToken(rawRefresh));
+    }
     await auditLog(req, 'logout', 'user', user.userId);
     res.clearCookie('auth_token', { path: '/' });
+    clearRefreshCookie(res);
     res.json({ message: "Logged out successfully" });
   }));
 
@@ -385,7 +417,10 @@ export function registerAuthRoutes(app: Express): void {
     await db.update(users)
       .set({ tokenVersion: (user.tokenVersion ?? 1) + 1 })
       .where(eq(users.id, user.userId));
+    // Revoke every refresh token for this user across every device.
+    await storage.revokeRefreshTokensForUser(user.userId);
     res.clearCookie('auth_token', { path: '/' });
+    clearRefreshCookie(res);
     res.json({ message: "All sessions signed out" });
   }));
 
@@ -399,6 +434,7 @@ export function registerAuthRoutes(app: Express): void {
 
     if (companyMembers.length === 0) {
       res.clearCookie('auth_token', { path: '/' });
+      clearRefreshCookie(res);
       res.json({ message: "No users found", count: 0 });
       return;
     }
@@ -407,10 +443,34 @@ export function registerAuthRoutes(app: Express): void {
     await db.update(users)
       .set({ tokenVersion: sql`token_version + 1` })
       .where(inArray(users.id, userIds));
+    // Revoke every refresh token tied to this contractor — covers PWA cookies
+    // belonging to all members of the company.
+    await storage.revokeRefreshTokensForContractor(contractorId);
 
     res.clearCookie('auth_token', { path: '/' });
+    clearRefreshCookie(res);
     res.json({ message: `All sessions signed out for ${userIds.length} user(s)`, count: userIds.length });
   }));
+
+  // POST /api/auth/refresh — silent re-issue of the auth_token cookie using a
+  // long-lived refresh_token cookie. Designed to be called by the client when
+  // any /api/* request returns 401 (typically because iOS Safari evicted the
+  // auth cookie from a PWA's storage partition).
+  //
+  // Logic lives in `handleRefreshRequest` so it can be unit-tested directly
+  // with mocked storage. See server/auth-refresh.ts for the full state-machine
+  // documentation (handles missing cookie, revoked, expired, rotated-within-
+  // grace, rotated-past-grace, and active cases).
+  //
+  // Two rate limiters are stacked: per-IP (10/min) caps brute force from a
+  // single source, and per-refresh-token (5/min) caps brute force against any
+  // single token even if the attacker rotates IPs.
+  app.post(
+    "/api/auth/refresh",
+    authRefreshRateLimiter,
+    refreshTokenRateLimiter,
+    asyncHandler(handleRefreshRequest),
+  );
 
   app.get("/api/auth/me", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user) {
