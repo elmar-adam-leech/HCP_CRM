@@ -7,8 +7,70 @@ import type { HousecallProEstimate, HcpLeadConvertResponse } from '../hcp/types'
 import { logger } from '../utils/logger';
 import { ARRIVAL_WINDOW_MINUTES } from './availability';
 import { resolveAddressComponents } from './hcp-customer';
+import { createActivityAndBroadcast } from '../utils/activity';
 
 const log = logger('HcpSchedulingService');
+
+const ESTIMATE_NOTE_RETRY_DELAYS_MS = [250, 500, 1000];
+
+// Stable token callers grep for to detect booker-note failures (vs. matching
+// the human-readable scheduleError string).
+export const BOOKER_NOTES_MISSING_TOKEN = '[booker_notes_missing]';
+
+// HCP sometimes drops POST /estimates/{id}/notes immediately after convertLead.
+// Short backoffs win the race in practice without delaying the response.
+async function addEstimateNoteWithRetry(
+  tenantId: string,
+  estimateId: string,
+  content: string,
+  label: string,
+): Promise<boolean> {
+  for (let attempt = 0; attempt <= ESTIMATE_NOTE_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) {
+      const delay = ESTIMATE_NOTE_RETRY_DELAYS_MS[attempt - 1];
+      log.info(`[scheduling] Retrying ${label} note on HCP estimate ${estimateId} after ${delay}ms (attempt ${attempt + 1})`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+    try {
+      const result = await housecallProService.addEstimateNote(tenantId, estimateId, content);
+      if (result.success) {
+        log.info(`[scheduling] Added ${label} note to HCP estimate ${estimateId}${attempt > 0 ? ` (attempt ${attempt + 1})` : ''}`);
+        return true;
+      }
+      log.info(`[scheduling] addEstimateNote(${label}) attempt ${attempt + 1} on ${estimateId} failed: ${result.error}`);
+    } catch (err) {
+      log.info(`[scheduling] addEstimateNote(${label}) attempt ${attempt + 1} on ${estimateId} threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  log.warn(`[scheduling] All ${ESTIMATE_NOTE_RETRY_DELAYS_MS.length + 1} attempts to add ${label} note to HCP estimate ${estimateId} failed`);
+  return false;
+}
+
+// Re-fetches the estimate's notes feed and confirms the booker text landed.
+// Substring match on the first 80 chars handles HCP's whitespace normalization.
+async function verifyBookerNoteOnEstimate(
+  tenantId: string,
+  estimateId: string,
+  bookerNote: string,
+): Promise<boolean> {
+  if (!bookerNote) return true;
+  const needle = bookerNote.slice(0, 80);
+  try {
+    const result = await housecallProService.getEstimateNotes(tenantId, estimateId);
+    if (!result.success || !result.data) {
+      log.warn(`[scheduling] Could not verify booker note on estimate ${estimateId}: ${result.error ?? 'no data'}`);
+      return false;
+    }
+    const found = result.data.some((n) => typeof n.content === 'string' && n.content.includes(needle));
+    if (!found) {
+      log.warn(`[scheduling] Verification fetch for estimate ${estimateId} did not contain booker note (${result.data.length} notes returned)`);
+    }
+    return found;
+  } catch (err) {
+    log.warn(`[scheduling] Verification fetch for estimate ${estimateId} threw: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
 
 /**
  * Builds a notes string with the service address appended.
@@ -178,33 +240,25 @@ export async function createOrConvertHcpEstimate(
 
   if (!rawEstimateData) {
     if (hcpLeadId) {
-      // Re-pin the lead's address_id BEFORE convertLead. Once HCP creates the
-      // estimate from the lead, it silently no-ops on `address_id` PATCH for
-      // the resulting estimate (documented in `replit.md` HCP Integration
-      // Pitfalls). Pinning the lead first means the converted estimate is
-      // born bound to the right address — no PATCH-and-pray needed.
-      if (serviceAddressId) {
+      // Pre-stage booker notes onto the lead before convert; HCP carries lead
+      // notes forward into the estimate, dodging the post-convert race.
+      // (PATCH /leads/{id} is not a real HCP endpoint — address pinning is
+      // done via updateEstimate further down.)
+      const preConvertNoteText = (request.notes || '').trim();
+      if (preConvertNoteText.length > 0 || estimateAddress?.street) {
+        const leadNoteContent = buildNotesWithAddress(
+          preConvertNoteText.length > 0 ? preConvertNoteText : undefined,
+          estimateAddress,
+        );
         try {
-          const leadFetch = await housecallProService.getLead(tenantId, hcpLeadId);
-          const currentLeadAddressId: string | undefined =
-            leadFetch.success
-              ? (leadFetch.data?.address_id || leadFetch.data?.address?.id)
-              : undefined;
-          if (currentLeadAddressId !== serviceAddressId) {
-            log.info(`[scheduling] PATCHing HCP lead ${hcpLeadId} address_id ${currentLeadAddressId ?? '<none>'} → ${serviceAddressId} before convert`);
-            const leadPatch = await housecallProService.patchLead(tenantId, hcpLeadId, {
-              address_id: serviceAddressId,
-            });
-            if (!leadPatch.success) {
-              log.warn(`[scheduling] Failed to PATCH HCP lead ${hcpLeadId} address_id to ${serviceAddressId}: ${leadPatch.error}. Convert may produce an estimate bound to the legacy address.`);
-            } else {
-              log.info(`[scheduling] HCP lead ${hcpLeadId} address_id pinned to ${serviceAddressId}`);
-            }
+          const leadNoteResult = await housecallProService.addLeadNote(tenantId, hcpLeadId, leadNoteContent);
+          if (leadNoteResult.success) {
+            log.info(`[scheduling] Pre-staged booker note onto HCP lead ${hcpLeadId} before convert (${leadNoteContent.length} chars)`);
           } else {
-            log.info(`[scheduling] HCP lead ${hcpLeadId} already bound to address ${serviceAddressId}; no pre-convert PATCH needed`);
+            log.warn(`[scheduling] Failed to pre-stage booker note on HCP lead ${hcpLeadId}: ${leadNoteResult.error}. Will rely on post-convert addEstimateNote retries.`);
           }
         } catch (err) {
-          log.warn(`[scheduling] Unexpected error pinning HCP lead ${hcpLeadId} address before convert: ${err instanceof Error ? err.message : String(err)}`);
+          log.warn(`[scheduling] Unexpected error pre-staging booker note on HCP lead ${hcpLeadId}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
@@ -355,44 +409,50 @@ export async function createOrConvertHcpEstimate(
     }
   }
 
-  // Notes are added synchronously (awaited) so any failure is surfaced via the
-  // existing scheduleError channel back to the user — previously these were
-  // fire-and-forget, which silently dropped the booker's typed notes when the
-  // POST failed or raced.
+  // Notes are awaited; failures surface via scheduleError (previously fire-and-forget).
   const noteFailures: string[] = [];
 
   if (estimateAddress?.street) {
     const addressLine = [estimateAddress.street, estimateAddress.city, estimateAddress.state, estimateAddress.zip]
       .filter(Boolean).join(', ');
     const noteContent = `Service Address: ${addressLine}`;
-    try {
-      const noteResult = await housecallProService.addEstimateNote(tenantId, hcpEstimateId, noteContent);
-      if (noteResult.success) {
-        log.info(`[scheduling] Added address note to HCP estimate ${hcpEstimateId}`);
-      } else {
-        log.warn(`[scheduling] Failed to add address note to HCP estimate ${hcpEstimateId}: ${noteResult.error}`);
-        noteFailures.push('service address');
-      }
-    } catch (err) {
-      log.warn(`[scheduling] Unexpected error adding address note to HCP estimate ${hcpEstimateId}: ${err instanceof Error ? err.message : String(err)}`);
-      noteFailures.push('service address');
-    }
+    const ok = await addEstimateNoteWithRetry(tenantId, hcpEstimateId, noteContent, 'service address');
+    if (!ok) noteFailures.push('service address');
   }
 
   const customerNotes = (request.notes || '').trim();
+  let bookerNoteAttached = customerNotes.length === 0;
   if (customerNotes.length > 0) {
-    try {
-      const noteResult = await housecallProService.addEstimateNote(tenantId, hcpEstimateId, customerNotes);
-      if (noteResult.success) {
-        log.info(`[scheduling] Added booker note to HCP estimate ${hcpEstimateId}`);
-      } else {
-        log.warn(`[scheduling] Failed to add booker note to HCP estimate ${hcpEstimateId}: ${noteResult.error}`);
-        noteFailures.push('booker notes');
-      }
-    } catch (err) {
-      log.warn(`[scheduling] Unexpected error adding booker note to HCP estimate ${hcpEstimateId}: ${err instanceof Error ? err.message : String(err)}`);
-      noteFailures.push('booker notes');
+    const ok = await addEstimateNoteWithRetry(tenantId, hcpEstimateId, customerNotes, 'booker notes');
+    bookerNoteAttached = ok;
+    if (!ok) noteFailures.push('booker notes');
+  }
+
+  // Verify the note actually landed; success here can override an earlier
+  // POST failure (the lead-notes pre-staging path may have delivered it).
+  if (customerNotes.length > 0) {
+    const verified = await verifyBookerNoteOnEstimate(tenantId, hcpEstimateId, customerNotes);
+    if (!verified) {
+      bookerNoteAttached = false;
+      if (!noteFailures.includes('booker notes')) noteFailures.push('booker notes');
+    } else {
+      bookerNoteAttached = true;
+      const idx = noteFailures.indexOf('booker notes');
+      if (idx !== -1) noteFailures.splice(idx, 1);
     }
+  }
+
+  // Activity-feed breadcrumb for the salesperson.
+  if (bookerNoteAttached && customerNotes.length > 0 && request.contactId) {
+    createActivityAndBroadcast(
+      tenantId,
+      {
+        type: 'note',
+        contactId: request.contactId,
+        content: `Booking notes attached to HCP estimate ${hcpEstimateId}`,
+      },
+      { type: 'activity_created', contactId: request.contactId },
+    ).catch((err) => log.warn(`[scheduling] Failed to write booker-notes activity breadcrumb (non-fatal): ${err instanceof Error ? err.message : String(err)}`));
   }
 
   const optionId = rawEstimateData.options?.[0]?.id;
@@ -425,7 +485,8 @@ export async function createOrConvertHcpEstimate(
   }
 
   if (noteFailures.length > 0) {
-    const noteMsg = `Estimate was created in HousecallPro but the following note(s) could not be added automatically: ${noteFailures.join(', ')}. Please open HousecallPro to add them manually.`;
+    let noteMsg = `Estimate was created in HousecallPro but the following note(s) could not be added automatically: ${noteFailures.join(', ')}. Please open HousecallPro to add them manually.`;
+    if (noteFailures.includes('booker notes')) noteMsg += ` ${BOOKER_NOTES_MISSING_TOKEN}`;
     scheduleError = scheduleError ? `${scheduleError} ${noteMsg}` : noteMsg;
   }
 

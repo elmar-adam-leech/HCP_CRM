@@ -119,4 +119,34 @@ export class HcpEstimatesModule extends HcpBaseClient {
       ESTIMATES_ACCEPT
     );
   }
+
+  /**
+   * Fetches notes attached to an HCP estimate. Used by the booking flow to
+   * verify that booker-typed notes actually persisted, since `addEstimateNote`
+   * occasionally races HCP's eventual consistency on a freshly-converted
+   * estimate and silently drops the write.
+   *
+   * Returns an array of note objects with at least `content`. We tolerate any
+   * envelope shape (`notes`, `data`, bare array) via `extractHcpList`.
+   */
+  async getEstimateNotes(
+    tenantId: string,
+    estimateId: string,
+  ): Promise<HousecallProResponse<Array<{ content?: string }>>> {
+    const response = await this.makeRequest<unknown>(
+      `/estimates/${estimateId}/notes`,
+      tenantId,
+      'GET',
+      undefined,
+      3,
+      ESTIMATES_ACCEPT,
+    );
+
+    if (response.success && response.data !== undefined) {
+      const notes = extractHcpList<{ content?: string }>(response.data, 'notes');
+      return { success: true, data: notes };
+    }
+
+    return response as HousecallProResponse<Array<{ content?: string }>>;
+  }
 }

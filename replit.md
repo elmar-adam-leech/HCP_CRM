@@ -25,7 +25,7 @@ The backend is built with Node.js and Express.js, providing a RESTful API. Postg
 - **Facebook Leads Integration**: Automatic ingestion of leads from Facebook Lead Ads via OAuth and webhooks, with a polling fallback.
 - **Dialpad Integration**: Handles calling, SMS, and call recording, including company numbers management and event ingestion.
 - **HCP (Housecall Pro) Integration**: Full bi-directional sync for contacts, estimates, and jobs with echo suppression and two-tier webhook authentication. Includes booking and calendar sync.
-- **Lead Capture / Public Booking**: Public-facing booking page for estimates, including HCP calendar sync and structured address capture.
+- **Lead Capture / Public Booking**: Public-facing booking page for estimates, including HCP calendar sync and structured address capture. Booker-typed notes are pre-staged via `POST /leads/{leadId}/notes` before convertLead so HCP carries them into the resulting estimate, with a verification re-fetch and bounded retry; on failure the booker sees a warning banner and contractor admins receive a SendGrid email. Fix is forward-looking only — historical bookings (e.g. pre-fix records like Meagan Petri) are not backfilled.
 - **Google Maps Address Autocomplete**: Integrates Google Places API for address autocomplete.
 - **Reports**: Provides reports like Leads Trend and "Speed to Lead by Salesperson".
 - **Real-time**: WebSocket-based architecture with reconnect/stale-data banner.

@@ -12,8 +12,81 @@ import { parseAddressString, hasRealStreetAddress } from "../types/scheduling";
 import { placesAutocomplete, placesDetails } from "../utils/places-client";
 import { createActivityAndBroadcast } from "../utils/activity";
 import { markContactScheduled } from "../services/contact-status";
+import { sendEmail } from "../emails/client";
+import { db } from "../db";
+import { users, userContractors } from "@shared/schema";
+import { eq, and, inArray } from "drizzle-orm";
+import { BOOKER_NOTES_MISSING_TOKEN } from "../scheduling/hcp-estimate";
 
 const log = logger('PublicRoutes');
+
+interface MissingNotesEmailParams {
+  contractorId: string;
+  contractorName: string;
+  customerName: string;
+  customerEmail?: string;
+  customerPhone?: string;
+  hcpEstimateId: string;
+  notes: string;
+}
+
+// Resolves admin/super-admin emails for a contractor (used to decide whether
+// the "our team has been notified" warning copy is honest).
+async function getContractorAdminEmails(contractorId: string): Promise<string[]> {
+  const rows = await db
+    .select({ email: users.email })
+    .from(userContractors)
+    .innerJoin(users, eq(users.id, userContractors.userId))
+    .where(and(
+      eq(userContractors.contractorId, contractorId),
+      inArray(userContractors.role, ['admin', 'super_admin']),
+    ));
+  return rows.map((r) => r.email).filter((e): e is string => !!e);
+}
+
+// Emails admins when an HCP estimate was created but booker notes failed to
+// attach. Caller pre-resolves recipients via getContractorAdminEmails.
+async function sendMissingBookerNotesEmail(params: MissingNotesEmailParams & { recipients: string[] }): Promise<void> {
+  if (params.recipients.length === 0) return;
+
+  const esc = (s: string): string =>
+    s.replace(/&/g, '&amp;')
+     .replace(/</g, '&lt;')
+     .replace(/>/g, '&gt;')
+     .replace(/"/g, '&quot;')
+     .replace(/'/g, '&#39;');
+  const escMultiline = (s: string): string => esc(s).replace(/\n/g, '<br/>');
+
+  const escapedNotes = escMultiline(params.notes);
+  const escContractor = esc(params.contractorName);
+  const escEstimateId = esc(params.hcpEstimateId);
+
+  const subject = `Booking notes need to be added to HCP estimate ${params.hcpEstimateId}`;
+  const customerLine = [
+    esc(params.customerName),
+    params.customerEmail ? `&lt;${esc(params.customerEmail)}&gt;` : null,
+    params.customerPhone ? esc(params.customerPhone) : null,
+  ].filter(Boolean).join(' · ');
+
+  const html = `
+    <p>A new public-booking appointment was created for <strong>${escContractor}</strong>, but the customer's typed notes could not be attached to the Housecall Pro estimate automatically.</p>
+    <p><strong>Customer:</strong> ${customerLine || '(unknown)'}</p>
+    <p><strong>HCP estimate:</strong> ${escEstimateId}</p>
+    <p><strong>Notes the customer typed:</strong></p>
+    <blockquote style="border-left:3px solid #ccc;padding-left:12px;color:#444;">${escapedNotes}</blockquote>
+    <p>Please open the estimate in Housecall Pro and paste these notes into the Notes section so the assigned technician sees them.</p>
+  `;
+
+  await Promise.all(
+    params.recipients.map((to) =>
+      sendEmail({ to, subject, html }).catch((err) =>
+        log.error(`[PublicBooking] failed to email ${to} about missing notes:`, err),
+      ),
+    ),
+  );
+
+  log.info(`[PublicBooking] Emailed ${params.recipients.length} admin(s) for contractor ${params.contractorId} about missing booker notes on estimate ${params.hcpEstimateId}`);
+}
 
 export function registerPublicRoutes(app: Express): void {
   app.get('/sitemap.xml', (_req, res) => {
@@ -491,14 +564,59 @@ export function registerPublicRoutes(app: Express): void {
       metadata: { bookingSlug: slug, source: source || 'public_booking' },
     }).catch(err => log.error('Consent log error (non-fatal):', err));
 
-    res.json({ 
+    // Surface booker-notes failure to the booker + contractor admins.
+    const customerNotesText = (notes || '').trim();
+    const bookerNotesMissing =
+      !!result.scheduleError &&
+      customerNotesText.length > 0 &&
+      result.scheduleError.includes(BOOKER_NOTES_MISSING_TOKEN);
+
+    let warningPayload:
+      | { kind: 'notes_not_attached'; message: string; notesEcho: string }
+      | undefined;
+
+    if (bookerNotesMissing && result.housecallProEventId) {
+      const adminEmails = await getContractorAdminEmails(contractor.id).catch((err) => {
+        log.error('[PublicBooking] failed to look up admin recipients (non-fatal):', err);
+        return [] as string[];
+      });
+
+      if (adminEmails.length > 0) {
+        sendMissingBookerNotesEmail({
+          contractorId: contractor.id,
+          contractorName: contractor.name,
+          customerName: name,
+          customerEmail: email,
+          customerPhone: phone,
+          hcpEstimateId: result.housecallProEventId,
+          notes: customerNotesText,
+          recipients: adminEmails,
+        }).catch((err) => log.error('[PublicBooking] failed to email contractor about missing notes (non-fatal):', err));
+
+        warningPayload = {
+          kind: 'notes_not_attached',
+          message: "Your booking is confirmed, but we couldn't attach your notes to your file automatically. Our team has been notified by email and will follow up.",
+          notesEcho: customerNotesText,
+        };
+      } else {
+        log.warn(`[PublicBooking] Booker notes failed for contractor ${contractor.id} estimate ${result.housecallProEventId}, but contractor has no admin users to notify.`);
+        warningPayload = {
+          kind: 'notes_not_attached',
+          message: "Your booking is confirmed, but we couldn't attach your notes to your file automatically. Please share them with your technician when they arrive.",
+          notesEcho: customerNotesText,
+        };
+      }
+    }
+
+    res.json({
       success: true,
       message: "Appointment booked successfully",
       booking: {
         id: result.bookingId,
         startTime: appointmentStart.toISOString(),
         contactId,
-      }
+      },
+      warning: warningPayload,
     });
   }));
 

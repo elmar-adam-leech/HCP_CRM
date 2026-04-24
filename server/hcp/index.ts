@@ -22,8 +22,8 @@ export type {
 export class HousecallProService
   extends HcpCustomersModule
   implements
-    Pick<HcpEstimatesModule, 'getEstimates' | 'createEstimate' | 'updateEstimate' | 'updateEstimateOptionSchedule' | 'getEstimate' | 'addEstimateNote'>,
-    Pick<HcpLeadsModule, 'createLead' | 'getLead' | 'patchLead' | 'convertLead' | 'getLeadSources'>,
+    Pick<HcpEstimatesModule, 'getEstimates' | 'createEstimate' | 'updateEstimate' | 'updateEstimateOptionSchedule' | 'getEstimate' | 'addEstimateNote' | 'getEstimateNotes'>,
+    Pick<HcpLeadsModule, 'createLead' | 'getLead' | 'addLeadNote' | 'convertLead' | 'getLeadSources'>,
     Pick<HcpJobsModule, 'getJobs' | 'getJob'>,
     Pick<HcpEmployeesModule, 'getEmployees' | 'filterEstimators'>,
     Pick<HcpSchedulingModule, 'getEstimatorAvailability' | 'getEmployeeScheduledEstimates' | 'getEmployeeScheduledJobs' | 'getEmployeeScheduledEvents' | 'calculateAvailableSlots'>,
@@ -42,10 +42,11 @@ export class HousecallProService
   updateEstimateOptionSchedule = this._estimates.updateEstimateOptionSchedule.bind(this._estimates);
   getEstimate = this._estimates.getEstimate.bind(this._estimates);
   addEstimateNote = this._estimates.addEstimateNote.bind(this._estimates);
+  getEstimateNotes = this._estimates.getEstimateNotes.bind(this._estimates);
 
   createLead = this._leads.createLead.bind(this._leads);
   getLead = this._leads.getLead.bind(this._leads);
-  patchLead = this._leads.patchLead.bind(this._leads);
+  addLeadNote = this._leads.addLeadNote.bind(this._leads);
   convertLead = this._leads.convertLead.bind(this._leads);
   getLeadSources = this._leads.getLeadSources.bind(this._leads);
 

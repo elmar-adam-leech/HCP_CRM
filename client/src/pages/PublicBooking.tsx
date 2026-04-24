@@ -98,6 +98,7 @@ export default function PublicBooking() {
   const bookingCode = urlParams.get('c');
   const legacyContactId = urlParams.get('contact') || urlParams.get('contactId');
   const [bookingComplete, setBookingComplete] = useState(false);
+  const [bookingWarning, setBookingWarning] = useState<{ message: string; notesEcho?: string } | null>(null);
   const [bookingDetails, setBookingDetails] = useState<{ startTime: string } | null>(null);
   const [addressComponents, setAddressComponents] = useState<AddressComponents | null>(null);
   const { toast } = useToast();
@@ -277,8 +278,15 @@ export default function PublicBooking() {
 
       return response.json();
     },
-    onSuccess: (_data) => {
+    onSuccess: (data) => {
       setBookingDetails({ startTime: form.getValues('timeSlot') });
+      // Surface server-reported soft warnings (e.g. notes not attached).
+      const warning = (data as { warning?: { message?: string; notesEcho?: string } } | undefined)?.warning;
+      if (warning?.message) {
+        setBookingWarning({ message: warning.message, notesEcho: warning.notesEcho });
+      } else {
+        setBookingWarning(null);
+      }
       setBookingComplete(true);
     },
     onError: (error: Error) => {
@@ -332,6 +340,25 @@ export default function PublicBooking() {
                 <span className="font-medium">{format(appointmentDate, 'h:mm a')}</span>
               </div>
             </div>
+            {bookingWarning && (
+              <div
+                className="mt-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-left text-sm text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-100"
+                data-testid="banner-booking-warning"
+              >
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                  <div className="space-y-2">
+                    <p className="font-medium">{bookingWarning.message}</p>
+                    {bookingWarning.notesEcho && (
+                      <div>
+                        <p className="text-xs uppercase tracking-wide opacity-70 mb-1">Notes you entered</p>
+                        <p className="whitespace-pre-wrap break-words text-sm">{bookingWarning.notesEcho}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
             {!hasRedirect && (
               <p className="text-sm text-muted-foreground mt-4">
                 You'll receive a confirmation shortly. If you need to make changes, please contact us directly.

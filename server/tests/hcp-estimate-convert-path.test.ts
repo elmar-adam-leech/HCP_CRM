@@ -9,8 +9,9 @@ const { hcp, leadRows } = vi.hoisted(() => {
       updateEstimate: vi.fn(),
       updateEstimateOptionSchedule: vi.fn(),
       addEstimateNote: vi.fn(),
+      getEstimateNotes: vi.fn(),
       getLead: vi.fn(),
-      patchLead: vi.fn(),
+      addLeadNote: vi.fn(),
       convertLead: vi.fn(),
     },
     leadRows: { rows: [] as Array<{ housecallProLeadId: string }> },
@@ -43,7 +44,13 @@ vi.mock('drizzle-orm', () => ({
   isNotNull: () => ({}),
 }));
 
-import { createOrConvertHcpEstimate } from '../scheduling/hcp-estimate';
+// The activity-feed breadcrumb hits the DB indirectly via createActivityAndBroadcast.
+// Stub it so the convert-path tests stay focused on the HCP API contract.
+vi.mock('../utils/activity', () => ({
+  createActivityAndBroadcast: vi.fn().mockResolvedValue(undefined),
+}));
+
+import { createOrConvertHcpEstimate, BOOKER_NOTES_MISSING_TOKEN } from '../scheduling/hcp-estimate';
 import type { BookingRequest, SalespersonInfo } from '../types/scheduling';
 
 const TENANT = 'tenant-1';
@@ -51,7 +58,6 @@ const HCP_CUSTOMER = 'cus_1';
 const HCP_LEAD = 'lead_1';
 const HCP_EMPLOYEE = 'emp_1';
 const NEW_ADDR_ID = 'adr_new';
-const LEGACY_ADDR_ID = 'adr_legacy';
 const NEW_ESTIMATE_ID = 'csr_1';
 const OPTION_ID = 'opt_1';
 
@@ -83,13 +89,9 @@ beforeEach(() => {
 });
 
 describe('createOrConvertHcpEstimate (convert path)', () => {
-  it('PATCHes the HCP lead address_id BEFORE convertLead, then sends booker notes via awaited addEstimateNote', async () => {
-    // Lead currently bound to legacy address.
-    hcp.getLead.mockResolvedValue({
-      success: true,
-      data: { id: HCP_LEAD, address_id: LEGACY_ADDR_ID },
-    });
-    hcp.patchLead.mockResolvedValue({ success: true, data: {} });
+  it('pre-stages booker notes onto the HCP lead BEFORE convertLead, then verifies the note landed on the estimate', async () => {
+    hcp.getLead.mockResolvedValue({ success: true, data: { id: HCP_LEAD } });
+    hcp.addLeadNote.mockResolvedValue({ success: true, data: {} });
     hcp.convertLead.mockResolvedValue({
       success: true,
       data: {
@@ -99,12 +101,16 @@ describe('createOrConvertHcpEstimate (convert path)', () => {
       },
     });
     hcp.updateEstimate.mockResolvedValue({ success: true, data: {} });
-    // Verify re-fetch after PATCH confirms new address pinned.
     hcp.getEstimate.mockResolvedValue({
       success: true,
       data: { id: NEW_ESTIMATE_ID, address_id: NEW_ADDR_ID, options: [{ id: OPTION_ID }] },
     });
     hcp.addEstimateNote.mockResolvedValue({ success: true, data: {} });
+    // Verification fetch returns the booker note text — confirms it landed.
+    hcp.getEstimateNotes.mockResolvedValue({
+      success: true,
+      data: [{ id: 'n1', content: REQUEST.notes! }],
+    });
     hcp.updateEstimateOptionSchedule.mockResolvedValue({ success: true, data: {} });
 
     const result = await createOrConvertHcpEstimate(
@@ -121,34 +127,39 @@ describe('createOrConvertHcpEstimate (convert path)', () => {
     expect(result?.hcpEstimateId).toBe(NEW_ESTIMATE_ID);
     expect(result?.scheduleError).toBeUndefined();
 
-    // Lead PATCH happened with new address_id.
-    expect(hcp.patchLead).toHaveBeenCalledTimes(1);
-    expect(hcp.patchLead).toHaveBeenCalledWith(TENANT, HCP_LEAD, { address_id: NEW_ADDR_ID });
+    // Lead note pre-staged exactly once with the booker text.
+    expect(hcp.addLeadNote).toHaveBeenCalledTimes(1);
+    const leadNoteCall = hcp.addLeadNote.mock.calls[0];
+    expect(leadNoteCall[0]).toBe(TENANT);
+    expect(leadNoteCall[1]).toBe(HCP_LEAD);
+    expect(leadNoteCall[2]).toContain(REQUEST.notes!);
 
-    // Lead PATCH happened BEFORE convertLead.
-    const patchOrder = hcp.patchLead.mock.invocationCallOrder[0];
+    // Pre-staging happened BEFORE convertLead.
+    const addLeadNoteOrder = hcp.addLeadNote.mock.invocationCallOrder[0];
     const convertOrder = hcp.convertLead.mock.invocationCallOrder[0];
-    expect(patchOrder).toBeLessThan(convertOrder);
+    expect(addLeadNoteOrder).toBeLessThan(convertOrder);
 
-    // Booker notes sent verbatim via addEstimateNote.
+    // Booker notes also sent verbatim post-convert via addEstimateNote (belt-and-suspenders).
     const noteContents = hcp.addEstimateNote.mock.calls.map((c) => c[2]);
     expect(noteContents).toContain(REQUEST.notes);
 
     // Service Address note also included.
     expect(noteContents.some((n) => typeof n === 'string' && n.startsWith('Service Address:'))).toBe(true);
 
-    // Update payload to back-fill message includes booker notes.
+    // Verification fetch was called.
+    expect(hcp.getEstimateNotes).toHaveBeenCalledWith(TENANT, NEW_ESTIMATE_ID);
+
+    // Update payload to back-fill message includes booker notes + address.
     const updateCall = hcp.updateEstimate.mock.calls[0];
     expect(updateCall[2].message).toContain(REQUEST.notes!);
     expect(updateCall[2].address_id).toBe(NEW_ADDR_ID);
     expect(updateCall[2].address?.street).toBe('29 Far Corners Loop');
   });
 
-  it('skips lead PATCH when the lead is already bound to the right address', async () => {
-    hcp.getLead.mockResolvedValue({
-      success: true,
-      data: { id: HCP_LEAD, address_id: NEW_ADDR_ID },
-    });
+  it('retries addEstimateNote on transient failure and succeeds on a later attempt', async () => {
+    hcp.getLead.mockResolvedValue({ success: true, data: { id: HCP_LEAD } });
+    // Lead-note pre-staging failed — force the post-convert path to do all the work.
+    hcp.addLeadNote.mockResolvedValue({ success: false, error: 'transient' });
     hcp.convertLead.mockResolvedValue({
       success: true,
       data: { id: NEW_ESTIMATE_ID, address_id: NEW_ADDR_ID, options: [{ id: OPTION_ID }] },
@@ -158,10 +169,24 @@ describe('createOrConvertHcpEstimate (convert path)', () => {
       success: true,
       data: { id: NEW_ESTIMATE_ID, address_id: NEW_ADDR_ID, options: [{ id: OPTION_ID }] },
     });
-    hcp.addEstimateNote.mockResolvedValue({ success: true, data: {} });
+
+    // First booker-note POST fails; retry succeeds. (Service-address POST always succeeds.)
+    let bookerCallCount = 0;
+    hcp.addEstimateNote.mockImplementation(async (_t: string, _id: string, content: string) => {
+      if (typeof content === 'string' && content.startsWith('Service Address:')) {
+        return { success: true, data: {} };
+      }
+      bookerCallCount++;
+      if (bookerCallCount === 1) return { success: false, error: 'transient' };
+      return { success: true, data: {} };
+    });
+    hcp.getEstimateNotes.mockResolvedValue({
+      success: true,
+      data: [{ id: 'n1', content: REQUEST.notes! }],
+    });
     hcp.updateEstimateOptionSchedule.mockResolvedValue({ success: true, data: {} });
 
-    await createOrConvertHcpEstimate(
+    const result = await createOrConvertHcpEstimate(
       TENANT,
       HCP_CUSTOMER,
       SALESPERSON,
@@ -172,13 +197,15 @@ describe('createOrConvertHcpEstimate (convert path)', () => {
       NEW_ADDR_ID,
     );
 
-    expect(hcp.patchLead).not.toHaveBeenCalled();
-    expect(hcp.convertLead).toHaveBeenCalledTimes(1);
+    expect(result?.hcpEstimateId).toBe(NEW_ESTIMATE_ID);
+    // Verification confirmed the note landed (via the retry), so no scheduleError about notes.
+    expect(result?.scheduleError ?? '').not.toContain('booker notes');
+    expect(bookerCallCount).toBeGreaterThanOrEqual(2);
   });
 
-  it('surfaces note-add failures via the scheduleError channel', async () => {
+  it('surfaces full booker-notes failure via the scheduleError channel when every retry AND verification fails', async () => {
     hcp.getLead.mockResolvedValue({ success: true, data: { id: HCP_LEAD } });
-    hcp.patchLead.mockResolvedValue({ success: true, data: {} });
+    hcp.addLeadNote.mockResolvedValue({ success: false, error: 'lead note failed' });
     hcp.convertLead.mockResolvedValue({
       success: true,
       data: { id: NEW_ESTIMATE_ID, address_id: NEW_ADDR_ID, options: [{ id: OPTION_ID }] },
@@ -189,6 +216,8 @@ describe('createOrConvertHcpEstimate (convert path)', () => {
       data: { id: NEW_ESTIMATE_ID, address_id: NEW_ADDR_ID, options: [{ id: OPTION_ID }] },
     });
     hcp.addEstimateNote.mockResolvedValue({ success: false, error: 'rate limited' });
+    // Verification finds nothing.
+    hcp.getEstimateNotes.mockResolvedValue({ success: true, data: [] });
     hcp.updateEstimateOptionSchedule.mockResolvedValue({ success: true, data: {} });
 
     const result = await createOrConvertHcpEstimate(
@@ -206,5 +235,16 @@ describe('createOrConvertHcpEstimate (convert path)', () => {
     expect(result?.scheduleError).toContain('note');
     expect(result?.scheduleError).toContain('booker notes');
     expect(result?.scheduleError).toContain('service address');
+    // Sentinel token MUST be present so the public route can reliably
+    // distinguish booker-note failure from service-address-only failure.
+    expect(result?.scheduleError).toContain(BOOKER_NOTES_MISSING_TOKEN);
+
+    // Verification fetch must have been called even when every POST failed.
+    expect(hcp.getEstimateNotes).toHaveBeenCalledWith(TENANT, NEW_ESTIMATE_ID);
+    // Verify retry actually happened (>1 call for the booker-notes POST).
+    const bookerCalls = hcp.addEstimateNote.mock.calls.filter(
+      (c) => typeof c[2] === 'string' && !c[2].startsWith('Service Address:'),
+    );
+    expect(bookerCalls.length).toBeGreaterThanOrEqual(2);
   });
 });

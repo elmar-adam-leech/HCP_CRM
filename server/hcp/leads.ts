@@ -67,18 +67,25 @@ export class HcpLeadsModule extends HcpBaseClient {
   }
 
   /**
-   * Patches an HCP lead. Most importantly, lets us re-pin the lead's
-   * `address_id` *before* `convertLead` runs — once the lead has been converted
-   * to an estimate, HCP silently ignores `address_id` PATCH on the resulting
-   * estimate. See `replit.md` HCP Integration Pitfalls.
+   * Attaches a free-form note to an existing HCP lead. HCP carries lead notes
+   * forward into the converted estimate's notes feed, which is the most reliable
+   * way to ensure booker-typed notes land on the resulting estimate (the
+   * post-convert `POST /estimates/{id}/notes` race is documented in
+   * server/scheduling/hcp-estimate.ts).
+   *
+   * Mirrors the shape of `addEstimateNote` (POST /estimates/{id}/notes).
    */
-  async patchLead(tenantId: string, leadId: string, leadData: {
-    address_id?: string;
-    note?: string;
-    job_type_id?: string;
-    lead_source?: string;
-  }): Promise<HousecallProResponse<any>> {
-    return this.makeRequest(`/leads/${leadId}`, tenantId, 'PATCH', leadData);
+  async addLeadNote(
+    tenantId: string,
+    leadId: string,
+    content: string,
+  ): Promise<HousecallProResponse<unknown>> {
+    return this.makeRequest<unknown>(
+      `/leads/${leadId}/notes`,
+      tenantId,
+      'POST',
+      { content },
+    );
   }
 
   async convertLead(tenantId: string, leadId: string, options: {
