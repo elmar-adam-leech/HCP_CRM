@@ -25,6 +25,8 @@ function findSenderRule(rules: SenderRule[], fromAddress: string): SenderRule | 
 
 interface ExtractedFields {
   name?: string;
+  firstName?: string;
+  lastName?: string;
   phone?: string;
   email?: string;
   message?: string;
@@ -51,7 +53,63 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+\-?^${}()|[\]\\\/]/g, '\\$&');
 }
 
-function extractFieldsFromMappings(body: string, mappings: FieldMapping[]): ExtractedFields {
+function collapseSpaces(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function isPlaceholderValue(v: string | undefined): boolean {
+  if (!v) return true;
+  const trimmed = v.trim();
+  if (!trimmed) return true;
+  if (/^[-_–—.]+$/.test(trimmed)) return true;
+  return false;
+}
+
+const FULL_NAME_LABELS = ['full name', 'customer name', 'name'];
+const FIRST_NAME_LABELS = ['first name', 'given name'];
+const LAST_NAME_LABELS = ['last name', 'surname', 'family name'];
+
+function findLabeledLineValue(body: string, labels: string[]): string | undefined {
+  const lines = body.split(/\r?\n/);
+  for (const line of lines) {
+    const normalizedLine = stripMarkdownFormatting(line).toLowerCase().trim();
+    for (const label of labels) {
+      if (!normalizedLine.startsWith(label)) continue;
+      const after = normalizedLine.charAt(label.length);
+      // Label must end at line end, or be followed by separator/markdown — not a letter/digit
+      if (after && !/[\s:*_]/.test(after)) continue;
+      const labelEndPattern = new RegExp(
+        `^[\\s*_]*${escapeRegExp(label)}[\\s*_:]*`,
+        'i'
+      );
+      const value = stripMarkdownFormatting(line).replace(labelEndPattern, '').replace(/^[:\s]+/, '').trim();
+      if (!isPlaceholderValue(value)) {
+        return collapseSpaces(value);
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Auto-detects a contact's full name from email body text by looking for either:
+ *   1. An explicit "Name:" / "Full Name:" / "Customer Name:" line, OR
+ *   2. Separate "First Name:" and "Last Name:" lines (combining them).
+ * Returns undefined if nothing usable is found. Single-half matches (only first
+ * or only last) are returned alone — better than nothing.
+ */
+export function detectFullNameFromBody(body: string): string | undefined {
+  const fullName = findLabeledLineValue(body, FULL_NAME_LABELS);
+  if (fullName) return fullName;
+  const first = findLabeledLineValue(body, FIRST_NAME_LABELS);
+  const last = findLabeledLineValue(body, LAST_NAME_LABELS);
+  if (first && last) return collapseSpaces(`${first} ${last}`);
+  if (first) return first;
+  if (last) return last;
+  return undefined;
+}
+
+export function extractFieldsFromMappings(body: string, mappings: FieldMapping[]): ExtractedFields {
   const result: ExtractedFields = {};
   const lines = body.split(/\r?\n/);
 
@@ -66,11 +124,28 @@ function extractFieldsFromMappings(body: string, mappings: FieldMapping[]): Extr
         );
         const value = line.trim().replace(labelEndPattern, '').replace(/^[:\s]+/, '').trim();
         if (value) {
-          result[mapping.field] = value;
+          const existing = result[mapping.field];
+          if (mapping.field === 'name' && existing) {
+            // Multiple "Name"-targeted mappings (e.g. legacy first+last both → name):
+            // prefer concatenation over silently overwriting the previous value.
+            result[mapping.field] = collapseSpaces(`${existing} ${value}`);
+          } else {
+            result[mapping.field] = value;
+          }
           break;
         }
       }
     }
+  }
+
+  // If firstName / lastName mappings captured values but no explicit "name" mapping
+  // produced one, combine them into the canonical `name` field. If only one half
+  // was captured, use it alone (still better than dropping the contact's name).
+  if (!result.name && (result.firstName || result.lastName)) {
+    const combined = collapseSpaces(
+      [result.firstName, result.lastName].filter(Boolean).join(' ')
+    );
+    if (combined) result.name = combined;
   }
 
   return result;
@@ -314,19 +389,30 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
         let heuristicMessage = mappedFields.message || undefined;
 
         if (!heuristicName || !heuristicPhone || !heuristicEmail) {
+          let heuristicFirstName: string | undefined;
+          let heuristicLastName: string | undefined;
           const lines = textForAI.split(/\r?\n/);
           for (const line of lines) {
             const trimmed = line.trim();
-            const labelMatch = trimmed.match(/^[\s*_]*(name|phone|email|message|service|description)[:\s*_]+(.+)/i);
+            // Order matters: longer multi-word labels must come before single-word `name`
+            // so the spam heuristic sees the human's real name (not e.g. just "Petri").
+            const labelMatch = trimmed.match(/^[\s*_]*(first name|last name|full name|customer name|name|phone|email|message|service|description)[:\s*_]+(.+)/i);
             if (labelMatch) {
               const label = labelMatch[1].toLowerCase();
               const value = labelMatch[2].replace(/^[:\s]+/, '').trim();
               if (!value) continue;
-              if (label === 'name' && !heuristicName) heuristicName = value;
+              if ((label === 'name' || label === 'full name' || label === 'customer name') && !heuristicName) heuristicName = value;
+              if (label === 'first name' && !heuristicFirstName) heuristicFirstName = value;
+              if (label === 'last name' && !heuristicLastName) heuristicLastName = value;
               if (label === 'phone' && !heuristicPhone) heuristicPhone = value;
               if (label === 'email' && !heuristicEmail) heuristicEmail = value;
               if ((label === 'message' || label === 'service' || label === 'description') && !heuristicMessage) heuristicMessage = value;
             }
+          }
+          if (!heuristicName && (heuristicFirstName || heuristicLastName)) {
+            heuristicName = collapseSpaces(
+              [heuristicFirstName, heuristicLastName].filter(Boolean).join(' ')
+            );
           }
           if (!heuristicEmail) {
             const emailMatch = textForAI.toLowerCase().match(/[\w.+-]+@[\w-]+\.[\w.-]+/);
@@ -383,7 +469,18 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
       const skipSenderMatching = ruleActions.includes('each_email_is_new_lead') || ruleActions.includes('follow_link');
 
       const contactEmail = mappedFields.email || (mappedFieldNames.has('email') ? undefined : aiResult.email) || (skipSenderMatching ? undefined : email.from);
-      const contactName = mappedFields.name || (mappedFieldNames.has('name') ? undefined : aiResult.name) || (contactEmail ? contactEmail.split('@')[0] : 'Unknown');
+      // Auto-detect a combined "First + Last" name from the body when the user
+      // hasn't mapped a name field — covers Elementor / WPForms / Contact Form 7
+      // style emails that send "First Name:" and "Last Name:" on separate lines.
+      // Prefer this over the AI's name extraction (the AI sometimes returns just
+      // one half) and over the email-address prefix fallback.
+      const autoDetectedName = mappedFieldNames.has('name')
+        ? undefined
+        : detectFullNameFromBody(textForAI);
+      const contactName = mappedFields.name
+        || autoDetectedName
+        || (mappedFieldNames.has('name') ? undefined : aiResult.name)
+        || (contactEmail ? contactEmail.split('@')[0] : 'Unknown');
       const rawPhone = mappedFields.phone || (mappedFieldNames.has('phone') ? undefined : aiResult.phone);
       const normalizedPhone = rawPhone ? normalizePhoneForStorage(rawPhone) : '';
       const serviceDescription = mappedFields.message || (mappedFieldNames.has('message') ? undefined : aiResult.serviceDescription);

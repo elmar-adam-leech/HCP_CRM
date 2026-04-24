@@ -149,6 +149,8 @@ Leads include:
 - Web form submission notifications that contain a real customer inquiry (e.g. a customer filling out a "Request a Quote" or "Contact Us" form with a real name, real contact info, and a genuine description of a service need). These are legitimate leads even though they are technically automated notification emails.
 - Customers emailing directly asking about services, requesting quotes, describing problems, scheduling appointments, or following up on previous service requests.
 
+When the body contains separate "First Name" and "Last Name" lines (or "Given Name" / "Surname" / "Family Name"), combine them into a single "First Last" string and return it in the "name" field — never return only one half.
+
 Respond with valid JSON only, no markdown formatting:
 {
   "isSpam": true/false,

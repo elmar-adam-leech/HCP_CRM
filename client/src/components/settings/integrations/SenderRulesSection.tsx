@@ -52,6 +52,8 @@ const ACTION_VARIANTS: Record<SenderRuleAction, "destructive" | "secondary" | "d
 
 const FIELD_LABELS: Record<CrmField, string> = {
   name: "Name",
+  firstName: "First Name",
+  lastName: "Last Name",
   phone: "Phone",
   email: "Email",
   address: "Address",
@@ -101,6 +103,9 @@ function FieldMappingPanel({ rule, onSave, isPending }: { rule: SenderRule; onSa
     <div className="space-y-2 pt-2">
       <p className="text-xs text-muted-foreground">
         Define how text labels in the email body map to CRM fields. For example, "Customer Name:" maps to the Name field.
+      </p>
+      <p className="text-xs text-muted-foreground">
+        "First Name" and "Last Name" are combined into the contact's full name.
       </p>
 
       {mappings.map((mapping, index) => (

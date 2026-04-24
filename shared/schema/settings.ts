@@ -89,7 +89,7 @@ export type BusinessTargets = typeof businessTargets.$inferSelect;
 export const senderRuleActionEnum = z.enum(["block", "each_email_is_new_lead", "follow_link", "default"]);
 export type SenderRuleAction = z.infer<typeof senderRuleActionEnum>;
 
-export const crmFieldEnum = z.enum(["name", "phone", "email", "message", "address", "source", "notes", "utmCampaign", "utmSource", "utmMedium", "utmTerm", "utmContent", "pageUrl"]);
+export const crmFieldEnum = z.enum(["name", "firstName", "lastName", "phone", "email", "message", "address", "source", "notes", "utmCampaign", "utmSource", "utmMedium", "utmTerm", "utmContent", "pageUrl"]);
 export type CrmField = z.infer<typeof crmFieldEnum>;
 
 export const fieldMappingSchema = z.object({
