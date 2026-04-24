@@ -218,6 +218,13 @@
       "when": 1776825500000,
       "tag": "0030_contractor_brand_color",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1777689600000,
+      "tag": "0031_webauthn_credentials",
+      "breakpoints": true
     }
   ]
 }

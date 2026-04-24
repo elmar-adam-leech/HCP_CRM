@@ -1,22 +1,58 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Eye, EyeOff, Lock, Mail } from "lucide-react";
+import { Eye, EyeOff, Fingerprint, Lock, Mail } from "lucide-react";
 
 type LoginFormProps = {
   onLogin: (credentials: { email: string; password: string }) => void;
+  onPasskeyLogin?: () => Promise<void> | void;
   isLoading?: boolean;
   error?: string;
 };
 
-export function LoginForm({ onLogin, isLoading = false, error }: LoginFormProps) {
+export function LoginForm({ onLogin, onPasskeyLogin, isLoading = false, error }: LoginFormProps) {
   const [credentials, setCredentials] = useState({
     email: "",
     password: "",
   });
   const [showPassword, setShowPassword] = useState(false);
+  const [passkeySupported, setPasskeySupported] = useState(false);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  // Set when this device has at least one registered passkey for this app
+  // (written by PasskeysCard on successful registration). Acceptance criterion:
+  // "users with no passkeys do not see new login UI", so the button stays
+  // hidden until there's a credential to actually unlock.
+  const [hasLocalPasskey, setHasLocalPasskey] = useState(false);
+
+  useEffect(() => {
+    if (!onPasskeyLogin) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        if (typeof window === "undefined" || !window.PublicKeyCredential) {
+          return;
+        }
+        try {
+          if (window.localStorage?.getItem("hcp.webauthn.hasPasskey") === "1") {
+            if (!cancelled) setHasLocalPasskey(true);
+          }
+        } catch {
+          // localStorage unavailable (private mode) — leave gate closed.
+        }
+        const PKC = window.PublicKeyCredential as typeof window.PublicKeyCredential & {
+          isUserVerifyingPlatformAuthenticatorAvailable?: () => Promise<boolean>;
+        };
+        if (typeof PKC.isUserVerifyingPlatformAuthenticatorAvailable !== "function") return;
+        const available = await PKC.isUserVerifyingPlatformAuthenticatorAvailable();
+        if (!cancelled) setPasskeySupported(Boolean(available));
+      } catch {
+        // Silent: just hide the button if detection fails.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [onPasskeyLogin]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -25,6 +61,16 @@ export function LoginForm({ onLogin, isLoading = false, error }: LoginFormProps)
 
   const handleInputChange = (field: string, value: string) => {
     setCredentials((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handlePasskeyClick = async () => {
+    if (!onPasskeyLogin || passkeyBusy) return;
+    setPasskeyBusy(true);
+    try {
+      await onPasskeyLogin();
+    } finally {
+      setPasskeyBusy(false);
+    }
   };
 
   return (
@@ -101,11 +147,35 @@ export function LoginForm({ onLogin, isLoading = false, error }: LoginFormProps)
             <Button
               type="submit"
               className="w-full"
-              disabled={isLoading}
+              disabled={isLoading || passkeyBusy}
               data-testid="button-login"
             >
               {isLoading ? "Signing in..." : "Sign In"}
             </Button>
+
+            {onPasskeyLogin && passkeySupported && hasLocalPasskey && (
+              <>
+                <div className="relative my-2">
+                  <div className="absolute inset-0 flex items-center">
+                    <span className="w-full border-t" />
+                  </div>
+                  <div className="relative flex justify-center text-xs">
+                    <span className="bg-card px-2 text-muted-foreground">or</span>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={handlePasskeyClick}
+                  disabled={isLoading || passkeyBusy}
+                  data-testid="button-passkey-login"
+                >
+                  <Fingerprint className="h-4 w-4 mr-2" />
+                  {passkeyBusy ? "Waiting for Face ID…" : "Unlock with Face ID"}
+                </Button>
+              </>
+            )}
 
             <div className="text-center">
               <a

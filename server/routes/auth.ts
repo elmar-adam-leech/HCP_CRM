@@ -116,13 +116,7 @@ export function registerAuthRoutes(app: Express): void {
       tokenVersion: user.tokenVersion ?? 1,
     });
 
-    res.cookie('auth_token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/',
-    });
+    AuthService.setLoginCookie(res, token);
 
     // Issue a long-lived refresh token alongside the short-lived auth cookie.
     // PWA users on iOS routinely lose the auth cookie via Safari's tracking
@@ -279,13 +273,7 @@ export function registerAuthRoutes(app: Express): void {
       tokenVersion: user.tokenVersion ?? 1,
     });
 
-    res.cookie('auth_token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/',
-    });
+    AuthService.setLoginCookie(res, token);
 
     res.status(201).json({
       user: {

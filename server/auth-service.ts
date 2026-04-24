@@ -138,6 +138,23 @@ export class AuthService {
   }
 
   /**
+   * Shared login-cookie issuer. Every code path that successfully authenticates
+   * a user (password login, WebAuthn passkey login, MFA verification, sliding
+   * refresh, etc.) MUST go through this helper so cookie attributes — and the
+   * 7-day sliding expiration that the rest of the system assumes — never drift
+   * across endpoints.
+   */
+  static setLoginCookie(res: Response, token: string): void {
+    res.cookie('auth_token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days — must match JWT_EXPIRES_IN above
+      path: '/',
+    });
+  }
+
+  /**
    * Verify and decode a JWT token
    */
   static verifyToken(token: string): JWTPayload | null {

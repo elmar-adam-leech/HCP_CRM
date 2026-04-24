@@ -2,7 +2,7 @@ import type { Express, Response } from "express";
 import { db } from "../db";
 import { users } from "@shared/schema";
 import { eq } from "drizzle-orm";
-import { requireAuth, type AuthedRequest } from "../auth-service";
+import { AuthService, requireAuth, type AuthedRequest } from "../auth-service";
 import { encryptSecret, decryptSecret } from "../utils/crypto";
 import { auditLog } from "../utils/audit-log";
 import { asyncHandler } from "../utils/async-handler";
@@ -310,13 +310,7 @@ async function issueFinalToken(
     tokenVersion: user.tokenVersion ?? 1,
   });
 
-  res.cookie('auth_token', token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-    path: '/',
-  });
+  AuthService.setLoginCookie(res, token);
 
   // Issue the long-lived refresh cookie alongside the JWT so PWA users on iOS
   // survive Safari's auth-cookie eviction (task #650).

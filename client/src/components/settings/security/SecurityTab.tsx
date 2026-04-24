@@ -16,10 +16,14 @@ import { Shield, LogOut } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { MFACard } from "./MFACard";
+import { PasskeysCard } from "./PasskeysCard";
+import { useCurrentUser, isStrictAdmin } from "@/hooks/useCurrentUser";
 
 export function SecurityTab() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
+  const { data: currentUser } = useCurrentUser();
+  const isAdmin = isStrictAdmin(currentUser?.user?.role);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [isPending, setIsPending] = useState(false);
 
@@ -48,35 +52,38 @@ export function SecurityTab() {
   return (
     <div className="space-y-6">
       <MFACard />
+      <PasskeysCard />
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Shield className="h-5 w-5" />
-            Security Settings
-          </CardTitle>
-          <CardDescription>Manage company-wide security controls</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <div>
-              <p className="text-sm font-medium">Sign out all company users</p>
-              <p className="text-sm text-muted-foreground">
-                Immediately ends every active session for all users in your company. Use this if you suspect unauthorized access or a security breach.
-              </p>
+      {isAdmin && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Shield className="h-5 w-5" />
+              Security Settings
+            </CardTitle>
+            <CardDescription>Manage company-wide security controls</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium">Sign out all company users</p>
+                <p className="text-sm text-muted-foreground">
+                  Immediately ends every active session for all users in your company. Use this if you suspect unauthorized access or a security breach.
+                </p>
+              </div>
+              <Button
+                variant="destructive"
+                className="shrink-0 sm:w-auto w-full"
+                onClick={() => setConfirmOpen(true)}
+                data-testid="button-logout-all"
+              >
+                <LogOut className="h-4 w-4 mr-2" />
+                Sign out all users
+              </Button>
             </div>
-            <Button
-              variant="destructive"
-              className="shrink-0 sm:w-auto w-full"
-              onClick={() => setConfirmOpen(true)}
-              data-testid="button-logout-all"
-            >
-              <LogOut className="h-4 w-4 mr-2" />
-              Sign out all users
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      )}
 
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>

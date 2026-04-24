@@ -60,7 +60,7 @@ export default function Settings() {
       <div className="flex space-x-1 border-b mb-6 overflow-x-auto scrollbar-hide" style={{ WebkitOverflowScrolling: 'touch' }}>
         {tabBtn('account', 'Account', 'tab-account')}
         {canManageIntegrations && tabBtn('integrations', 'Integrations', 'tab-integrations')}
-        {isAdmin && tabBtn('security', 'Security', 'tab-security')}
+        {tabBtn('security', 'Security', 'tab-security')}
         {isAdmin && tabBtn('targets', 'Performance Targets', 'tab-targets')}
         {tabBtn('webhooks', 'Webhooks', 'tab-webhooks')}
         {isAdmin && tabBtn('salespeople', 'Salespeople', 'tab-salespeople')}
@@ -71,7 +71,7 @@ export default function Settings() {
 
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'integrations' && <IntegrationsTab />}
-      {activeTab === 'security' && isAdmin && <SecurityTab />}
+      {activeTab === 'security' && <SecurityTab />}
       {activeTab === 'targets' && <TargetsTab />}
       {activeTab === 'webhooks' && <WebhooksTab />}
       {activeTab === 'salespeople' && <SalespeopleTab />}

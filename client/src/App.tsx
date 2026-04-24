@@ -112,6 +112,52 @@ function PublicLoginPage() {
     }
   };
 
+  const handlePasskeyLogin = async () => {
+    setLoginError("");
+    try {
+      const { startAuthentication } = await import("@simplewebauthn/browser");
+
+      const beginRes = await fetch('/api/auth/webauthn/login/begin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: '{}',
+      });
+      if (!beginRes.ok) {
+        const err = await beginRes.json().catch(() => ({}));
+        setLoginError(err.message || 'Could not start passkey sign-in');
+        return;
+      }
+      const { sessionId, options } = await beginRes.json();
+
+      let assertion;
+      try {
+        assertion = await startAuthentication({ optionsJSON: options });
+      } catch (err) {
+        // User cancelled or no matching credential — show a friendly message.
+        const msg = err instanceof Error ? err.message : 'Sign-in cancelled';
+        setLoginError(msg.includes('NotAllowed') ? 'Sign-in cancelled' : msg);
+        return;
+      }
+
+      const finishRes = await fetch('/api/auth/webauthn/login/finish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ sessionId, response: assertion }),
+      });
+      if (finishRes.ok) {
+        window.location.href = "/dashboard";
+        return;
+      }
+      const err = await finishRes.json().catch(() => ({}));
+      setLoginError(err.message || 'Passkey sign-in failed');
+    } catch (err) {
+      console.error('Passkey login error', err);
+      setLoginError('Network error. Please try again.');
+    }
+  };
+
   if (mfaPendingToken) {
     const LazyMFAStep = lazy(() => import("@/components/LoginMFAStep").then(m => ({ default: m.LoginMFAStep })));
     return (
@@ -125,7 +171,7 @@ function PublicLoginPage() {
     );
   }
 
-  return <LoginForm onLogin={handleLogin} isLoading={isLoading} error={loginError} />;
+  return <LoginForm onLogin={handleLogin} onPasskeyLogin={handlePasskeyLogin} isLoading={isLoading} error={loginError} />;
 }
 
 /**

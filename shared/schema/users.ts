@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, boolean, unique, index, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, bigint, timestamp, boolean, unique, index, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { userRoleEnum, syncFrequencyEnum } from "./enums";
@@ -275,3 +275,52 @@ export const auditLogs = pgTable("audit_logs", {
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true, createdAt: true });
 export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
 export type AuditLog = typeof auditLogs.$inferSelect;
+
+
+// WebAuthn credentials table — stores registered passkeys (platform authenticators)
+// per user. The credentialId is the unique handle returned by the authenticator;
+// publicKey is base64url-encoded COSE public key bytes; counter tracks signature
+// counter to detect cloned credentials.
+export const webauthnCredentials = pgTable("webauthn_credentials", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  credentialId: text("credential_id").notNull().unique(),
+  publicKey: text("public_key").notNull(),
+  counter: bigint("counter", { mode: "number" }).notNull().default(0),
+  transports: text("transports").array(),
+  deviceLabel: text("device_label").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  lastUsedAt: timestamp("last_used_at"),
+}, (table) => ({
+  userIdIdx: index("webauthn_credentials_user_id_idx").on(table.userId),
+}));
+
+export const insertWebauthnCredentialSchema = createInsertSchema(webauthnCredentials).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertWebauthnCredential = z.infer<typeof insertWebauthnCredentialSchema>;
+export type WebauthnCredential = typeof webauthnCredentials.$inferSelect;
+
+// Short-lived WebAuthn challenges. Used by both registration (auth required, scoped
+// to userId) and authentication (no auth, scoped to a random sessionId returned to
+// the browser). Rows are deleted on consumption and TTL-cleaned periodically.
+export const webauthnChallenges = pgTable("webauthn_challenges", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
+  sessionId: text("session_id").unique(),
+  challenge: text("challenge").notNull(),
+  purpose: text("purpose").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  expiresAtIdx: index("webauthn_challenges_expires_at_idx").on(table.expiresAt),
+  userIdIdx: index("webauthn_challenges_user_id_idx").on(table.userId),
+}));
+
+export const insertWebauthnChallengeSchema = createInsertSchema(webauthnChallenges).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertWebauthnChallenge = z.infer<typeof insertWebauthnChallengeSchema>;
+export type WebauthnChallenge = typeof webauthnChallenges.$inferSelect;

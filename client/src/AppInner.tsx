@@ -51,6 +51,7 @@ const PageFallback = (
 interface AuthContextValue {
   isAuthenticated: boolean;
   onLogin: (credentials: { email: string; password: string }) => void;
+  onPasskeyLogin: () => Promise<void>;
   isLoading: boolean;
   loginError: string;
   globalSearch: string;
@@ -59,6 +60,7 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue>({
   isAuthenticated: false,
   onLogin: () => {},
+  onPasskeyLogin: async () => {},
   isLoading: false,
   loginError: "",
   globalSearch: "",
@@ -77,8 +79,8 @@ function RedirectTo({ to }: { to: string }) {
 }
 
 function LoginFallbackPage() {
-  const { onLogin, isLoading, loginError } = useAuth();
-  return <ErrorBoundary><LoginForm onLogin={onLogin} isLoading={isLoading} error={loginError} /></ErrorBoundary>;
+  const { onLogin, onPasskeyLogin, isLoading, loginError } = useAuth();
+  return <ErrorBoundary><LoginForm onLogin={onLogin} onPasskeyLogin={onPasskeyLogin} isLoading={isLoading} error={loginError} /></ErrorBoundary>;
 }
 
 function RootRedirect() {
@@ -90,10 +92,10 @@ function RootRedirect() {
 }
 
 function LoginPageRoute() {
-  const { isAuthenticated, onLogin, isLoading, loginError } = useAuth();
+  const { isAuthenticated, onLogin, onPasskeyLogin, isLoading, loginError } = useAuth();
   return isAuthenticated
     ? <RedirectTo to="/dashboard" />
-    : <ErrorBoundary><LoginForm onLogin={onLogin} isLoading={isLoading} error={loginError} /></ErrorBoundary>;
+    : <ErrorBoundary><LoginForm onLogin={onLogin} onPasskeyLogin={onPasskeyLogin} isLoading={isLoading} error={loginError} /></ErrorBoundary>;
 }
 
 function DashboardPage() {
@@ -366,6 +368,50 @@ export default function AppInner() {
     }
   };
 
+  const handlePasskeyLogin = async () => {
+    setLoginError("");
+    try {
+      const { startAuthentication } = await import("@simplewebauthn/browser");
+      const beginRes = await fetch('/api/auth/webauthn/login/begin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: '{}',
+      });
+      if (!beginRes.ok) {
+        const err = await beginRes.json().catch(() => ({}));
+        setLoginError(err.message || 'Could not start passkey sign-in');
+        return;
+      }
+      const { sessionId, options } = await beginRes.json();
+
+      let assertion;
+      try {
+        assertion = await startAuthentication({ optionsJSON: options });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Sign-in cancelled';
+        setLoginError(msg.includes('NotAllowed') ? 'Sign-in cancelled' : msg);
+        return;
+      }
+
+      const finishRes = await fetch('/api/auth/webauthn/login/finish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ sessionId, response: assertion }),
+      });
+      if (finishRes.ok) {
+        queryClient.invalidateQueries({ queryKey: ['/api/auth/me'] });
+        return;
+      }
+      const err = await finishRes.json().catch(() => ({}));
+      setLoginError(err.message || 'Passkey sign-in failed');
+    } catch (err) {
+      console.error('Passkey login error', err);
+      setLoginError('Network error. Please try again.');
+    }
+  };
+
   const handleContractorChange = async (contractor: ActiveContractor) => {
     try {
       const response = await fetch('/api/user/switch-contractor', {
@@ -435,6 +481,7 @@ export default function AppInner() {
   const authContextValue: AuthContextValue = {
     isAuthenticated,
     onLogin: handleLogin,
+    onPasskeyLogin: handlePasskeyLogin,
     isLoading,
     loginError,
     globalSearch,

@@ -8,6 +8,7 @@ import { initSyncStatusBroadcast } from './sync-status-store';
 
 import { registerAuthRoutes } from './routes/auth';
 import { registerMFARoutes } from './routes/mfa';
+import { registerWebAuthnRoutes } from './routes/webauthn';
 import { registerAuditLogRoutes } from './routes/audit-logs';
 import { registerOAuthRoutes } from './routes/oauth';
 import { registerUserRoutes } from './routes/users';
@@ -83,6 +84,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (req.path === '/auth/refresh') {
       return next();
     }
+    if (req.path === '/auth/webauthn/login/begin' || req.path === '/auth/webauthn/login/finish') {
+      return next(); // Public passkey sign-in endpoints (no existing session yet)
+    }
     if (req.path === '/mfa/verify') {
       return next(); // Public MFA verify endpoint (uses pendingToken)
     }
@@ -117,6 +121,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   registerAuthRoutes(app);
   registerMFARoutes(app);
+  registerWebAuthnRoutes(app);
   registerAuditLogRoutes(app);
   registerOAuthRoutes(app);
   registerUserRoutes(app);
