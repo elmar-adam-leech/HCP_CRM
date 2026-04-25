@@ -23,8 +23,41 @@ interface Activity {
   contractorId: string;
   externalId?: string | null;
   externalSource?: string | null;
+  // Inbound/outbound marker, used only by the attribution fallback below.
+  // For SMS this comes from the conversation message; for email it's parsed
+  // out of the `metadata` JSON (set by both Gmail sync and outbound sends).
+  direction?: 'inbound' | 'outbound';
   createdAt: string;
   updatedAt: string;
+}
+
+// Compute the "who did this" label for the activity row. Returns the user's
+// real name when one is attached to the activity; otherwise derives a sensible
+// fallback from the activity type, direction, and external source so every row
+// has a clear author instead of just a date.
+function getActorLabel(activity: Activity): string {
+  if (activity.userName) return activity.userName;
+
+  // Inbound messages from the customer (SMS or email) are not authored by an
+  // in-app user, so credit the customer.
+  if ((activity.type === 'sms' || activity.type === 'email') && activity.direction === 'inbound') {
+    return 'Customer';
+  }
+
+  // Tagged at write time by the public booking widget endpoint.
+  if (activity.externalSource === 'public_booking') return 'Online Booking';
+
+  // Webhook-driven activities (HCP lead.converted status flips, Dialpad call
+  // logs, future Gmail-only inbound webhooks) have no human actor — surface
+  // them as "System" instead of leaving the author blank.
+  if (
+    activity.externalSource === 'housecall-pro' ||
+    activity.externalSource === 'dialpad'
+  ) {
+    return 'System';
+  }
+
+  return 'System';
 }
 
 interface ActivityListProps {
@@ -114,6 +147,11 @@ export function ActivityList({ leadId, estimateId, jobId, customerId, showAddBut
       userId: msg.userId,
       userName: msg.userName,
       contractorId: msg.contractorId,
+      // Preserved so getActorLabel can render "Customer" for inbound messages
+      // that lack a logged-in author.
+      direction: msg.direction === 'inbound' || msg.direction === 'outbound'
+        ? msg.direction
+        : undefined,
       createdAt: msg.createdAt,
       updatedAt: msg.createdAt,
     };
@@ -137,8 +175,25 @@ export function ActivityList({ leadId, estimateId, jobId, customerId, showAddBut
     return true;
   });
   
+  // For email-type activities (which carry direction inside their JSON metadata
+  // string), lift it to a top-level field so getActorLabel can attribute inbound
+  // emails to the customer without needing to re-parse metadata downstream.
+  const enrichedNonMessageActivities = nonMessageActivities.map((activity) => {
+    if (activity.type === 'email' && activity.metadata && !activity.direction) {
+      try {
+        const parsed = JSON.parse(activity.metadata);
+        if (parsed?.direction === 'inbound' || parsed?.direction === 'outbound') {
+          return { ...activity, direction: parsed.direction as 'inbound' | 'outbound' };
+        }
+      } catch {
+        // Ignore unparsable metadata — falls through to default behavior.
+      }
+    }
+    return activity;
+  });
+
   // Merge activities and messages (SMS + email), then sort by date
-  const combinedActivities = [...nonMessageActivities, ...messageActivities] as Activity[];
+  const combinedActivities = [...enrichedNonMessageActivities, ...messageActivities] as Activity[];
   const filteredActivities = excludeNotes
     ? combinedActivities.filter(a => a.type !== 'note')
     : combinedActivities;
@@ -254,9 +309,9 @@ export function ActivityList({ leadId, estimateId, jobId, customerId, showAddBut
                     
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <User className="w-3 h-3" />
-                      {activity.userName && (
-                        <span>{activity.userName} •</span>
-                      )}
+                      <span data-testid={`activity-actor-${activity.id}`}>
+                        {getActorLabel(activity)} •
+                      </span>
                       <span data-testid={`activity-timestamp-${activity.id}`}>
                         {format(new Date(activity.createdAt), "MMM d, yyyy 'at' h:mm a")}
                       </span>

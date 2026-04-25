@@ -551,6 +551,12 @@ export function registerPublicRoutes(app: Express): void {
         type: 'meeting',
         contactId,
         content: `Appointment booked for ${formattedDate} at ${formattedTime} — ${address}`,
+        // Attribute to the auto-assigned salesperson when one was selected so
+        // the activity feed shows their name. If none was assigned (defensive),
+        // the activityExternalSource below lets the frontend render an
+        // "Online Booking" attribution fallback instead of an empty author.
+        userId: result.assignedSalespersonId ?? undefined,
+        externalSource: 'public_booking',
       },
       { type: 'activity_created', contactId }
     ).catch(err => log.error('Failed to log booking activity (non-fatal):', err));

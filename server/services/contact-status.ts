@@ -52,6 +52,13 @@ export interface MarkScheduledOptions {
   activityContent?: string;
   /** Optional: actor user id to attribute the activity log entry to. */
   activityUserId?: string | null;
+  /**
+   * Optional: external source label for the activity log entry. Used by the
+   * frontend to render a sensible attribution fallback ("Online Booking",
+   * "System") when no human user id is set. Pass 'public_booking',
+   * 'housecall-pro', etc.
+   */
+  activityExternalSource?: string | null;
 }
 
 export interface MarkScheduledResult {
@@ -127,6 +134,7 @@ export async function markContactScheduled(
         content: opts.activityContent ?? 'Contact status changed to Scheduled',
         contactId,
         userId: opts.activityUserId ?? undefined,
+        externalSource: opts.activityExternalSource ?? undefined,
       },
       { type: 'new_activity', contactId },
     );

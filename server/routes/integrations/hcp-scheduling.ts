@@ -107,6 +107,7 @@ export function registerHcpSchedulingRoutes(app: Express): void {
             type: 'meeting',
             contactId,
             content: `Appointment booked for ${formattedDate} at ${formattedTime}${addressForActivity ? ` — ${addressForActivity}` : ''}`,
+            userId: req.user.userId,
           },
           { type: 'activity_created', contactId }
         ).catch(err => log.error('Failed to log booking activity (non-fatal):', err));

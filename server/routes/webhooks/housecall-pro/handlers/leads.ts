@@ -106,6 +106,10 @@ export async function handleLeadEvent(
       // this contact to scheduled, the workflow trigger is NOT re-fired.
       await markContactScheduled(lead.contactId, contractorId, {
         source: 'hcp_lead_converted',
+        // Tag the resulting status_change activity with its origin so the
+        // activity feed renders a "System" attribution fallback instead of
+        // an empty author line.
+        activityExternalSource: 'housecall-pro',
       }).catch(err => log.error('markContactScheduled (lead.converted) failed:', err));
     }
     return 'continue';

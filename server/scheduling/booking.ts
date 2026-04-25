@@ -153,6 +153,14 @@ export async function bookAppointment(tenantId: string, request: BookingRequest)
       await markContactScheduled(request.contactId, tenantId, {
         source: request.scheduleSource ?? 'in_app_booking',
         scheduledByUserId: selectedSalesperson.userId,
+        // Attribute the "Status Changed" activity row to the selected salesperson
+        // so the activity feed shows their name. For public bookings this is the
+        // auto-assigned salesperson; for in-app bookings it is the rep the booker
+        // chose. If selectedSalesperson is missing the userId field (defensive),
+        // the frontend falls back to the externalSource label below.
+        activityUserId: selectedSalesperson.userId,
+        activityExternalSource:
+          request.scheduleSource === 'public_booking' ? 'public_booking' : undefined,
       });
     } catch (err) {
       log.error('[scheduling] markContactScheduled failed (non-fatal):', err);
