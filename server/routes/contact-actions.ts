@@ -9,6 +9,7 @@ import { z } from "zod";
 import { parseLeadCsv } from "../utils/parse-lead-csv";
 import { parseBody } from "../utils/validate-body";
 import { markContactScheduled } from "../services/contact-status";
+import { normalizePhoneForHcp } from "../utils/phone-normalizer";
 
 import { logger } from '../utils/logger';
 
@@ -69,12 +70,14 @@ export function registerContactActionRoutes(app: Express): void {
     let housecallProCustomerId = contact.housecallProCustomerId;
     const contactEmail = contact.emails?.[0];
     const contactPhone = contact.phones?.[0];
+    // HCP requires `mobile_number` to be exactly 10 digits with no formatting.
+    const hcpPhone = normalizePhoneForHcp(contactPhone);
 
     if (!housecallProCustomerId) {
       if (contactEmail || contactPhone) {
         const searchResult = await housecallProService.searchCustomers(req.user.contractorId, {
           email: contactEmail || undefined,
-          phone: contactPhone || undefined
+          phone: hcpPhone
         });
 
         if (searchResult.success && searchResult.data && searchResult.data.length > 0) {
@@ -87,7 +90,7 @@ export function registerContactActionRoutes(app: Express): void {
           first_name: contact.name.split(' ')[0] || contact.name,
           last_name: contact.name.split(' ').slice(1).join(' ') || '',
           email: contactEmail || '',
-          mobile_number: contactPhone || '',
+          mobile_number: hcpPhone,
           addresses: (contact.street || contact.address) ? [{
             street: contact.street || contact.address || '',
             city: contact.city || '',

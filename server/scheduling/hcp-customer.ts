@@ -5,6 +5,7 @@ import { housecallProService } from '../hcp/index';
 import type { BookingRequest, AddressComponents } from '../types/scheduling';
 import { parseAddressString, hasRealStreetAddress } from '../types/scheduling';
 import { logger } from '../utils/logger';
+import { normalizePhoneForHcp } from '../utils/phone-normalizer';
 
 const log = logger('HcpSchedulingService');
 
@@ -252,12 +253,14 @@ export async function resolveHcpCustomer(
 
   const primaryEmail = contact.emails?.[0];
   const primaryPhone = contact.phones?.[0];
+  // HCP requires `mobile_number` to be exactly 10 digits with no formatting.
+  const hcpPhone = normalizePhoneForHcp(primaryPhone);
 
   if (primaryEmail || primaryPhone) {
     log.info('[scheduling] Searching for existing HCP customer for contact:', contact.id);
     const searchResult = await housecallProService.searchCustomers(tenantId, {
       email: primaryEmail,
-      phone: primaryPhone,
+      phone: hcpPhone,
     });
     if (searchResult.success && searchResult.data && searchResult.data.length > 0) {
       const hcpCustomerId = searchResult.data[0].id;
@@ -282,7 +285,7 @@ export async function resolveHcpCustomer(
     first_name: firstName,
     last_name: lastName,
     email: primaryEmail,
-    mobile_number: primaryPhone,
+    mobile_number: hcpPhone,
     addresses: addressData ? [addressData] : undefined,
   });
 

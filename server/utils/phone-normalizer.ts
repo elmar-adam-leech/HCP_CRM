@@ -170,6 +170,28 @@ export function normalizePhoneArrayForStorage(
 // normalizePhoneNumber('+44 20 7946 0958')    -> '+442079460958'
 
 /**
+ * Normalize a phone number into Housecall Pro's required `mobile_number` format:
+ * exactly 10 digits with no formatting characters. Drops a leading `1` country
+ * code if present (so `+1 (415) 555-1234` and `(415) 555-1234` both yield
+ * `4155551234`). Returns `undefined` when the input does not contain a usable
+ * 10-digit US number — callers should omit the field entirely in that case
+ * rather than send an invalid value to HCP (which 400s with
+ * "Mobile number must be exactly 10 digits").
+ */
+export function normalizePhoneForHcp(phone: string | null | undefined): string | undefined {
+  if (!phone) return undefined;
+  const digitsOnly = String(phone).replace(/\D/g, '');
+  if (!digitsOnly) return undefined;
+
+  let tenDigits = digitsOnly;
+  if (tenDigits.length === 11 && tenDigits.startsWith('1')) {
+    tenDigits = tenDigits.slice(1);
+  }
+  if (tenDigits.length !== 10) return undefined;
+  return tenDigits;
+}
+
+/**
  * Mask a phone number for logging: show country code (if present) + last 4 digits.
  * Examples:
  *   +14155551234  →  +1...1234

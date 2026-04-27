@@ -168,7 +168,16 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       description: 'estimate_status enum: add in_progress value',
     },
     {
-      sql: `UPDATE estimates SET status = 'scheduled' WHERE status = 'pending' AND external_source = 'housecall-pro' AND scheduled_start IS NOT NULL`,
+      sql: `DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM pg_enum
+          WHERE enumlabel = 'pending'
+            AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'estimate_status')
+        ) THEN
+          UPDATE estimates SET status = 'scheduled' WHERE status = 'pending' AND external_source = 'housecall-pro' AND scheduled_start IS NOT NULL;
+        END IF;
+      END $$`,
       description: 'backfill: reclassify HCP pending estimates with scheduled_start as scheduled',
     },
     {
@@ -522,7 +531,16 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       description: 'contacts composite index on (contractor_id, last_activity_at) for activity-date sorting',
     },
     {
-      sql: `UPDATE estimates SET status = 'scheduled' WHERE status IN ('draft', 'pending')`,
+      sql: `DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM pg_enum
+          WHERE enumlabel IN ('draft', 'pending')
+            AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'estimate_status')
+        ) THEN
+          UPDATE estimates SET status = 'scheduled' WHERE status::text IN ('draft', 'pending');
+        END IF;
+      END $$`,
       description: 'migrate estimate status: draft/pending → scheduled',
     },
     {

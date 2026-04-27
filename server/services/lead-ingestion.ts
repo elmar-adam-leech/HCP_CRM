@@ -1,6 +1,6 @@
 import { type Contact, type Lead } from '@shared/schema';
 import { storage } from '../storage';
-import { normalizePhoneForStorage, maskPhone } from '../utils/phone-normalizer';
+import { normalizePhoneForStorage, normalizePhoneForHcp, maskPhone } from '../utils/phone-normalizer';
 import { workflowEngine } from '../workflow-engine';
 import { toWorkflowEvent } from '../utils/workflow/entity-adapter';
 import { autoAssignLead } from '../routes/assignments';
@@ -354,6 +354,10 @@ export async function ingestLead(
           let hcpCustomerId: string | undefined;
           const searchEmail = freshContact.emails?.[0];
           const searchPhone = freshContact.phones?.[0];
+          // HCP rejects formatted phones (e.g. "(415) 555-1234") with
+          // "Mobile number must be exactly 10 digits". Strip non-digits and
+          // drop a leading 1 before sending to either search or create.
+          const hcpPhone = normalizePhoneForHcp(searchPhone);
 
           if (!searchEmail && !searchPhone) {
             await recordSkip('no_email_or_phone');
@@ -362,7 +366,7 @@ export async function ingestLead(
 
           const searchResult = await housecallProService.searchCustomers(contractorId, {
             email: searchEmail,
-            phone: searchPhone
+            phone: hcpPhone
           });
           if (searchResult.success && searchResult.data && searchResult.data.length > 0) {
             hcpCustomerId = searchResult.data[0].id;
@@ -377,7 +381,7 @@ export async function ingestLead(
               first_name: firstName,
               last_name: lastName,
               email: searchEmail,
-              mobile_number: searchPhone,
+              mobile_number: hcpPhone,
               lead_source: hcpLeadSource,
               notes: input.notes || undefined,
               addresses: ingestionAddressData ? [{

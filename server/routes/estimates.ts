@@ -12,6 +12,7 @@ import { housecallProService } from "../hcp/index";
 import { toWorkflowEvent } from "../utils/workflow/entity-adapter";
 import { logger } from "../utils/logger";
 import { auditLog } from "../utils/audit-log";
+import { normalizePhoneForHcp } from "../utils/phone-normalizer";
 import { z } from "zod";
 
 const log = logger('EstimateRoutes');
@@ -39,11 +40,13 @@ async function syncEstimateToHcp(
   if (!hcpCustomerId) {
     const contactEmail = contact.emails?.[0];
     const contactPhone = contact.phones?.[0];
+    // HCP requires `mobile_number` to be exactly 10 digits with no formatting.
+    const hcpPhone = normalizePhoneForHcp(contactPhone);
 
     if (contactEmail || contactPhone) {
       const searchResult = await housecallProService.searchCustomers(contractorId, {
         email: contactEmail,
-        phone: contactPhone,
+        phone: hcpPhone,
       });
       if (searchResult.success && searchResult.data && searchResult.data.length > 0) {
         hcpCustomerId = searchResult.data[0].id;
@@ -56,7 +59,7 @@ async function syncEstimateToHcp(
         first_name: nameParts[0] || contact.name,
         last_name: nameParts.slice(1).join(' ') || '',
         email: contact.emails?.[0] || '',
-        mobile_number: contact.phones?.[0] || '',
+        mobile_number: hcpPhone,
       });
       if (customerResult.success && customerResult.data?.id) {
         hcpCustomerId = customerResult.data.id;

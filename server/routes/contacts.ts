@@ -25,6 +25,7 @@ import { z } from "zod";
 import { logConsent, hashIp } from "../utils/consent-log";
 import { buildFormattedAddress, parseAddressString } from "../utils/address";
 import { markContactScheduled } from "../services/contact-status";
+import { normalizePhoneForHcp } from "../utils/phone-normalizer";
 
 const log = logger('ContactRoutes');
 
@@ -416,7 +417,7 @@ export function registerContactRoutes(app: Express): void {
           first_name: firstName,
           last_name: lastName,
           email: contact.emails?.[0],
-          mobile_number: contact.phones?.[0],
+          mobile_number: normalizePhoneForHcp(contact.phones?.[0]),
           lead_source: hcpLeadSourceForCustomer,
           notes: contact.notes || undefined,
           addresses: (contact.street || contact.address) ? [{
@@ -560,7 +561,7 @@ export function registerContactRoutes(app: Express): void {
           first_name: nameParts[0] || '',
           last_name: nameParts.slice(1).join(' ') || '',
           email: contact.emails?.[0],
-          mobile_number: contact.phones?.[0],
+          mobile_number: normalizePhoneForHcp(contact.phones?.[0]),
           notes: contact.notes || undefined,
           addresses: (contact.street || contact.address) ? [{
             ...(!contact.street && !contact.city && !contact.state && !contact.zip && contact.address

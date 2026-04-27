@@ -2,7 +2,7 @@ import type { Express, Response } from "express";
 import { db } from "../db";
 import { users } from "@shared/schema";
 import { eq } from "drizzle-orm";
-import { AuthService, requireAuth, type AuthedRequest } from "../auth-service";
+import { requireAuth, type AuthedRequest } from "../auth-service";
 import { encryptSecret, decryptSecret } from "../utils/crypto";
 import { auditLog } from "../utils/audit-log";
 import { asyncHandler } from "../utils/async-handler";
