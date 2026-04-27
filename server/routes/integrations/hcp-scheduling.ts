@@ -101,6 +101,12 @@ export function registerHcpSchedulingRoutes(app: Express): void {
         const formattedTime = appointmentStart.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, ...tzOptions })
           + (timeZone ? '' : ' UTC');
         const addressForActivity = customerAddress || customerAddressComponents?.street || '';
+        // Attach the auto-assigned salesperson alongside the booker (req.user)
+        // so the activity feed can render a secondary "Assigned to Pat" hint
+        // when the booker and the calendar owner are different people.
+        const bookingMetadata: Record<string, unknown> = {};
+        if (result.assignedSalespersonId) bookingMetadata.assignedSalespersonId = result.assignedSalespersonId;
+        if (result.assignedSalespersonName) bookingMetadata.assignedSalespersonName = result.assignedSalespersonName;
         createActivityAndBroadcast(
           req.user.contractorId,
           {
@@ -108,6 +114,7 @@ export function registerHcpSchedulingRoutes(app: Express): void {
             contactId,
             content: `Appointment booked for ${formattedDate} at ${formattedTime}${addressForActivity ? ` — ${addressForActivity}` : ''}`,
             userId: req.user.userId,
+            metadata: Object.keys(bookingMetadata).length > 0 ? bookingMetadata : undefined,
           },
           { type: 'activity_created', contactId }
         ).catch(err => log.error('Failed to log booking activity (non-fatal):', err));

@@ -545,6 +545,14 @@ export function registerPublicRoutes(app: Express): void {
     const formattedDate = appointmentStart.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', ...tzOptions });
     const formattedTime = appointmentStart.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, ...tzOptions })
       + (timeZone ? '' : ' UTC');
+    // Attach the assigned salesperson in metadata so the activity feed can
+    // surface a secondary "Assigned to Pat" hint. The frontend omits the hint
+    // when the booker and the assigned salesperson are the same person — which
+    // is the typical case for public bookings since `userId` below is also the
+    // assigned salesperson.
+    const publicBookingMetadata: Record<string, unknown> = {};
+    if (result.assignedSalespersonId) publicBookingMetadata.assignedSalespersonId = result.assignedSalespersonId;
+    if (result.assignedSalespersonName) publicBookingMetadata.assignedSalespersonName = result.assignedSalespersonName;
     createActivityAndBroadcast(
       contractor.id,
       {
@@ -557,6 +565,7 @@ export function registerPublicRoutes(app: Express): void {
         // "Online Booking" attribution fallback instead of an empty author.
         userId: result.assignedSalespersonId ?? undefined,
         externalSource: 'public_booking',
+        metadata: Object.keys(publicBookingMetadata).length > 0 ? publicBookingMetadata : undefined,
       },
       { type: 'activity_created', contactId }
     ).catch(err => log.error('Failed to log booking activity (non-fatal):', err));

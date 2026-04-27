@@ -60,6 +60,48 @@ function getActorLabel(activity: Activity): string {
   return 'System';
 }
 
+// Activity.metadata may arrive as either a JSON string (legacy text column) or
+// an already-parsed object (jsonb-style). Normalize both shapes to a plain
+// record so callers can read fields uniformly without re-parsing.
+function parseActivityMetadata(metadata: unknown): Record<string, unknown> | null {
+  if (!metadata) return null;
+  if (typeof metadata === 'object') return metadata as Record<string, unknown>;
+  if (typeof metadata === 'string') {
+    try {
+      const parsed = JSON.parse(metadata);
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+// For meeting activities created by booking flows, surface the assigned
+// salesperson alongside the booker — but only when the two are different
+// people. Returns null when there's no assigned-salesperson metadata or when
+// the booker (activity.userId) is also the calendar owner.
+function getAssignedSalespersonHint(activity: Activity): string | null {
+  if (activity.type !== 'meeting') return null;
+  const metadata = parseActivityMetadata(activity.metadata);
+  if (!metadata) return null;
+  const assignedId = typeof metadata.assignedSalespersonId === 'string' ? metadata.assignedSalespersonId : null;
+  const assignedName = typeof metadata.assignedSalespersonName === 'string' ? metadata.assignedSalespersonName : null;
+  if (!assignedName) return null;
+  // Omit the hint when the booker IS the assigned salesperson — no extra
+  // information to convey in that case.
+  if (assignedId && activity.userId && assignedId === activity.userId) return null;
+  // ID-based comparison is the source of truth, but legacy / partial rows can
+  // ship `assignedSalespersonName` without `assignedSalespersonId`. In that
+  // case fall back to a normalized name comparison so we don't render a
+  // redundant "Assigned to {same person}" line.
+  if (!assignedId && activity.userName) {
+    const norm = (s: string) => s.trim().toLowerCase();
+    if (norm(assignedName) === norm(activity.userName)) return null;
+  }
+  return assignedName;
+}
+
 interface ActivityListProps {
   leadId?: string;
   estimateId?: string;
@@ -307,10 +349,15 @@ export function ActivityList({ leadId, estimateId, jobId, customerId, showAddBut
                       )}
                     </div>
                     
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
                       <User className="w-3 h-3" />
                       <span data-testid={`activity-actor-${activity.id}`}>
-                        {getActorLabel(activity)} •
+                        {getActorLabel(activity)}
+                        {(() => {
+                          const assigned = getAssignedSalespersonHint(activity);
+                          return assigned ? ` • Assigned to ${assigned}` : '';
+                        })()}
+                        {' '}•
                       </span>
                       <span data-testid={`activity-timestamp-${activity.id}`}>
                         {format(new Date(activity.createdAt), "MMM d, yyyy 'at' h:mm a")}
