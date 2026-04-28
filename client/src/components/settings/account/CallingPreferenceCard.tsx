@@ -19,10 +19,10 @@ export function CallingPreferenceCard() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['/api/auth/me'] });
       toast({
-        title: "Call preference updated",
+        title: "Calling & texting preference updated",
         description: data.callPreference === 'personal'
-          ? "You'll now use your personal phone when calling contacts."
-          : "You'll now use the calling integration when calling contacts.",
+          ? "Calls and texts will now use your personal phone."
+          : "Calls and texts will now go through your connected calling integration.",
       });
     },
     onError: (error: Error) => {
@@ -36,8 +36,8 @@ export function CallingPreferenceCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2"><Phone className="h-5 w-5" />Calling Preference</CardTitle>
-        <CardDescription>Choose how you want to make calls from the CRM</CardDescription>
+        <CardTitle className="flex items-center gap-2"><Phone className="h-5 w-5" />Calling & Texting Preference</CardTitle>
+        <CardDescription>Choose how you want to make calls and send texts from the CRM. This setting controls both calling and texting together.</CardDescription>
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -55,7 +55,7 @@ export function CallingPreferenceCard() {
             <Phone className="h-5 w-5 mt-0.5 shrink-0 text-muted-foreground" />
             <div>
               <div className="text-sm font-medium">Calling integration</div>
-              <div className="text-xs text-muted-foreground mt-0.5">Uses your connected calling service. Calls are automatically logged.</div>
+              <div className="text-xs text-muted-foreground mt-0.5">Calls and texts go through your connected calling service. Both are automatically logged to the contact's timeline.</div>
             </div>
           </button>
           <button
@@ -72,10 +72,13 @@ export function CallingPreferenceCard() {
             <Smartphone className="h-5 w-5 mt-0.5 shrink-0 text-muted-foreground" />
             <div>
               <div className="text-sm font-medium">Personal phone</div>
-              <div className="text-xs text-muted-foreground mt-0.5">Opens your device's native dialer. Calls won't be automatically logged.</div>
+              <div className="text-xs text-muted-foreground mt-0.5">Calls open your device's native dialer and texts open your device's messaging app. Neither will be automatically logged.</div>
             </div>
           </button>
         </div>
+        <p className="text-xs text-muted-foreground mt-4" data-testid="text-email-independent-note">
+          Email is independent of this setting: when Gmail or SendGrid is connected, emails are sent from the in-CRM composer with templates and logged automatically. If no email integration is connected, emails fall back to your device's mail app.
+        </p>
       </CardContent>
     </Card>
   );
