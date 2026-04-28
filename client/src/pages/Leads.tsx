@@ -1,4 +1,5 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { useLocation } from "wouter";
 import { LeadCard } from "@/components/LeadCard";
 import { CardSkeleton } from "@/components/CardSkeleton";
 import { Button } from "@/components/ui/button";
@@ -194,6 +195,22 @@ export default function Leads({ externalSearch = "" }: { externalSearch?: string
       }
     }
   }, [setActiveModal, leadById]);
+
+  // Open the detail panel automatically when navigated here with `?id=…` —
+  // used by the Recent Activity timeline so reps land directly on the matched lead.
+  const [location] = useLocation();
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get("id");
+    if (!id) return;
+    handleAutoOpenDetails(id);
+    params.delete("id");
+    const nextSearch = params.toString();
+    const nextUrl = nextSearch ? `${location}?${nextSearch}` : location;
+    window.history.replaceState({}, "", nextUrl);
+    // Run only when the location pathname changes (or on first mount).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location]);
 
   const handleTextSentRefresh = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['/api/contacts/paginated'] });

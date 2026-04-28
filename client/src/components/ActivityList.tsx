@@ -3,17 +3,79 @@ import DOMPurify from "dompurify";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Clock, User, Plus } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import {
+  Clock,
+  User,
+  Plus,
+  ExternalLink,
+  PhoneIncoming,
+  PhoneOutgoing,
+  PhoneMissed,
+  Voicemail,
+} from "lucide-react";
 import { format } from "date-fns";
 import { LogCallDialog } from "./LogCallDialog";
 import { ActivityTypeBadge } from "@/lib/activity-visuals";
+
+type RecordingDetail = {
+  id?: string | number;
+  url?: string;
+  duration?: number;
+  start_time?: number;
+  recording_type?: string;
+};
+
+/**
+ * Resolve playable + share URLs for a call activity. Mirrors the helper in
+ * RecentActivityTimeline.tsx: prefer the persisted recording id (proxied
+ * through our authenticated playback endpoint), and never try to play a
+ * Dialpad share-page URL inline since browsers can't render it.
+ */
+function resolveCallRecording(meta: Record<string, unknown> | null | undefined): {
+  playableUrl: string | null;
+  shareUrl: string | null;
+} {
+  if (!meta) return { playableUrl: null, shareUrl: null };
+  const details = Array.isArray((meta as { recording_details?: unknown }).recording_details)
+    ? ((meta as { recording_details: RecordingDetail[] }).recording_details)
+    : null;
+  const rawId = details?.find(
+    (d) => d?.id !== undefined && d?.id !== null && String(d.id).length > 0,
+  )?.id;
+  const recordingId = rawId !== undefined && rawId !== null ? String(rawId) : null;
+  const shareUrl = typeof (meta as { recording_url?: unknown }).recording_url === 'string'
+    ? ((meta as { recording_url: string }).recording_url)
+    : null;
+  const isShareLink = shareUrl ? /^https?:\/\/(www\.)?dialpad\.com\/r\//i.test(shareUrl) : false;
+  const playableUrl = recordingId
+    ? `/api/dialpad/recordings/${encodeURIComponent(recordingId)}`
+    : (shareUrl && !isShareLink ? shareUrl : null);
+  return { playableUrl, shareUrl };
+}
+
+const formatCallDuration = (seconds: number): string => {
+  if (seconds < 60) return `${seconds}s`;
+  const mins = Math.floor(seconds / 60);
+  const rem = seconds % 60;
+  return rem > 0 ? `${mins}m ${rem}s` : `${mins}m`;
+};
+
+const getCallIcon = (direction?: string, outcome?: string) => {
+  if (outcome === 'voicemail') return <Voicemail className="w-3 h-3" />;
+  if (outcome === 'missed' || outcome === 'cancelled') return <PhoneMissed className="w-3 h-3" />;
+  if (direction === 'outbound') return <PhoneOutgoing className="w-3 h-3" />;
+  return <PhoneIncoming className="w-3 h-3" />;
+};
 
 interface Activity {
   id: string;
   type: 'note' | 'call' | 'email' | 'sms' | 'meeting' | 'follow_up' | 'status_change';
   title?: string;
   content: string;
-  metadata?: string; // JSON string with email metadata (subject, to, from, etc.)
+  // Activity.metadata may arrive as either a JSON string (legacy text column)
+  // or an already-parsed object (jsonb-style). Both are tolerated below.
+  metadata?: string | Record<string, unknown>;
   leadId?: string;
   estimateId?: string;
   jobId?: string;
@@ -222,13 +284,11 @@ export function ActivityList({ leadId, estimateId, jobId, customerId, showAddBut
   // emails to the customer without needing to re-parse metadata downstream.
   const enrichedNonMessageActivities = nonMessageActivities.map((activity) => {
     if (activity.type === 'email' && activity.metadata && !activity.direction) {
-      try {
-        const parsed = JSON.parse(activity.metadata);
-        if (parsed?.direction === 'inbound' || parsed?.direction === 'outbound') {
-          return { ...activity, direction: parsed.direction as 'inbound' | 'outbound' };
-        }
-      } catch {
-        // Ignore unparsable metadata — falls through to default behavior.
+      // metadata may already be a parsed object (jsonb) or a raw JSON string
+      // (legacy text column). Normalize via parseActivityMetadata.
+      const parsed = parseActivityMetadata(activity.metadata);
+      if (parsed?.direction === 'inbound' || parsed?.direction === 'outbound') {
+        return { ...activity, direction: parsed.direction as 'inbound' | 'outbound' };
       }
     }
     return activity;
@@ -318,36 +378,129 @@ export function ActivityList({ leadId, estimateId, jobId, customerId, showAddBut
                     
                     {/* Show email metadata if available */}
                     {activity.type === 'email' && activity.metadata && (() => {
-                      try {
-                        const emailMetadata = JSON.parse(activity.metadata);
-                        return (
-                          <div className="text-xs text-muted-foreground mb-2 space-y-1">
-                            {emailMetadata.from && (
-                              <div><strong>From:</strong> {emailMetadata.from}</div>
-                            )}
-                            {emailMetadata.to && (
-                              <div><strong>To:</strong> {Array.isArray(emailMetadata.to) ? emailMetadata.to.join(', ') : emailMetadata.to}</div>
-                            )}
-                            {emailMetadata.subject && (
-                              <div><strong>Subject:</strong> {emailMetadata.subject}</div>
-                            )}
-                          </div>
-                        );
-                      } catch (e) {
-                        return null;
-                      }
+                      const emailMetadata = parseActivityMetadata(activity.metadata);
+                      if (!emailMetadata) return null;
+                      return (
+                        <div className="text-xs text-muted-foreground mb-2 space-y-1">
+                          {typeof emailMetadata.from === 'string' && (
+                            <div><strong>From:</strong> {emailMetadata.from}</div>
+                          )}
+                          {emailMetadata.to !== undefined && emailMetadata.to !== null && (
+                            <div><strong>To:</strong> {Array.isArray(emailMetadata.to) ? emailMetadata.to.join(', ') : String(emailMetadata.to)}</div>
+                          )}
+                          {typeof emailMetadata.subject === 'string' && (
+                            <div><strong>Subject:</strong> {emailMetadata.subject}</div>
+                          )}
+                        </div>
+                      );
                     })()}
                     
-                    <div className="text-sm mb-2" data-testid={`activity-content-${activity.id}`}>
-                      {activity.type === 'email' ? (
-                        <div
-                          className="prose prose-sm max-w-none dark:prose-invert break-words overflow-hidden [&_*]:break-words"
-                          dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(activity.content) }}
-                        />
-                      ) : (
-                        <p className="whitespace-pre-wrap break-words overflow-hidden">{activity.content}</p>
-                      )}
-                    </div>
+                    {/* For Dialpad-sourced calls, the title already conveys
+                        direction + outcome + duration and the content line
+                        only restates that plus the recording link, so suppress
+                        it. The badges and audio player below render the
+                        same info more usefully. */}
+                    {(() => {
+                      const isDialpadCall = activity.type === 'call' && activity.externalSource === 'dialpad';
+                      if (isDialpadCall) return null;
+                      return (
+                        <div className="text-sm mb-2" data-testid={`activity-content-${activity.id}`}>
+                          {activity.type === 'email' ? (
+                            <div
+                              className="prose prose-sm max-w-none dark:prose-invert break-words overflow-hidden [&_*]:break-words"
+                              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(activity.content) }}
+                            />
+                          ) : (
+                            <p className="whitespace-pre-wrap break-words overflow-hidden">{activity.content}</p>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Call-specific UI: badges (direction/outcome/duration) +
+                        inline audio + external-link fallback. Mirrors what
+                        RecentActivityTimeline shows so call rows look
+                        consistent across pages. */}
+                    {activity.type === 'call' && (() => {
+                      const meta = parseActivityMetadata(activity.metadata) ?? {};
+                      const direction = typeof meta.direction === 'string' ? meta.direction : null;
+                      const outcome = typeof meta.outcome === 'string' ? meta.outcome : null;
+                      const duration = typeof meta.duration === 'number' ? meta.duration : null;
+                      const operatorName = typeof meta.operatorName === 'string' && meta.operatorName.length > 0
+                        ? meta.operatorName
+                        : null;
+                      const { playableUrl, shareUrl } = resolveCallRecording(meta);
+                      const hasBadges = direction || outcome || (duration && duration > 0) || operatorName;
+                      const hasAudio = playableUrl || shareUrl;
+                      if (!hasBadges && !hasAudio) return null;
+                      return (
+                        <div className="space-y-2 mb-2">
+                          {hasBadges && (
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {direction && (
+                                <Badge variant="outline" className="gap-1 capitalize">
+                                  {getCallIcon(direction, outcome ?? undefined)}
+                                  {direction}
+                                </Badge>
+                              )}
+                              {outcome && (
+                                <Badge
+                                  variant="secondary"
+                                  className={`capitalize ${
+                                    outcome === 'missed' || outcome === 'cancelled'
+                                      ? 'bg-destructive/10 text-destructive'
+                                      : outcome === 'voicemail'
+                                      ? 'bg-chart-5/10 text-chart-5'
+                                      : 'bg-chart-2/10 text-chart-2'
+                                  }`}
+                                >
+                                  {outcome}
+                                </Badge>
+                              )}
+                              {duration && duration > 0 && (
+                                <span className="text-xs text-muted-foreground">
+                                  {formatCallDuration(duration)}
+                                </span>
+                              )}
+                              {operatorName && (
+                                <span
+                                  className="text-xs text-muted-foreground"
+                                  data-testid={`activity-operator-${activity.id}`}
+                                >
+                                  Handled by {operatorName}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          {hasAudio && (
+                            <div className="space-y-1.5">
+                              {playableUrl && (
+                                <audio
+                                  controls
+                                  preload="none"
+                                  className="w-full"
+                                  src={playableUrl}
+                                  data-testid={`audio-recording-${activity.id}`}
+                                />
+                              )}
+                              {shareUrl && (
+                                <Button
+                                  asChild
+                                  size="sm"
+                                  variant="outline"
+                                  data-testid={`button-open-recording-${activity.id}`}
+                                >
+                                  <a href={shareUrl} target="_blank" rel="noopener noreferrer">
+                                    <ExternalLink className="w-3 h-3" />
+                                    Open in Dialpad
+                                  </a>
+                                </Button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                     
                     <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
                       <User className="w-3 h-3" />

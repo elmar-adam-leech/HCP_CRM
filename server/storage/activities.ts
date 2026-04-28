@@ -76,15 +76,50 @@ async function getActivities(contractorId: string, options: {
     userId: activities.userId, contractorId: activities.contractorId,
     externalId: activities.externalId, externalSource: activities.externalSource,
     createdAt: activities.createdAt, updatedAt: activities.updatedAt, userName: users.name,
-  }).from(activities).leftJoin(users, eq(activities.userId, users.id))
+    // Linked-entity context — used by the Recent Activity timeline / detail-page
+    // timelines to render "who is this call/email about?". The priority for
+    // picking which entity to display is job → estimate → contact.
+    contactName: contacts.name,
+    contactType: contacts.type,
+    estimateTitle: estimates.title,
+    jobTitle: jobs.title,
+  }).from(activities)
+    .leftJoin(users, eq(activities.userId, users.id))
+    .leftJoin(contacts, eq(activities.contactId, contacts.id))
+    .leftJoin(estimates, eq(activities.estimateId, estimates.id))
+    .leftJoin(jobs, eq(activities.jobId, jobs.id))
     .where(and(...conditions))
     .orderBy(desc(activities.createdAt), desc(activities.id))
     .limit(options.limit || 50);
 
+  // Resolve the friendly entity-name + kind for each row. Job > estimate > contact;
+  // for Dialpad calls without a matched contact we fall back to the contact name
+  // Dialpad itself supplied so reps still see *who* a call is about.
+  const enriched = result.map((row) => {
+    let entityName: string | null = null;
+    let entityType: 'job' | 'estimate' | 'lead' | 'customer' | null = null;
+    if (row.jobTitle) {
+      entityName = row.jobTitle;
+      entityType = 'job';
+    } else if (row.estimateTitle) {
+      entityName = row.estimateTitle;
+      entityType = 'estimate';
+    } else if (row.contactName) {
+      entityName = row.contactName;
+      entityType = row.contactType === 'customer' ? 'customer' : 'lead';
+    } else if (row.type === 'call' && row.externalSource === 'dialpad') {
+      const meta = (row.metadata ?? {}) as Record<string, unknown>;
+      const fallback = typeof meta.contactName === 'string' ? meta.contactName : null;
+      if (fallback) entityName = fallback;
+    }
+    return { ...row, entityName, entityType };
+  });
+
   // Drizzle infers the select result as a structural type that matches Activity but
-  // does not unify with the generated Activity type when extra columns (userName) are
-  // joined in. The cast is safe — every Activity field is present in the projection above.
-  return result as unknown as Activity[];
+  // does not unify with the generated Activity type when extra columns (userName,
+  // entityName, entityType) are joined / computed. The cast is safe — every
+  // Activity field is present in the projection above.
+  return enriched as unknown as Activity[];
 }
 
 async function getActivity(id: string, contractorId: string): Promise<Activity | undefined> {

@@ -10,10 +10,67 @@ import { asyncHandler } from "../../utils/async-handler";
 import { logger } from "../../utils/logger";
 import { broadcastToContractor } from "../../websocket";
 import { CredentialService } from "../../credential-service";
-import type { DialpadCallEvent, DialpadCallOutcome } from "../../dialpad/types";
+import type { DialpadCallEvent, DialpadCallOutcome, DialpadRecordingDetail } from "../../dialpad/types";
 import { enqueueDialpadEvent } from "../../jobs/dialpad-event-worker";
+import { getCallDetails } from "../../dialpad/messaging";
 
 const log = logger('DialpadCallsWebhook');
+
+/**
+ * Pattern for Dialpad call-recording *share* URLs (the public landing page
+ * a rep gets when they "share recording" inside Dialpad). Example:
+ *   https://dialpad.com/r/4796679430676480
+ *
+ * The trailing digits are a share-link ID and are NOT a valid `recording_id`
+ * for the `/callrecordings/:id` export endpoint — passing one to that API
+ * 500s. We use this regex both to extract a clean share-link ID for storage
+ * and to recognise share-URL-only recordings so we can avoid persisting
+ * fake recording IDs that the playback proxy would later choke on.
+ */
+const DIALPAD_SHARE_URL_RE = /^https?:\/\/(?:www\.)?dialpad\.com\/r\/(\d+)/i;
+
+function isDialpadShareUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  return DIALPAD_SHARE_URL_RE.test(url);
+}
+
+/**
+ * Strip recording-detail entries whose `url` is a Dialpad *share* page —
+ * the `id` on those entries is the share-link ID, which the recordings
+ * export API rejects. Keeps the entry's URL only when it is a direct media
+ * URL (e.g. an .mp3 blob) that the audio element can actually play.
+ *
+ * Returns `null` when no streamable entries remain so callers can detect
+ * that the recording must fall back to an external Dialpad link.
+ */
+function sanitizeRecordingDetails(
+  details: DialpadRecordingDetail[] | null | undefined,
+): DialpadRecordingDetail[] | null {
+  if (!details || details.length === 0) return null;
+  const cleaned = details
+    .map((d) => {
+      // A share-link URL means `id` is a share-link ID, not an export ID —
+      // drop the id and let the frontend treat the entry as external-only.
+      if (d.url && isDialpadShareUrl(d.url)) {
+        const { id: _id, ...rest } = d;
+        return rest as DialpadRecordingDetail;
+      }
+      return d;
+    })
+    // Drop entries with no usable info at all (no id and no direct URL).
+    .filter((d) => (d.id !== undefined && d.id !== null && String(d.id).length > 0)
+                || (d.url && !isDialpadShareUrl(d.url)));
+  return cleaned.length > 0 ? cleaned : null;
+}
+
+/**
+ * True iff `details` contains at least one entry the playback proxy can
+ * stream (i.e. an entry with a real recording id).
+ */
+function hasStreamableRecording(details: DialpadRecordingDetail[] | null | undefined): boolean {
+  if (!details) return false;
+  return details.some((d) => d.id !== undefined && d.id !== null && String(d.id).length > 0);
+}
 
 /**
  * Fallback: read the plaintext webhook_api_key directly from the contractors
@@ -84,6 +141,10 @@ function buildTitle(direction: 'inbound' | 'outbound', outcome: DialpadCallOutco
  * Extract the recording URL (and whether it points at a voicemail) from a
  * Dialpad call payload. Checks `recording_details`, `recording_url`,
  * `voicemail_link`, and `voicemail_url` in priority order.
+ *
+ * The returned URL is intended for the "open externally" link only —
+ * inline playback always goes through the recordings export API via the
+ * persisted `recording_details[*].id`.
  */
 function extractRecordingUrl(payload: DialpadCallEvent): { url: string | null; isVoicemail: boolean } {
   if (payload.recording_details && payload.recording_details.length > 0) {
@@ -96,6 +157,32 @@ function extractRecordingUrl(payload: DialpadCallEvent): { url: string | null; i
   const vmUrl = payload.voicemail_link ?? payload.voicemail_url ?? null;
   if (vmUrl) return { url: vmUrl, isVoicemail: true };
   return { url: null, isVoicemail: false };
+}
+
+/**
+ * If the webhook payload didn't carry any streamable recording IDs, ask the
+ * Dialpad calls API for the call's recording_details so we can persist a
+ * real export-API id (instead of falling back to a useless share-link id).
+ *
+ * Returns sanitized recording_details on success, or `null` when no
+ * streamable recording is available even after the lookup. Failures are
+ * swallowed — this is best-effort enrichment and must never block activity
+ * creation.
+ */
+async function fetchRecordingDetailsFromApi(
+  contractorId: string,
+  callId: string,
+): Promise<DialpadRecordingDetail[] | null> {
+  try {
+    const result = await getCallDetails(callId, contractorId);
+    if (!result.success || !result.callDetails) return null;
+    const details = (result.callDetails as { recording_details?: DialpadRecordingDetail[] | null })
+      .recording_details ?? null;
+    return sanitizeRecordingDetails(details);
+  } catch (err) {
+    log.warn(`Follow-up GET /calls/${callId} failed for contractor ${contractorId}: ${(err as Error).message}`);
+    return null;
+  }
 }
 
 /**
@@ -298,6 +385,18 @@ export async function processDialpadCallEvent(
 
   const { url: recordingUrl, isVoicemail: isVoicemailLink } = extractRecordingUrl(payload);
 
+  // Sanitize the payload's recording_details: drop any entries where the URL
+  // is a Dialpad share page (those `id`s are share-link IDs, not export IDs,
+  // and the playback proxy 500s when handed one). If we end up with no
+  // streamable entries but the payload has a real recording_url/share URL,
+  // ask the Dialpad calls API for the canonical recording_details.
+  let sanitizedDetails = sanitizeRecordingDetails(payload.recording_details ?? null);
+  if (!hasStreamableRecording(sanitizedDetails) && recordingUrl) {
+    const apiDetails = await fetchRecordingDetailsFromApi(contractorId, callId);
+    if (apiDetails && apiDetails.length > 0) sanitizedDetails = apiDetails;
+  }
+  const recordingPlayable = hasStreamableRecording(sanitizedDetails);
+
   const buildContent = (t: string, recUrl: string | null, isVm: boolean, opName: string | null): string => {
     const note = opName ? ` (handled by ${opName})` : '';
     const recText = recUrl ? ` — [${isVm ? 'Voicemail' : 'Call recording'}](${recUrl})` : '';
@@ -316,7 +415,12 @@ export async function processDialpadCallEvent(
     operatorName: operatorName ?? null,
     recording_url: recordingUrl,
     voicemail_link: payload.voicemail_link ?? null,
-    recording_details: payload.recording_details ?? null,
+    recording_details: sanitizedDetails,
+    // True when there is at least one entry whose `id` the playback proxy can
+    // stream from the Dialpad export API. False when the only thing we have
+    // is a share URL (e.g. https://dialpad.com/r/…), which is rendered as an
+    // "Open in Dialpad" external link instead of an inline player.
+    recording_playable: recordingPlayable,
     contactName: payload.contact?.name ?? null,
     event_timestamp: incomingEventTs,
     is_voicemail_link: recordingUrl ? isVoicemailLink : null,

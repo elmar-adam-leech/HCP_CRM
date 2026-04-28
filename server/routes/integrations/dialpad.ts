@@ -635,10 +635,65 @@ export function registerDialpadRoutes(app: Express): void {
   //
   // Ownership: the recording ID must correspond to a Dialpad call
   // activity belonging to the requester's contractor.
+  //
+  // Failure modes are translated into either an XHR-friendly JSON response
+  // (for the inline <audio> element) or a redirect to the original Dialpad
+  // share URL (for direct browser navigation), so users never see a raw
+  // `{"message":"Internal server error"}` JSON tab.
   // ------------------------------------------------------------------
   app.get("/api/dialpad/recordings/:recordingId", asyncHandler(async (req, res) => {
     const contractorId = req.user.contractorId;
     const { recordingId } = req.params;
+
+    // Distinguish a direct browser navigation (clicking "Open recording" in a
+    // new tab) from an XHR request the <audio> element makes when streaming.
+    // Browsers set `Sec-Fetch-Dest: document` for top-level navigations and
+    // `audio` for media requests. When in doubt, fall back to the Accept
+    // header — text/html implies a top-level navigation.
+    const fetchDest = (req.headers['sec-fetch-dest'] as string | undefined)?.toLowerCase() ?? '';
+    const acceptsHtml = (req.headers['accept'] as string | undefined ?? '').toLowerCase().includes('text/html');
+    const isDirectNavigation = fetchDest === 'document' || (fetchDest === '' && acceptsHtml);
+
+    // Helper: when a recording can't be streamed, send the user to the
+    // Dialpad share page (or render a minimal HTML fallback) instead of a
+    // raw JSON 500. For XHR/audio requests we still respond with JSON so
+    // the player can react.
+    // Escape any value before interpolating it into the HTML fallback page so
+    // that metadata sources broadening in the future can never inject markup.
+    const escapeHtml = (s: string): string =>
+      s.replace(/[&<>"']/g, (c) => (
+        c === '&' ? '&amp;'
+        : c === '<' ? '&lt;'
+        : c === '>' ? '&gt;'
+        : c === '"' ? '&quot;'
+        : '&#39;'
+      ));
+
+    const sendUnplayableFallback = (
+      shareUrl: string | null,
+      reason: string,
+      status: number,
+      extra?: Record<string, unknown>,
+    ): void => {
+      if (isDirectNavigation) {
+        if (shareUrl) {
+          res.redirect(302, shareUrl);
+          return;
+        }
+        res
+          .status(status)
+          .type('html')
+          .send(
+            `<!doctype html><meta charset="utf-8"><title>Recording unavailable</title>`
+            + `<body style="font-family:system-ui;padding:2rem;line-height:1.5">`
+            + `<h1>Recording unavailable</h1>`
+            + `<p>${escapeHtml(reason)}</p>`
+            + `</body>`,
+          );
+        return;
+      }
+      res.status(status).json({ message: reason, ...extra });
+    };
 
     if (!recordingId) {
       res.status(400).json({ message: "recordingId is required" });
@@ -670,7 +725,7 @@ export function registerDialpadRoutes(app: Express): void {
       : sql`${activities.metadata} -> 'recording_details' @> ${stringNeedle}::jsonb`;
 
     const ownershipRows = await db
-      .select({ id: activities.id })
+      .select({ id: activities.id, metadata: activities.metadata })
       .from(activities)
       .where(
         and(
@@ -682,23 +737,60 @@ export function registerDialpadRoutes(app: Express): void {
       .limit(1);
 
     if (ownershipRows.length === 0) {
-      res.status(404).json({ message: "Recording not found" });
+      sendUnplayableFallback(null, "Recording not found", 404);
       return;
     }
 
-    const result = await fetchRecording(contractorId, recordingId);
+    // The original recording_url (typically a https://dialpad.com/r/… share
+    // page) is preserved in metadata so we can hand the user back to Dialpad
+    // when our own playback path fails.
+    const ownershipMeta = (ownershipRows[0].metadata ?? {}) as Record<string, unknown>;
+    const shareUrl = typeof ownershipMeta.recording_url === 'string' ? ownershipMeta.recording_url : null;
+
+    let result;
+    try {
+      result = await fetchRecording(contractorId, recordingId);
+    } catch (err) {
+      log.error(`Recording proxy threw for contractor ${contractorId}, recording ${recordingId}:`, err);
+      sendUnplayableFallback(
+        shareUrl,
+        "We couldn't fetch this recording from Dialpad. Try opening it in Dialpad instead.",
+        502,
+        { error: (err as Error).message },
+      );
+      return;
+    }
+
     if (!result.ok) {
       if (result.missingScope) {
+        // Missing-scope is an admin/config issue — surface it cleanly even on
+        // a top-level navigation so the contractor can fix it.
+        if (isDirectNavigation) {
+          res.status(502).type('html').send(
+            `<!doctype html><meta charset="utf-8"><title>Recording unavailable</title>`
+            + `<body style="font-family:system-ui;padding:2rem;line-height:1.5">`
+            + `<h1>Recording unavailable</h1>`
+            + `<p>The Dialpad API key is missing the <code>recordings_export</code> scope.`
+            + ` An admin must regenerate the API key with that scope enabled.</p>`
+            + (shareUrl ? `<p><a href="${escapeHtml(shareUrl)}">Open in Dialpad</a></p>` : '')
+            + `</body>`,
+          );
+          return;
+        }
         res.status(502).json({
           message: "Dialpad API key is missing the recordings_export scope. Please regenerate the API key with that scope enabled.",
           missingScope: true,
         });
         return;
       }
-      res.status(result.status === 404 ? 404 : 502).json({
-        message: "Failed to fetch recording from Dialpad",
-        error: result.error,
-      });
+      sendUnplayableFallback(
+        shareUrl,
+        result.status === 404
+          ? "This recording is no longer available from Dialpad."
+          : "We couldn't fetch this recording from Dialpad. Try opening it in Dialpad instead.",
+        result.status === 404 ? 404 : 502,
+        { error: result.error },
+      );
       return;
     }
 

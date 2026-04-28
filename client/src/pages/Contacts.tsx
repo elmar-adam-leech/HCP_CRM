@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -160,6 +161,31 @@ export default function Contacts() {
   const handleDelete = useCallback((contact: ContactWithCounts) => {
     setDeleteConfirm({ isOpen: true, contactId: contact.id, contactName: contact.name });
   }, []);
+
+  // Open the contact detail panel automatically when navigated here with `?id=…`,
+  // e.g. from the Recent Activity timeline jumping to a matched customer.
+  const [location] = useLocation();
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get("id");
+    if (!id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiRequest("GET", `/api/contacts/${id}`);
+        const contact = await res.json();
+        if (!cancelled) setDetailContact(contact);
+      } catch {
+        // Ignore fetch failures — page still loads in list view.
+      }
+    })();
+    params.delete("id");
+    const nextSearch = params.toString();
+    const nextUrl = nextSearch ? `${location}?${nextSearch}` : location;
+    window.history.replaceState({}, "", nextUrl);
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location]);
 
   const handleCardClick = useCallback((contact: ContactWithCounts) => {
     if (!mergeMode) {
