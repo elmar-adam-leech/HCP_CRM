@@ -225,6 +225,13 @@
       "when": 1777689600000,
       "tag": "0031_webauthn_credentials",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1777862400000,
+      "tag": "0032_webhook_incidents",
+      "breakpoints": true
     }
   ]
 }

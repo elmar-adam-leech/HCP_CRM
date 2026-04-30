@@ -7,6 +7,7 @@ export class HcpJobsModule extends HcpBaseClient {
     sort_by?: string;
     sort_direction?: string;
     page_size?: number;
+    page?: number;
     include?: string;
   }): Promise<HousecallProResponse<HousecallProJob[]>> {
     const queryParams = new URLSearchParams();
@@ -22,6 +23,9 @@ export class HcpJobsModule extends HcpBaseClient {
     }
     if (params?.page_size) {
       queryParams.append('page_size', params.page_size.toString());
+    }
+    if (params?.page) {
+      queryParams.append('page', params.page.toString());
     }
     if (params?.include) {
       queryParams.append('include', params.include);

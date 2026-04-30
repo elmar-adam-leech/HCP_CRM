@@ -974,6 +974,45 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `CREATE INDEX IF NOT EXISTS "webauthn_challenges_user_id_idx" ON "webauthn_challenges"("user_id")`,
       description: 'webauthn_challenges.user_id index',
     },
+    // ---- Task #678: HCP webhook restart resilience & auto-backfill ----
+    {
+      // Note: `service` is varchar (not the webhook_service pg enum) because
+      // the live webhook_events.service column is varchar in production —
+      // matching that here keeps the two tables compatible without forcing
+      // an enum-creation migration.
+      sql: `CREATE TABLE IF NOT EXISTS "webhook_incidents" (
+              "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+              "contractor_id" varchar NOT NULL REFERENCES "contractors"("id"),
+              "service" varchar NOT NULL,
+              "kind" varchar NOT NULL,
+              "opened_at" timestamp NOT NULL DEFAULT now(),
+              "closed_at" timestamp,
+              "notified_at" timestamp,
+              "backfill_attempted_at" timestamp,
+              "backfill_summary" text
+            )`,
+      description: 'webhook_incidents table (Task #678: persisted outage markers + backfill log)',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS "webhook_incidents_contractor_service_kind_idx"
+              ON "webhook_incidents"("contractor_id", "service", "kind")`,
+      description: 'webhook_incidents lookup index by (contractor, service, kind)',
+    },
+    {
+      // Unique partial index — see migration 0032 comment. Enforces the
+      // "at most one open incident per (contractor, service, kind)" rule
+      // at the DB level so app-side ON CONFLICT DO NOTHING is atomic.
+      sql: `CREATE UNIQUE INDEX IF NOT EXISTS "webhook_incidents_unique_open_idx"
+              ON "webhook_incidents"("contractor_id", "service", "kind")
+              WHERE closed_at IS NULL`,
+      description: 'webhook_incidents UNIQUE partial index on open incidents (atomic single-incident guarantee)',
+    },
+    {
+      // Drop the older non-unique partial — the new unique partial supersedes
+      // it. Safe to run repeatedly because of IF EXISTS.
+      sql: `DROP INDEX IF EXISTS "webhook_incidents_open_idx"`,
+      description: 'drop legacy non-unique webhook_incidents_open_idx (replaced by unique partial)',
+    },
   ];
 
 export async function applyColumnMigrations(

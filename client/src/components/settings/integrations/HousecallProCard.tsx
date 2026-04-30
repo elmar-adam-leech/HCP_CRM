@@ -73,11 +73,56 @@ export function HousecallProCard() {
     retry: false,
   });
 
-  const { data: webhookStatus } = useQuery<{ lastEventAt: string | null; status: 'healthy' | 'warning' | 'disabled'; statusReason?: string; serverStartedAt: string; rejectionCount24h: number; lastRejectionReason: string | null }>({
+  const { data: webhookStatus } = useQuery<{
+    lastEventAt: string | null;
+    status: 'healthy' | 'warning' | 'disabled';
+    statusReason?: string;
+    serverStartedAt: string;
+    rejectionCount24h: number;
+    lastRejectionReason: string | null;
+    lastBackfillAt: string | null;
+    lastBackfillSummary: string | null;
+    backfillInProgress: boolean;
+  }>({
     queryKey: ['/api/integrations/housecall-pro/webhook-status'],
     enabled: integration?.isEnabled === true,
-    refetchInterval: 5 * 60 * 1000,
+    // Poll faster while a backfill is running so the "Resyncing…" badge
+    // turns into a fresh "Last resync" timestamp soon after it finishes.
+    refetchInterval: (query) =>
+      query.state.data?.backfillInProgress ? 3000 : 5 * 60 * 1000,
     refetchIntervalInBackground: false,
+  });
+
+  const resyncMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest('POST', '/api/integrations/housecall-pro/webhook-resync');
+      return res.json() as Promise<{ accepted: boolean; message?: string; reason?: string }>;
+    },
+    onSuccess: (data) => {
+      // Optimistically flip backfillInProgress=true in the cache so the
+      // button label cleanly transitions "Starting…" → "Resyncing…" without
+      // flickering back to "Resync now" while we wait for the status poll
+      // to observe the change.
+      if (data.accepted) {
+        queryClient.setQueryData(
+          ['/api/integrations/housecall-pro/webhook-status'],
+          (prev: any) => prev ? { ...prev, backfillInProgress: true } : prev,
+        );
+      }
+      queryClient.invalidateQueries({ queryKey: ['/api/integrations/housecall-pro/webhook-status'] });
+      if (data.accepted) {
+        toast({
+          title: 'Resync started',
+          description: data.message ?? 'Pulling recent estimates and jobs from Housecall Pro. This usually takes a few seconds.',
+        });
+      } else {
+        toast({
+          title: 'Resync already running',
+          description: data.message ?? 'A resync is already in progress for this account.',
+        });
+      }
+    },
+    onError: (error: any) => toast({ title: 'Resync failed', description: error?.message ?? 'Failed to resync from Housecall Pro', variant: 'destructive' }),
   });
 
   const { data: syncDateData } = useQuery<{ syncStartDate: string | null }>({
@@ -460,6 +505,28 @@ export function HousecallProCard() {
                     <AlertTriangle className={`h-3 w-3 ${webhookStatus.rejectionCount24h > 0 ? 'text-yellow-500' : 'text-muted-foreground'}`} />
                     {webhookStatus.rejectionCount24h} rejection{webhookStatus.rejectionCount24h !== 1 ? 's' : ''} (24h)
                   </span>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <span className="text-xs text-muted-foreground flex items-center gap-1">
+                    <RefreshCw className="h-3 w-3" />
+                    {webhookStatus.lastBackfillAt
+                      ? <>Last resync: {formatRelativeTime(webhookStatus.lastBackfillAt)}{webhookStatus.lastBackfillSummary ? <> &middot; {webhookStatus.lastBackfillSummary}</> : null}</>
+                      : <>Never resynced manually</>
+                    }
+                  </span>
+                  {isAdmin && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => resyncMutation.mutate()}
+                      disabled={resyncMutation.isPending || webhookStatus.backfillInProgress}
+                      data-testid="button-hcp-webhook-resync"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${(resyncMutation.isPending || webhookStatus.backfillInProgress) ? 'animate-spin' : ''}`} />
+                      {webhookStatus.backfillInProgress ? 'Resyncing…' : (resyncMutation.isPending ? 'Starting…' : 'Resync now')}
+                    </Button>
+                  )}
                 </div>
 
                 {(webhookStatus.status === 'warning' || webhookStatus.status === 'disabled') && webhookConfig && (

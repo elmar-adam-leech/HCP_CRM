@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, boolean, index } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, boolean, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { messageTypeEnum, messageStatusEnum, messageDirectionEnum, templateTypeEnum, templateStatusEnum, webhookServiceEnum, webhookEventTypeEnum } from "./enums";
@@ -131,6 +131,38 @@ export const insertWebhookEventSchema = createInsertSchema(webhookEvents).omit({
 });
 export type InsertWebhookEvent = z.infer<typeof insertWebhookEventSchema>;
 export type WebhookEvent = typeof webhookEvents.$inferSelect;
+
+// Webhook incidents — durable record of an open "no events received" outage
+// for a given (contractorId, service, kind) so admin notifications fire
+// exactly once per outage even if the server restarts during it. A row with
+// `closed_at IS NULL` represents an open incident; closing it stamps
+// `closedAt`. `kind` distinguishes silence ('staleness') from auth-failure
+// spikes ('rejection') so the two can coexist.
+//
+// Also records the most recent backfill attempt for the contractor so the
+// settings panel can surface "Last resync" time and the next health-check
+// cycle can avoid re-firing a backfill more than once per incident.
+export const webhookIncidents = pgTable("webhook_incidents", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  contractorId: varchar("contractor_id").notNull().references(() => contractors.id),
+  // varchar (not webhookServiceEnum) — see schema-drift.ts comment.
+  service: varchar("service").notNull(),
+  kind: varchar("kind").notNull(), // 'staleness' | 'rejection'
+  openedAt: timestamp("opened_at").defaultNow().notNull(),
+  closedAt: timestamp("closed_at"),
+  notifiedAt: timestamp("notified_at"),
+  backfillAttemptedAt: timestamp("backfill_attempted_at"),
+  backfillSummary: text("backfill_summary"),
+}, (table) => ({
+  contractorServiceKindIdx: index("webhook_incidents_contractor_service_kind_idx").on(table.contractorId, table.service, table.kind),
+  // UNIQUE partial index: at most one OPEN incident per (contractor, service,
+  // kind). This is the atomicity guarantee the health checker relies on —
+  // `INSERT ... ON CONFLICT DO NOTHING` will silently no-op when an open
+  // incident already exists, making the "open if not already open" path race-free.
+  uniqueOpenIdx: uniqueIndex("webhook_incidents_unique_open_idx").on(table.contractorId, table.service, table.kind).where(sql`closed_at IS NULL`),
+}));
+
+export type WebhookIncident = typeof webhookIncidents.$inferSelect;
 
 // Templates table for text and email templates
 export const templates = pgTable("templates", {

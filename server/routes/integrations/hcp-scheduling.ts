@@ -10,7 +10,7 @@ import { asyncHandler } from "../../utils/async-handler";
 import { logger } from "../../utils/logger";
 import { createActivityAndBroadcast } from "../../utils/activity";
 import { housecallSchedulingService } from "../../housecall-scheduling-service";
-import { getWebhookHealthStatus, getWebhookStatus } from "../../services/hcp-webhook-health";
+import { getWebhookHealthStatus, getWebhookStatus, triggerManualBackfill } from "../../services/hcp-webhook-health";
 import crypto from "crypto";
 
 const log = logger('HcpScheduling');
@@ -311,5 +311,26 @@ export function registerHcpSchedulingRoutes(app: Express): void {
   app.get("/api/integrations/housecall-pro/webhook-status", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const status = await getWebhookStatus(req.user.contractorId);
     res.json(status);
+  }));
+
+  // Manual "Resync now" button. Pulls recent estimates + jobs through the
+  // same dispatch pipeline a webhook delivery uses (idempotent upserts).
+  // Returns 202 immediately and runs the backfill in the background; the UI
+  // polls /webhook-status to learn when `lastBackfillAt` updates.
+  // Safe to call repeatedly; only Manager/Admin can trigger.
+  app.post("/api/integrations/housecall-pro/webhook-resync", requireManagerOrAdmin, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    const result = triggerManualBackfill(req.user.contractorId);
+    if (!result.accepted) {
+      res.status(409).json({
+        accepted: false,
+        message: 'A resync is already running for this account.',
+        reason: result.reason,
+      });
+      return;
+    }
+    res.status(202).json({
+      accepted: true,
+      message: 'Resync started. Check back in a few seconds.',
+    });
   }));
 }
