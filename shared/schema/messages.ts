@@ -122,6 +122,15 @@ export const webhookEvents = pgTable("webhook_events", {
   // lookup. Excludes both successfully processed rows and permanently-failed
   // rows so the index stays small and the poller scan stays cheap.
   unprocessedIdx: index("webhook_events_unprocessed_idx").on(table.createdAt).where(sql`processed = false AND failed_at IS NULL`),
+  // Composite index covering the four queries the HCP webhook-health checker
+  // runs every tick (latest non-rejection event, latest rejection event,
+  // 10-minute rejection count, 24-hour rejection count). Without this the
+  // planner has to bitmap-AND across narrow indexes and re-sort by
+  // created_at, which under DB-pool pressure was slow enough to surface as
+  // `timeout exceeded when trying to connect` and silently fail the health
+  // checker (Task #684).
+  contractorServiceEventTypeCreatedAtIdx: index("webhook_events_contractor_service_event_type_created_at_idx")
+    .on(table.contractorId, table.service, table.eventType, table.createdAt.desc()),
 }));
 
 export const insertWebhookEventSchema = createInsertSchema(webhookEvents).omit({
@@ -147,7 +156,10 @@ export const webhookIncidents = pgTable("webhook_incidents", {
   contractorId: varchar("contractor_id").notNull().references(() => contractors.id),
   // varchar (not webhookServiceEnum) — see schema-drift.ts comment.
   service: varchar("service").notNull(),
-  kind: varchar("kind").notNull(), // 'staleness' | 'rejection'
+  // 'staleness' | 'rejection' | 'health-check-failure' | 'subscription-missing'
+  // (see server/services/hcp-webhook-health.ts for the full set; varchar is
+  // intentional so we can add new kinds without an enum migration).
+  kind: varchar("kind").notNull(),
   openedAt: timestamp("opened_at").defaultNow().notNull(),
   closedAt: timestamp("closed_at"),
   notifiedAt: timestamp("notified_at"),

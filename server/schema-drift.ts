@@ -1033,6 +1033,17 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `DROP INDEX IF EXISTS "sales_processes_contractor_unique"`,
       description: 'drop stale single-column unique index sales_processes_contractor_unique (multi-cadence replacement is now in place)',
     },
+    // ---- Task #684: HCP webhook-health checker performance ----
+    // The four health queries all filter by (contractor_id, service) plus
+    // event_type and order by created_at DESC. Without a covering composite
+    // the planner bitmap-ANDs across narrow indexes and re-sorts, which under
+    // pool pressure was slow enough to surface as `timeout exceeded when
+    // trying to connect` and silently fail the health check (Task #684).
+    {
+      sql: `CREATE INDEX IF NOT EXISTS "webhook_events_contractor_service_event_type_created_at_idx"
+              ON "webhook_events"("contractor_id", "service", "event_type", "created_at" DESC)`,
+      description: 'webhook_events composite index for HCP webhook-health checker (task #684)',
+    },
   ];
 
 export async function applyColumnMigrations(

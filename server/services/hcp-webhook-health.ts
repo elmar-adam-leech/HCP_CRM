@@ -4,9 +4,11 @@ import { eq, and, desc, sql, gte, ne, isNull } from "drizzle-orm";
 import { storage } from "../storage";
 import { broadcastToContractor } from "../websocket";
 import { housecallProService } from "../hcp/index";
+import { hcpWebhookSubscriptionsService, type HcpWebhookSubscription } from "../hcp/webhook-subscriptions";
 import { logger } from "../utils/logger";
 import { formatDbError } from "../utils/db-error";
 import { runHcpWebhookBackfill, summarizeBackfill } from "../sync/hcp-backfill";
+import { sendHcpIncidentEmail } from "./hcp-incident-email";
 
 const log = logger('HcpWebhookHealth');
 
@@ -17,6 +19,18 @@ const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const REJECTION_SPIKE_WINDOW_MS = 10 * 60 * 1000;
 const REJECTION_SPIKE_COUNT = 10;
 
+// Hard ceiling on a single per-contractor health check. The DB queries are
+// each expected to run in well under a second after the composite index
+// from migration 0034; if the whole tick takes longer than this we assume
+// the DB or pool is unhealthy and surface that as a `health-check-failure`
+// incident instead of letting the timer silently hang for the next tick.
+const HEALTH_CHECK_TIMEOUT_MS = 30_000;
+
+// Subscription probe is rate-limited to once per hour per contractor — the
+// HCP API is not free and the listing rarely changes.
+const SUBSCRIPTION_PROBE_INTERVAL_MS = 60 * 60 * 1000;
+const lastSubscriptionProbeAt = new Map<string, number>();
+
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let serverStartedAt: Date = new Date();
 
@@ -25,6 +39,31 @@ const INTEGRATIONS_FETCH_LIMIT = 100;
 const SERVICE_HCP = 'housecall-pro';
 const KIND_STALENESS = 'staleness';
 const KIND_REJECTION = 'rejection';
+const KIND_HEALTH_CHECK_FAILURE = 'health-check-failure';
+const KIND_SUBSCRIPTION_MISSING = 'subscription-missing';
+
+/**
+ * Runs `op` with a hard timeout. Used to defend against the DB connection
+ * pool getting wedged: a `pg` query with no responsive backend will hang
+ * forever on the connection-acquire path, and the interval-driven health
+ * checker would silently stop firing. Wrapping the per-contractor check in
+ * `Promise.race(timeout)` lets us escalate that to a visible incident.
+ *
+ * NOTE: This DOES NOT actually cancel the underlying query — it just frees
+ * the surrounding control flow. The query will eventually settle (or the
+ * connection will be torn down by the pool's idleTimeout).
+ */
+async function withTimeout<T>(op: () => Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([op(), timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export function getServerStartedAt(): Date {
   return serverStartedAt;
@@ -248,9 +287,22 @@ export async function checkHcpWebhookHealth(): Promise<void> {
     for (const integration of enabledIntegrations) {
       const contractorId = integration.contractorId;
       try {
-        await checkContractorHealth(contractorId);
+        await withTimeout(
+          () => checkContractorHealth(contractorId),
+          HEALTH_CHECK_TIMEOUT_MS,
+          `checkContractorHealth(${contractorId})`,
+        );
+        // Successful pass — close any open `health-check-failure` incident
+        // (the previous tick failed but we recovered). Best-effort: a DB
+        // failure here is just logged so it doesn't mask the success.
+        await closeOpenIncident(contractorId, KIND_HEALTH_CHECK_FAILURE).catch(err =>
+          log.warn(`Failed to close health-check-failure incident for ${contractorId}: ${formatDbError(err)}`)
+        );
       } catch (err) {
         log.error(`Error checking webhook health for contractor ${contractorId}: ${formatDbError(err)}`);
+        await openHealthCheckFailureIncident(contractorId, err).catch(notifyErr =>
+          log.error(`Failed to record health-check-failure incident for ${contractorId}: ${formatDbError(notifyErr)}`)
+        );
       }
     }
   } catch (err) {
@@ -258,7 +310,181 @@ export async function checkHcpWebhookHealth(): Promise<void> {
   }
 }
 
+/**
+ * The health-check itself is failing — usually because the DB pool is
+ * exhausted or a query is timing out. Open a `health-check-failure`
+ * incident (deduped by the unique partial index) and email admins so the
+ * outage is visible even though the in-app notifications path itself
+ * may be impaired.
+ *
+ * Email is wrapped in a try/catch — an alerting failure must never make
+ * the original health-check failure worse.
+ */
+async function openHealthCheckFailureIncident(contractorId: string, originalErr: unknown): Promise<void> {
+  let incident: typeof webhookIncidents.$inferSelect;
+  let created: boolean;
+  try {
+    const opened = await openIncidentAtomic(contractorId, KIND_HEALTH_CHECK_FAILURE);
+    incident = opened.incident;
+    created = opened.created;
+  } catch (err) {
+    log.error(`Cannot open health-check-failure incident (db itself is failing) for ${contractorId}`, err);
+    return;
+  }
+  // Already paged successfully on a prior tick — nothing to do. We
+  // intentionally do NOT short-circuit on `!created` alone: a previous
+  // tick may have opened the incident but failed to deliver email
+  // (transient SMTP outage), in which case `notifiedAt` is still null
+  // and we should retry the notify path on this tick.
+  if (incident.notifiedAt) {
+    return;
+  }
+
+  const errMsg = originalErr instanceof Error ? originalErr.message : String(originalErr);
+  log.warn(`Contractor ${contractorId}: ${created ? 'opened' : 'retrying notify on'} health-check-failure incident — ${errMsg}`);
+
+  const message =
+    `The Housecall Pro webhook health monitor failed to run for your account. ` +
+    `This usually means the application's database is overloaded or unreachable. ` +
+    `While the monitor is failing, you will NOT receive automatic alerts about webhook ` +
+    `outages, so please verify the integration manually until this is resolved. ` +
+    `Underlying error: ${errMsg}`;
+
+  await notifyIncidentOpened({
+    contractorId,
+    incidentId: incident.id,
+    kind: 'health-check-failure',
+    title: 'Webhook health monitor is failing',
+    message,
+    emailSubject: 'Webhook health monitor is failing for your CRM',
+    emailBody: message,
+  });
+}
+
+function linkToIntegrations(): string {
+  const base = (process.env.APP_URL || '').replace(/\/+$/, '');
+  return base ? `${base}/settings/integrations` : '/settings/integrations';
+}
+
+/**
+ * Single point of truth for "an HCP incident just opened — page everyone."
+ *
+ * Ordering matters and is intentional (Task #684):
+ *   1. Send the out-of-band SendGrid email FIRST. This is the alert
+ *      channel that survives the CRM being impaired (the original
+ *      symptom), so it's the one we most need to dedup correctly.
+ *   2. If email had at least one recipient and ALL of them failed to
+ *      deliver, treat that as a transient SMTP outage: bail out
+ *      WITHOUT inserting in-app notifications and WITHOUT stamping
+ *      `notifiedAt`. The next health-check tick will retry the whole
+ *      flow. This is the key fix that prevents a single SMTP hiccup
+ *      from permanently silencing the alert.
+ *   3. On any other outcome (email succeeded for ≥1 recipient, OR
+ *      there are no admin email addresses at all), insert in-app
+ *      notifications, broadcast the websocket update, and stamp
+ *      `notifiedAt` so we don't double-page.
+ *
+ * Each side-effect is wrapped individually so a failure in one (e.g.
+ * websocket bus down) does not block the others.
+ */
+async function notifyIncidentOpened(params: {
+  contractorId: string;
+  incidentId: string;
+  kind: 'staleness' | 'rejection' | 'health-check-failure' | 'subscription-missing';
+  title: string;
+  message: string;
+  emailSubject: string;
+  emailBody: string;
+}): Promise<void> {
+  const { contractorId, incidentId, kind, title, message, emailSubject, emailBody } = params;
+
+  // 1. Out-of-band SendGrid email FIRST — this is the channel that has
+  //    to land for an incident to count as "notified" for dedup purposes.
+  let emailResult: { sent: number; attempted: number } = { sent: 0, attempted: 0 };
+  try {
+    emailResult = await sendHcpIncidentEmail({
+      contractorId,
+      kind,
+      subject: emailSubject,
+      body: emailBody,
+      link: linkToIntegrations(),
+    });
+  } catch (err) {
+    // sendHcpIncidentEmail is documented to never throw, but defend anyway.
+    log.error(`Unexpected throw from sendHcpIncidentEmail for ${contractorId} (${kind})`, err);
+    emailResult = { sent: 0, attempted: 1 };
+  }
+
+  // 2. Transient delivery failure → bail out and let the next tick retry.
+  //    We deliberately skip the in-app insert here so the user doesn't get
+  //    a silent in-app row for an alert that nobody actually received.
+  if (emailResult.attempted > 0 && emailResult.sent === 0) {
+    log.warn(
+      `${kind} email delivery failed for ${contractorId} (0/${emailResult.attempted} sent) — ` +
+      `deferring in-app notify + dedup so the next tick can retry`
+    );
+    return;
+  }
+
+  // 3. Email succeeded (or there is no possibility of email): record the
+  //    in-app notifications, broadcast the websocket update, and stamp the
+  //    dedup marker.
+  let adminCount = 0;
+  try {
+    const contractorUsers = await storage.getContractorUsers(contractorId);
+    const adminUsers = contractorUsers.filter(uc =>
+      uc.role === 'admin' || uc.role === 'super_admin'
+    );
+    adminCount = adminUsers.length;
+    for (const admin of adminUsers) {
+      try {
+        await db.insert(notifications).values({
+          userId: admin.userId,
+          contractorId,
+          type: 'system',
+          title,
+          message,
+          link: '/settings/integrations',
+        });
+      } catch (err) {
+        log.warn(`Failed to insert in-app notification for admin ${admin.userId} (${kind}): ${formatDbError(err)}`);
+      }
+    }
+  } catch (err) {
+    log.error(`Failed to enumerate admins for ${kind} in-app notification on ${contractorId}: ${formatDbError(err)}`);
+  }
+
+  try {
+    if (adminCount > 0) {
+      broadcastToContractor(contractorId, { type: 'notification_updated' });
+    }
+  } catch (err) {
+    log.warn(`Websocket broadcast failed for ${contractorId} (${kind}): ${formatDbError(err)}`);
+  }
+
+  await markIncidentNotified(incidentId).catch(err =>
+    log.warn(`Failed to mark ${kind} incident ${incidentId} notified: ${formatDbError(err)}`)
+  );
+
+  log.info(
+    `Notified ${adminCount} admin(s) in-app + ${emailResult.sent}/${emailResult.attempted} via email ` +
+    `about ${kind} incident on contractor ${contractorId}`
+  );
+}
+
 async function checkContractorHealth(contractorId: string): Promise<void> {
+  // Hourly subscription probe — runs every tick but only actually calls HCP
+  // once per `SUBSCRIPTION_PROBE_INTERVAL_MS`. Done up-front (and not gated
+  // on an existing staleness incident) so a deleted webhook subscription is
+  // caught proactively, before the 24-hour staleness threshold trips.
+  // Errors are swallowed: a probe failure must not abort the rest of the
+  // health check.
+  try {
+    await runSubscriptionProbe(contractorId);
+  } catch (err) {
+    log.warn(`Subscription probe (proactive) failed for ${contractorId}: ${formatDbError(err)}`);
+  }
+
   const [latestEventResult, rejectionSpike, openStalenessIncident, openRejectionIncident] = await Promise.all([
     db.select({ createdAt: webhookEvents.createdAt })
       .from(webhookEvents)
@@ -278,39 +504,34 @@ async function checkContractorHealth(contractorId: string): Promise<void> {
   const now = new Date();
 
   // ---- Rejection spike (independent of staleness) ----
-  if (rejectionSpike.isSpike && !openRejectionIncident) {
-    // Atomic open: if a parallel tick already opened a rejection incident
-    // since our SELECT, `created` will be false and we skip notify entirely.
+  // Enter the notify branch when (a) there's a fresh spike and no incident
+  // yet, OR (b) an incident is already open but we haven't successfully
+  // notified yet (e.g. last tick's email delivery failed). The latter is
+  // what gives us automatic recovery from a transient SMTP outage.
+  const needsRejectionNotify =
+    rejectionSpike.isSpike && (!openRejectionIncident || !openRejectionIncident.notifiedAt);
+  if (needsRejectionNotify) {
+    // openIncidentAtomic is idempotent — returns the existing row when one
+    // is already open, so this is safe to call on retry ticks too.
     const { incident, created } = await openIncidentAtomic(contractorId, KIND_REJECTION);
-    if (!created) {
-      log.info(`Contractor ${contractorId}: rejection incident already opened by another tick — skipping duplicate notify`);
-    } else {
-      log.warn(`Contractor ${contractorId}: rejection spike detected — ${rejectionSpike.recentRejectionCount} rejections in the last 10 minutes with no successful events`);
+    log.warn(
+      `Contractor ${contractorId}: ${created ? 'opened' : 'retrying notify on'} rejection incident — ` +
+      `${rejectionSpike.recentRejectionCount} rejections in the last 10 minutes with no successful events`
+    );
 
-      const contractorUsers = await storage.getContractorUsers(contractorId);
-      const adminUsers = contractorUsers.filter(uc =>
-        uc.role === 'admin' || uc.role === 'super_admin'
-      );
-
-      if (adminUsers.length > 0) {
-        const reasonNote = rejectionSpike.lastRejectionReason
-          ? ` The most recent rejection reason is: ${rejectionSpike.lastRejectionReason}.`
-          : '';
-        for (const admin of adminUsers) {
-          await db.insert(notifications).values({
-            userId: admin.userId,
-            contractorId,
-            type: 'system',
-            title: 'Housecall Pro Webhook Auth Failures',
-            message: `${rejectionSpike.recentRejectionCount} webhook requests from Housecall Pro were rejected in the last 10 minutes with no successful events.${reasonNote} This usually means the webhook signing secret or URL token is misconfigured. Go to Settings → Integrations → Housecall Pro to verify your webhook configuration.`,
-            link: '/settings/integrations',
-          });
-        }
-        broadcastToContractor(contractorId, { type: 'notification_updated' });
-        log.info(`Sent rejection spike alert to ${adminUsers.length} admin(s) for contractor ${contractorId}`);
-        await markIncidentNotified(incident.id);
-      }
-    }
+    const reasonNote = rejectionSpike.lastRejectionReason
+      ? ` The most recent rejection reason is: ${rejectionSpike.lastRejectionReason}.`
+      : '';
+    const message = `${rejectionSpike.recentRejectionCount} webhook requests from Housecall Pro were rejected in the last 10 minutes with no successful events.${reasonNote} This usually means the webhook signing secret or URL token is misconfigured. Go to Settings → Integrations → Housecall Pro to verify your webhook configuration.`;
+    await notifyIncidentOpened({
+      contractorId,
+      incidentId: incident.id,
+      kind: 'rejection',
+      title: 'Housecall Pro Webhook Auth Failures',
+      message,
+      emailSubject: 'Housecall Pro webhook auth failures',
+      emailBody: message,
+    });
   } else if (!rejectionSpike.isSpike && openRejectionIncident) {
     log.info(`Contractor ${contractorId}: rejection spike cleared — closing rejection incident`);
     await closeOpenIncident(contractorId, KIND_REJECTION);
@@ -343,38 +564,34 @@ async function checkContractorHealth(contractorId: string): Promise<void> {
     return;
   }
 
-  // Already in an open incident — already notified. But if we never managed
-  // to attempt a backfill (API was down at incident-open time, or no admin
-  // users existed yet), retry the backfill now in case conditions changed.
-  if (openStalenessIncident) {
+  // Already in an open incident, AND we already successfully notified for
+  // it — there's nothing left to alert on. Retry the backfill if it never
+  // got an initial attempt (API was down at incident-open time).
+  if (openStalenessIncident && openStalenessIncident.notifiedAt) {
     if (!openStalenessIncident.backfillAttemptedAt) {
       await tryBackfillForOpenIncident(contractorId, openStalenessIncident.id, lastEventAt, 'retry');
     }
     return;
   }
 
-  // ---- Open a new staleness incident (atomic — see openIncidentAtomic) ----
+  // ---- Open or reuse the staleness incident (atomic — see openIncidentAtomic) ----
+  // openIncidentAtomic is idempotent: it returns the existing row when one
+  // is already open with `notifiedAt` still null (i.e. the previous tick
+  // failed to deliver email). That's exactly the retry path we want.
   const { incident, created } = await openIncidentAtomic(contractorId, KIND_STALENESS);
-  if (!created) {
-    log.info(`Contractor ${contractorId}: staleness incident was opened by another tick — skipping duplicate notify+backfill`);
-    return;
-  }
-  log.warn(`Contractor ${contractorId}: last HCP webhook event was ${Math.round(ageMs / 3600000 * 10) / 10}h ago — opening incident and alerting admins`);
+  log.warn(
+    `Contractor ${contractorId}: ${created ? 'opened' : 'retrying notify on'} staleness incident — ` +
+    `last HCP webhook event was ${Math.round(ageMs / 3600000 * 10) / 10}h ago`
+  );
 
   // Try backfill FIRST (regardless of whether admins exist) so a tenant
   // without an admin user still gets caught up, and so the resync summary
-  // can be embedded in the notification we send next.
-  const backfillOutcome = await tryBackfillForOpenIncident(contractorId, incident.id, lastEventAt, 'initial');
-
-  const contractorUsers = await storage.getContractorUsers(contractorId);
-  const adminUsers = contractorUsers.filter(uc =>
-    uc.role === 'admin' || uc.role === 'super_admin'
-  );
-
-  if (adminUsers.length === 0) {
-    log.warn(`Contractor ${contractorId}: no admin users found, cannot send webhook health notification`);
-    return;
-  }
+  // can be embedded in the notification we send next. Skip the backfill on
+  // retry ticks if a previous tick already attempted one — we don't want to
+  // re-pull from HCP just because email delivery failed last time.
+  const backfillOutcome: BackfillOutcome = incident.backfillAttemptedAt
+    ? { kind: 'success', summary: incident.backfillSummary || 'previously synced' }
+    : await tryBackfillForOpenIncident(contractorId, incident.id, lastEventAt, 'initial');
 
   let backfillNote = '';
   if (backfillOutcome.kind === 'success') {
@@ -388,21 +605,144 @@ async function checkContractorHealth(contractorId: string): Promise<void> {
     : 'The HCP API connection test also failed — your API key may need to be updated. Once the connection is restored, click Resync now in the integration card here to pull anything missed.';
 
   const ageHours = Math.round(ageMs / 3600000 * 10) / 10;
+  const stalenessMessage = `No webhook events have been received from Housecall Pro in the last ${ageHours} hours, so real-time updates for leads, estimates, and jobs may have stopped. ${apiNote}`;
 
-  for (const admin of adminUsers) {
-    await db.insert(notifications).values({
-      userId: admin.userId,
-      contractorId,
-      type: 'system',
-      title: 'Housecall Pro Webhooks May Be Disabled',
-      message: `No webhook events have been received from Housecall Pro in the last ${ageHours} hours, so real-time updates for leads, estimates, and jobs may have stopped. ${apiNote}`,
-      link: '/settings/integrations',
-    });
+  // Routed through the shared notifier so the in-app insert, websocket
+  // broadcast, out-of-band email, and `notifiedAt` stamp follow the same
+  // ordering as every other HCP incident kind (Task #684 code review):
+  // email is attempted BEFORE markIncidentNotified, so a transient SMTP
+  // failure on this tick doesn't permanently suppress the email path.
+  await notifyIncidentOpened({
+    contractorId,
+    incidentId: incident.id,
+    kind: 'staleness',
+    title: 'Housecall Pro Webhooks May Be Disabled',
+    message: stalenessMessage,
+    emailSubject: 'Housecall Pro webhooks may be disabled',
+    emailBody: stalenessMessage,
+  });
+
+  // Note: a subscription probe was already run at the top of
+  // `checkContractorHealth`. We don't re-probe here — the hourly throttle
+  // would no-op anyway, and the staleness incident text already advises
+  // the admin to verify the dashboard subscription.
+}
+
+/**
+ * Compare the live HCP webhook-subscription listing against the URL we
+ * expect HCP to be calling. If we get a definitive answer that the
+ * subscription is missing or disabled, open a `subscription-missing`
+ * incident and email admins. Inconclusive results (HCP doesn't expose the
+ * listing endpoint, or the API call failed) are silently treated as no-op
+ * so we never false-alarm.
+ *
+ * Rate-limited to once per hour per contractor.
+ */
+async function runSubscriptionProbe(contractorId: string): Promise<void> {
+  const last = lastSubscriptionProbeAt.get(contractorId) ?? 0;
+  if (Date.now() - last < SUBSCRIPTION_PROBE_INTERVAL_MS) {
+    return;
+  }
+  lastSubscriptionProbeAt.set(contractorId, Date.now());
+
+  const probe = await hcpWebhookSubscriptionsService.getWebhookSubscriptions(contractorId);
+  if (probe.kind !== 'ok') {
+    // Inconclusive (HCP doesn't expose listings for this auth, transient
+    // 5xx, etc). Do NOT close any open `subscription-missing` incident —
+    // closing on inconclusive would mask a real outage that we just
+    // happened to fail to verify on this tick. We only ever close the
+    // incident below on a *positive* healthy probe result.
+    log.info(`Subscription probe inconclusive for ${contractorId}: ${probe.reason}`);
+    return;
   }
 
-  await markIncidentNotified(incident.id);
-  broadcastToContractor(contractorId, { type: 'notification_updated' });
-  log.info(`Sent webhook health alert to ${adminUsers.length} admin(s) for contractor ${contractorId}`);
+  const expectedUrl = await getExpectedWebhookUrl(contractorId);
+  const isHealthy = subscriptionsContainExpected(probe.subscriptions, expectedUrl);
+
+  if (isHealthy) {
+    log.info(`Subscription probe OK for ${contractorId} (${probe.subscriptions.length} subscription(s) found, expected URL is registered)`);
+    await closeOpenIncident(contractorId, KIND_SUBSCRIPTION_MISSING).catch(() => undefined);
+    return;
+  }
+
+  // Open the incident (idempotent) and notify admins on first open.
+  let incident: typeof webhookIncidents.$inferSelect;
+  try {
+    const opened = await openIncidentAtomic(contractorId, KIND_SUBSCRIPTION_MISSING);
+    incident = opened.incident;
+  } catch (err) {
+    log.error(`Failed to open subscription-missing incident for ${contractorId}`, err);
+    return;
+  }
+
+  const detail = probe.subscriptions.length === 0
+    ? 'Housecall Pro reports zero webhook subscriptions for this account.'
+    : `Housecall Pro reports ${probe.subscriptions.length} webhook subscription(s), but none of them are pointed at the expected URL${expectedUrl ? ` (${expectedUrl})` : ''}.`;
+  log.warn(`Contractor ${contractorId}: subscription-missing incident — ${detail}`);
+
+  // Notify on first open OR retry if a prior tick failed to email
+  // (notifiedAt would still be null in that case).
+  if (!incident.notifiedAt) {
+    const message =
+      `${detail} That means the integration is fully disconnected on the HCP side — ` +
+      `re-create the webhook subscription in your Housecall Pro account using the URL ` +
+      `shown on your CRM's integrations page, then click "Resync now" to backfill ` +
+      `anything that was missed while it was offline.`;
+    await notifyIncidentOpened({
+      contractorId,
+      incidentId: incident.id,
+      kind: 'subscription-missing',
+      title: 'Housecall Pro Webhook Subscription Missing',
+      message,
+      emailSubject: 'Housecall Pro webhook subscription is missing',
+      emailBody: message,
+    });
+  }
+}
+
+async function getExpectedWebhookUrl(contractorId: string): Promise<string | null> {
+  const base = (process.env.APP_URL || '').replace(/\/+$/, '');
+  if (!base) return null;
+  // We don't actually need the URL token here — HCP truncates query strings
+  // in some integration listings, so we compare path-only below. Keep it
+  // simple: just the base path.
+  return `${base}/api/webhooks/${contractorId}/housecall-pro`;
+}
+
+function subscriptionsContainExpected(
+  subscriptions: HcpWebhookSubscription[],
+  expectedUrl: string | null,
+): boolean {
+  if (subscriptions.length === 0) return false;
+  // If we can't compute the expected URL, just assume "any active sub == OK"
+  // so we don't false-alarm in environments without APP_URL configured.
+  const activeSubs = subscriptions.filter(s => isSubscriptionActive(s));
+  if (!expectedUrl) {
+    return activeSubs.length > 0;
+  }
+  return activeSubs.some(s => {
+    const url = (s.url ?? s.endpoint ?? '') as string;
+    if (!url) return false;
+    // Compare path-only — query strings include the URL token which can
+    // be regenerated/rotated and may be redacted in HCP's response.
+    try {
+      const live = new URL(url);
+      const expected = new URL(expectedUrl);
+      return live.host === expected.host && live.pathname === expected.pathname;
+    } catch {
+      return url.includes(expectedUrl);
+    }
+  });
+}
+
+function isSubscriptionActive(s: HcpWebhookSubscription): boolean {
+  if (typeof s.active === 'boolean') return s.active;
+  if (typeof s.enabled === 'boolean') return s.enabled;
+  if (typeof s.status === 'string') {
+    return /active|enabled|ok/i.test(s.status);
+  }
+  // Default: assume the subscription is active if HCP returned it.
+  return true;
 }
 
 /**
@@ -717,20 +1057,23 @@ async function runStartupFastCheck(): Promise<void> {
 
         if (adminUsers.length === 0) continue;
 
-        for (const admin of adminUsers) {
-          await db.insert(notifications).values({
-            userId: admin.userId,
-            contractorId,
-            type: 'system',
-            title: 'Housecall Pro Webhooks May Be Disabled',
-            message: `No HCP webhook events have been received in the last ${ageHours} hours.${backfillNote} Open Settings → Integrations → Housecall Pro to verify the webhook URL is still active in the HCP dashboard, then click Resync now to pull anything that may still be missing.`,
-            link: '/settings/integrations',
-          });
-        }
+        const stalenessMessage = `No HCP webhook events have been received in the last ${ageHours} hours.${backfillNote} Open Settings → Integrations → Housecall Pro to verify the webhook URL is still active in the HCP dashboard, then click Resync now to pull anything that may still be missing.`;
 
-        await markIncidentNotified(incident.id);
-        broadcastToContractor(contractorId, { type: 'notification_updated' });
-        log.info(`Startup fast-check: sent alert to ${adminUsers.length} admin(s) for contractor ${contractorId}`);
+        // Routed through the shared notifier so dedup semantics match the
+        // periodic checker: email is attempted first, and `notifiedAt` is
+        // only stamped when at least one channel actually delivered. A
+        // transient SMTP failure here will be retried by the periodic
+        // checker (which also sees `notifiedAt = null` and re-enters the
+        // notify branch).
+        await notifyIncidentOpened({
+          contractorId,
+          incidentId: incident.id,
+          kind: 'staleness',
+          title: 'Housecall Pro Webhooks May Be Disabled',
+          message: stalenessMessage,
+          emailSubject: 'Housecall Pro webhooks may be disabled',
+          emailBody: stalenessMessage,
+        });
       } catch (err) {
         log.error(`Startup fast-check error for contractor ${contractorId}: ${formatDbError(err)}`);
       }
