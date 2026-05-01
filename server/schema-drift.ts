@@ -1013,6 +1013,26 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `DROP INDEX IF EXISTS "webhook_incidents_open_idx"`,
       description: 'drop legacy non-unique webhook_incidents_open_idx (replaced by unique partial)',
     },
+    // Task #682: Drop the stale single-column unique index that was created
+    // back when each tenant could only have one cadence. Multi-cadence support
+    // (Task #567) added trigger_type/target_status/entity_type/archived_at and
+    // a partial unique index on (contractor_id, trigger_type,
+    // COALESCE(target_status,'')) WHERE archived_at IS NULL — but the old
+    // single-column unique was never dropped, so any second cadence insert
+    // for a contractor 500s with a 23505 on `sales_processes_contractor_unique`.
+    // This entry must run AFTER the trigger_type/target_status/entity_type/
+    // archived_at column adds above so the replacement uniqueness rule is
+    // already in force before the old constraint is removed.
+    {
+      sql: `CREATE UNIQUE INDEX IF NOT EXISTS "sales_processes_trigger_unique"
+              ON "sales_processes"("contractor_id", "trigger_type", COALESCE("target_status", ''))
+              WHERE "archived_at" IS NULL`,
+      description: 'sales_processes partial unique index on (contractor_id, trigger_type, COALESCE(target_status,\'\')) — multi-cadence replacement',
+    },
+    {
+      sql: `DROP INDEX IF EXISTS "sales_processes_contractor_unique"`,
+      description: 'drop stale single-column unique index sales_processes_contractor_unique (multi-cadence replacement is now in place)',
+    },
   ];
 
 export async function applyColumnMigrations(

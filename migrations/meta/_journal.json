@@ -232,6 +232,13 @@
       "when": 1777862400000,
       "tag": "0032_webhook_incidents",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1777948800000,
+      "tag": "0033_sales_processes_drop_stale_unique",
+      "breakpoints": true
     }
   ]
 }
