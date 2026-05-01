@@ -82,6 +82,7 @@ export function registerMessagingRoutes(app: Express): void {
         ...messageData,
         content: messageContent,
         status: 'sent',
+        userId: req.user.userId,
         externalMessageId: smsResponse.messageId || null,
       }, req.user.contractorId);
 
