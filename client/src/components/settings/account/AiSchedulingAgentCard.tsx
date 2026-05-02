@@ -63,6 +63,11 @@ export function AiSchedulingAgentCard() {
       return response.json() as Promise<AiSchedulingSettings>;
     },
     onSuccess: (data) => {
+      // Write the saved values into the cache synchronously so the dirty
+      // baseline updates immediately and the "Unsaved changes" hint clears
+      // before the (eventual) refetch resolves. Then refetch in background
+      // so any concurrent edits from another tab/session pick up too.
+      queryClient.setQueryData(['/api/settings/ai-scheduling'], data);
       setEnabled(data.aiSchedulingEnabled);
       setPersonality(data.aiSchedulingPersonality);
       setCompanyContext(data.aiSchedulingCompanyContext);

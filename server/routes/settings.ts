@@ -135,7 +135,10 @@ export function registerSettingsRoutes(app: Express): void {
   }));
 
   // ---- AI SMS scheduling agent settings (task #697) ----
-  app.get("/api/settings/ai-scheduling", requireManagerOrAdmin, asyncHandler(async (req, res) => {
+  // Admin-only: turning the AI agent on/off and editing its personality/company
+  // context is a company-owner decision, not a per-manager one. The UI card is
+  // also gated by isStrictAdmin — keep both layers in sync.
+  app.get("/api/settings/ai-scheduling", requireAdmin, asyncHandler(async (req, res) => {
     const contractor = await storage.getContractor(req.user.contractorId);
     if (!contractor) {
       res.status(404).json({ message: "Contractor not found" });
@@ -148,7 +151,7 @@ export function registerSettingsRoutes(app: Express): void {
     });
   }));
 
-  app.patch("/api/settings/ai-scheduling", requireManagerOrAdmin, asyncHandler(async (req, res) => {
+  app.patch("/api/settings/ai-scheduling", requireAdmin, asyncHandler(async (req, res) => {
     const schema = z.object({
       aiSchedulingEnabled: z.boolean().optional(),
       // 2k char ceiling on each free-text field — comfortably more than
