@@ -208,25 +208,28 @@ export async function bookAppointment(tenantId: string, request: BookingRequest)
   // Centralized "mark this contact as scheduled" — flips status, fires the workflow
   // trigger exactly once, writes the activity log. Idempotent if the HCP webhook later
   // arrives and hits the same code path.
+  const isPublicBooking = request.scheduleSource === 'public_booking';
   if (request.contactId) {
     try {
       await markContactScheduled(request.contactId, tenantId, {
         source: request.scheduleSource ?? 'in_app_booking',
         scheduledByUserId: selectedSalesperson.userId,
-        // Attribute the "Status Changed" activity row to the selected salesperson
-        // so the activity feed shows their name. For public bookings this is the
-        // auto-assigned salesperson; for in-app bookings it is the rep the booker
-        // chose. If selectedSalesperson is missing the userId field (defensive),
-        // the frontend falls back to the externalSource label below.
-        activityUserId: selectedSalesperson.userId,
-        activityExternalSource:
-          request.scheduleSource === 'public_booking' ? 'public_booking' : undefined,
+        // For public bookings the customer self-scheduled — the auto-assigned
+        // salesperson is the assignee, not the actor. Leave activityUserId
+        // unset so the frontend's getActorLabel falls through to the
+        // externalSource = 'public_booking' branch and renders "Online
+        // Booking" instead of crediting the salesperson (task #698).
+        // For in-app bookings, attribute the status_change row to the rep
+        // who scheduled it so the activity feed shows their name.
+        activityUserId: isPublicBooking ? undefined : selectedSalesperson.userId,
+        activityExternalSource: isPublicBooking ? 'public_booking' : undefined,
       });
     } catch (err) {
       log.error('[scheduling] markContactScheduled failed (non-fatal):', err);
     }
   }
 
+  const persistedSource = request.scheduleSource ?? 'in_app_booking';
   const [booking] = await db.insert(scheduledBookings).values({
     contractorId: tenantId,
     assignedSalespersonId: selectedSalesperson.userId,
@@ -244,9 +247,28 @@ export async function bookAppointment(tenantId: string, request: BookingRequest)
     // Sales-Scheduled report can split totals without joining the activity
     // log on every request (task #694). Defaults to 'in_app_booking' to match
     // the column default for any caller that omits scheduleSource.
-    source: request.scheduleSource ?? 'in_app_booking',
+    source: persistedSource,
     bookingPayload: request.bookingPayload ?? null,
   }).returning();
+
+  // Surface any drift between the source the caller passed and the source we
+  // actually persisted (or what the raw payload claims). The
+  // scheduled_bookings.source column drives the Self-Scheduled vs
+  // Sales-Scheduled report, so a silent mismatch quietly skews that chart —
+  // the symptom we hit in task #698 with at least one public booking being
+  // counted as in-app. Logging here makes future drift visible without
+  // requiring a manual DB query.
+  const payloadSource = typeof request.bookingPayload?.source === 'string'
+    ? (request.bookingPayload.source as string)
+    : null;
+  log.info(
+    `[scheduling] Inserted scheduled_booking ${booking.id} contractor=${tenantId} contact=${request.contactId ?? 'null'} source=${persistedSource} scheduleSource=${request.scheduleSource ?? 'unset'} payloadSource=${payloadSource ?? 'unset'}`,
+  );
+  if (payloadSource && payloadSource !== persistedSource) {
+    log.warn(
+      `[scheduling] scheduled_booking ${booking.id} source drift: persisted=${persistedSource} but bookingPayload.source=${payloadSource}`,
+    );
+  }
 
   await db.update(userContractors)
     .set({ lastAssignmentAt: new Date() })

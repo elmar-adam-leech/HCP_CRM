@@ -532,8 +532,15 @@ export function registerPublicRoutes(app: Express): void {
     // flipped the contact to scheduled (it does), this is an idempotent no-op for
     // the workflow trigger. If a future refactor changes the booking flow, the
     // public widget still guarantees the status flip + workflow dispatch.
+    //
+    // Mirror the attribution rules used inside bookAppointment for the
+    // public-booking case (task #698): the customer self-scheduled, so the
+    // status_change activity has no actor and is tagged with
+    // external_source = 'public_booking' so getActorLabel renders it as
+    // "Online Booking" instead of "System" in this fallback path too.
     await markContactScheduled(contactId, contractor.id, {
       source: 'public_booking',
+      activityExternalSource: 'public_booking',
     }).catch(err => log.error('markContactScheduled (public booking) failed (non-fatal):', err));
 
     // Log booking to activity feed
@@ -543,10 +550,11 @@ export function registerPublicRoutes(app: Express): void {
     const formattedTime = appointmentStart.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, ...tzOptions })
       + (timeZone ? '' : ' UTC');
     // Attach the assigned salesperson in metadata so the activity feed can
-    // surface a secondary "Assigned to Pat" hint. The frontend omits the hint
-    // when the booker and the assigned salesperson are the same person — which
-    // is the typical case for public bookings since `userId` below is also the
-    // assigned salesperson.
+    // surface a secondary "Assigned to Pat" hint. The auto-assigned salesperson
+    // did NOT actually do the scheduling — the customer self-scheduled through
+    // the public booking link — so they are an assignee, not the actor. The
+    // primary author is left unset and the externalSource below lets the
+    // frontend render an "Online Booking" attribution (task #698).
     const publicBookingMetadata: Record<string, unknown> = {};
     if (result.assignedSalespersonId) publicBookingMetadata.assignedSalespersonId = result.assignedSalespersonId;
     if (result.assignedSalespersonName) publicBookingMetadata.assignedSalespersonName = result.assignedSalespersonName;
@@ -556,11 +564,10 @@ export function registerPublicRoutes(app: Express): void {
         type: 'meeting',
         contactId,
         content: `Appointment booked for ${formattedDate} at ${formattedTime} — ${address}`,
-        // Attribute to the auto-assigned salesperson when one was selected so
-        // the activity feed shows their name. If none was assigned (defensive),
-        // the activityExternalSource below lets the frontend render an
-        // "Online Booking" attribution fallback instead of an empty author.
-        userId: result.assignedSalespersonId ?? undefined,
+        // Intentionally no userId: the customer self-scheduled, so the
+        // assigned salesperson is the assignee (rendered via the metadata
+        // hint), not the actor. externalSource drives the "Online Booking"
+        // primary author label in ActivityList.getActorLabel.
         externalSource: 'public_booking',
         metadata: Object.keys(publicBookingMetadata).length > 0 ? publicBookingMetadata : undefined,
       },

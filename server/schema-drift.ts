@@ -1083,6 +1083,44 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
               ON "scheduled_bookings"("contractor_id", "created_at")`,
       description: 'scheduled_bookings (contractor_id, created_at) index for scheduling-source report (task #694)',
     },
+    // ---- Task #698: backfill public-booking source on historical rows ----
+    // Augments the task #694 backfill with two recovery rules so the
+    // Self-Scheduled vs Sales-Scheduled report stops misclassifying historical
+    // public bookings as in-app:
+    //   1. If the raw `booking_payload` we captured at booking time carries
+    //      `"source": "public_booking"`, the row definitely came from the
+    //      public widget — re-tag it.
+    //   2. Failing that, look for a public-booking activity (meeting OR
+    //      status_change) for the same contact within ±5 minutes of the
+    //      booking's created_at. The new path also picks up the `meeting`
+    //      activity written by server/routes/public.ts which the original
+    //      task #694 backfill missed because it only looked at status_change.
+    // Both statements are idempotent (`source <> 'public_booking'`) so this
+    // is safe to re-run on every boot.
+    {
+      sql: `UPDATE scheduled_bookings sb
+              SET source = 'public_booking'
+            WHERE sb.source <> 'public_booking'
+              AND sb.booking_payload IS NOT NULL
+              AND sb.booking_payload->>'source' = 'public_booking'`,
+      description: 'backfill scheduled_bookings.source from booking_payload->>source (task #698)',
+    },
+    {
+      sql: `UPDATE scheduled_bookings sb
+              SET source = 'public_booking'
+            WHERE sb.source <> 'public_booking'
+              AND sb.contact_id IS NOT NULL
+              AND EXISTS (
+                SELECT 1 FROM activities a
+                 WHERE a.contact_id = sb.contact_id
+                   AND a.contractor_id = sb.contractor_id
+                   AND a.type IN ('meeting', 'status_change')
+                   AND a.external_source = 'public_booking'
+                   AND a.created_at BETWEEN sb.created_at - interval '5 minutes'
+                                        AND sb.created_at + interval '5 minutes'
+              )`,
+      description: 'backfill scheduled_bookings.source from public_booking activities (task #698)',
+    },
     // ---- AI SMS scheduling agent settings (task #697) ----
     {
       sql: `ALTER TABLE contractors ADD COLUMN IF NOT EXISTS ai_scheduling_enabled boolean NOT NULL DEFAULT false`,

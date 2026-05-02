@@ -251,6 +251,114 @@ describe('POST /api/public/book/:slug — duplicate-contact prevention', () => {
   });
 });
 
+describe('POST /api/public/book/:slug — activity attribution (Task #698)', () => {
+  it('logs the meeting activity with no userId so getActorLabel falls back to "Online Booking"', async () => {
+    // The auto-assigned salesperson did NOT actually do the scheduling — the
+    // customer self-scheduled — so the meeting activity must NOT be attributed
+    // to them as the actor. The frontend's getActorLabel uses externalSource
+    // = 'public_booking' to render "Online Booking" only when no userName is
+    // present, which only happens when userId is left blank here.
+    storageMock.findMatchingContact.mockResolvedValue('existing-actor');
+    storageMock.getContactByBookingCode.mockResolvedValue({
+      id: 'existing-actor',
+      name: 'Reema Saeed',
+      address: '123 Maple St, Springfield, IL 62701',
+      street: '123 Maple St',
+    });
+    bookAppointmentMock.mockResolvedValue({
+      success: true,
+      bookingId: 'booking-actor',
+      assignedSalespersonId: 'salesperson-7',
+      assignedSalespersonName: 'Pat Salesperson',
+    });
+
+    const app = makeApp();
+    const r = await postBook(app, { ...baseBody, bookingCode: 'short-code-xyz' });
+    expect(r.status).toBe(200);
+
+    expect(createActivityMock).toHaveBeenCalledTimes(1);
+    const [contractorArg, activityArg] = createActivityMock.mock.calls[0];
+    expect(contractorArg).toBe(TENANT_ID);
+    expect(activityArg.type).toBe('meeting');
+    expect(activityArg.contactId).toBe('existing-actor');
+    // The fix: no actor attribution — userId must be unset/undefined.
+    expect(activityArg.userId).toBeUndefined();
+    // Source still drives the "Online Booking" label on the frontend.
+    expect(activityArg.externalSource).toBe('public_booking');
+    // The assigned-salesperson hint is still preserved via metadata so the
+    // activity row can render "Assigned to Pat Salesperson" alongside the
+    // "Online Booking" actor label.
+    expect(activityArg.metadata).toEqual({
+      assignedSalespersonId: 'salesperson-7',
+      assignedSalespersonName: 'Pat Salesperson',
+    });
+  });
+
+  it('defensive markContactScheduled fallback also tags external_source = public_booking so it renders as "Online Booking"', async () => {
+    // The post-booking defensive call to markContactScheduled is normally a
+    // no-op (bookAppointment already wrote the status_change row), but if a
+    // future refactor moves the source-of-truth, this fallback must still
+    // attribute the activity correctly. Without externalSource the row would
+    // fall through getActorLabel to "System" instead of "Online Booking".
+    storageMock.findMatchingContact.mockResolvedValue('existing-fallback');
+    storageMock.getContactByBookingCode.mockResolvedValue({
+      id: 'existing-fallback',
+      name: 'Reema Saeed',
+      address: '123 Maple St, Springfield, IL 62701',
+      street: '123 Maple St',
+    });
+    bookAppointmentMock.mockResolvedValue({
+      success: true,
+      bookingId: 'booking-fallback',
+      assignedSalespersonId: 'salesperson-11',
+      assignedSalespersonName: 'Pat Salesperson',
+    });
+
+    const app = makeApp();
+    const r = await postBook(app, { ...baseBody, bookingCode: 'short-code-xyz' });
+    expect(r.status).toBe(200);
+
+    expect(markContactScheduledMock).toHaveBeenCalledTimes(1);
+    const [contactArg, tenantArg, opts] = markContactScheduledMock.mock.calls[0];
+    expect(contactArg).toBe('existing-fallback');
+    expect(tenantArg).toBe(TENANT_ID);
+    expect(opts.source).toBe('public_booking');
+    expect(opts.activityExternalSource).toBe('public_booking');
+  });
+
+  it('forwards scheduleSource = public_booking to bookAppointment so the booking row + status_change activity are tagged correctly', async () => {
+    storageMock.findMatchingContact.mockResolvedValue('existing-src');
+    storageMock.getContactByBookingCode.mockResolvedValue({
+      id: 'existing-src',
+      name: 'Reema Saeed',
+      address: '123 Maple St, Springfield, IL 62701',
+      street: '123 Maple St',
+    });
+    bookAppointmentMock.mockResolvedValue({
+      success: true,
+      bookingId: 'booking-src',
+      assignedSalespersonId: 'salesperson-9',
+      assignedSalespersonName: 'Sam Salesperson',
+    });
+
+    const app = makeApp();
+    const r = await postBook(app, { ...baseBody, bookingCode: 'short-code-xyz' });
+    expect(r.status).toBe(200);
+
+    expect(bookAppointmentMock).toHaveBeenCalledTimes(1);
+    const [, schedulingArgs] = bookAppointmentMock.mock.calls[0];
+    // scheduleSource is the trigger that makes booking.ts:
+    //   - persist scheduled_bookings.source = 'public_booking' (so the
+    //     Self-Scheduled vs Sales-Scheduled report counts it correctly)
+    //   - leave activityUserId unset on the status_change activity
+    expect(schedulingArgs.scheduleSource).toBe('public_booking');
+    // The raw payload preserves the booker-supplied source so the
+    // schema-drift backfill can recover historical rows by inspecting
+    // booking_payload->>'source'.
+    expect(schedulingArgs.bookingPayload?.source).toBe('public_booking');
+  });
+});
+
 describe('POST /api/public/book/:slug — submitted address propagation (Task #690)', () => {
   it('(e) verified caller with NEW typed address overwrites contact fields and forwards new address to scheduling', async () => {
     // Existing contact has the OLD address; the caller (verified via
