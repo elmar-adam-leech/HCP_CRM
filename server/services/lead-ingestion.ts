@@ -413,7 +413,8 @@ export async function ingestLead(
           let serviceAddressId: string | undefined;
           if (ingestionAddressData?.street) {
             try {
-              serviceAddressId = await syncHcpCustomerAddress(contractorId, hcpCustomerId, ingestionAddressData);
+              const synced = await syncHcpCustomerAddress(contractorId, hcpCustomerId, ingestionAddressData);
+              serviceAddressId = synced?.id;
             } catch (err) {
               log.warn(`HCP: address sync threw for new customer ${hcpCustomerId}: ${err instanceof Error ? err.message : String(err)}`);
             }
@@ -448,11 +449,12 @@ export async function ingestLead(
           let serviceAddressId: string | undefined;
           if (ingestionAddressData?.street) {
             try {
-              serviceAddressId = await syncHcpCustomerAddress(
+              const synced = await syncHcpCustomerAddress(
                 contractorId,
                 freshContact.housecallProCustomerId,
                 ingestionAddressData,
               );
+              serviceAddressId = synced?.id;
             } catch (err) {
               log.warn(`HCP: address sync threw for existing customer ${freshContact.housecallProCustomerId}: ${err instanceof Error ? err.message : String(err)}`);
             }

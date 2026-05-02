@@ -141,10 +141,17 @@ export async function createOrConvertHcpEstimate(
   endTime: Date,
   contactAddress?: string | null,
   contact?: { street?: string | null; city?: string | null; state?: string | null; zip?: string | null } | null,
-  serviceAddressId?: string
+  serviceAddressId?: string,
+  /**
+   * Set when the customer's service-address record was deleted and recreated
+   * during sync (so any existing HCP estimate's `address_id` is now dangling).
+   * Forces the reuse path to PATCH the existing estimate's address+address_id
+   * onto the new record even outside the normal 5-minute retry-dedup window.
+   */
+  serviceAddressRecreated: boolean = false,
 ): Promise<HcpEstimateResult | undefined> {
   const estimateAddress = resolveAddressComponents(request, contactAddress, contact);
-  log.info(`[scheduling] createOrConvertHcpEstimate entry: customerId=${hcpCustomerId} serviceAddressId=${serviceAddressId ?? '<none>'}`);
+  log.info(`[scheduling] createOrConvertHcpEstimate entry: customerId=${hcpCustomerId} serviceAddressId=${serviceAddressId ?? '<none>'} serviceAddressRecreated=${serviceAddressRecreated}`);
 
   let hcpLeadId: string | undefined;
   if (request.contactId) {
@@ -181,12 +188,25 @@ export async function createOrConvertHcpEstimate(
       .orderBy(desc(estimates.createdAt))
       .limit(1);
 
-    if (
-      recentEstimate?.housecallProEstimateId &&
-      recentEstimate.createdAt &&
-      recentEstimate.createdAt >= dedupeThreshold
-    ) {
-      log.info(`[scheduling] Found recent HCP estimate ${recentEstimate.housecallProEstimateId} (created ${recentEstimate.createdAt.toISOString()}) for contact — reusing to avoid duplicate on retry`);
+    // Reuse the existing HCP estimate ONLY when it was created within the
+    // 5-minute retry-dedup window. We intentionally do NOT widen this gate
+    // for `serviceAddressRecreated`: doing so would mutate potentially old,
+    // already-acted-on estimates (approved, rejected, archived) just because
+    // a service-address record happened to get recreated during a much later
+    // booking. Instead, when the dedupe window has elapsed, this branch
+    // skips reuse and we fall through to creating a brand-new estimate
+    // below — which will be pinned to the correct (new) `serviceAddressId`
+    // on creation.
+    //
+    // `serviceAddressRecreated` only takes effect INSIDE this reuse path:
+    // it forces the `address_id` PATCH on the just-selected reuse estimate,
+    // covering the case where HCP echoes the new id back yet the local row
+    // was already pinned to the deleted one.
+    const withinDedupWindow =
+      !!recentEstimate?.createdAt && recentEstimate.createdAt >= dedupeThreshold;
+
+    if (recentEstimate?.housecallProEstimateId && withinDedupWindow) {
+      log.info(`[scheduling] Reusing HCP estimate ${recentEstimate.housecallProEstimateId} (created ${recentEstimate.createdAt?.toISOString() ?? '<unknown>'}) — within retry-dedup window${serviceAddressRecreated ? ' (service-address recreated, will force address_id repin)' : ''}`);
       const existingHcpResult = await housecallProService.getEstimate(tenantId, recentEstimate.housecallProEstimateId);
       if (existingHcpResult.success && existingHcpResult.data) {
         rawEstimateData = existingHcpResult.data;
@@ -195,11 +215,13 @@ export async function createOrConvertHcpEstimate(
 
         // Apply the booking's address + notes onto the reused estimate so a
         // re-schedule / quick retry doesn't silently inherit the previous
-        // booking's data.
+        // booking's data. When the address record was recreated we always
+        // PATCH (even if everything else looks unchanged) so the dangling
+        // `address_id` gets repinned.
         const reuseNotesText = request.notes || '';
         const reuseHasNotes = reuseNotesText.length > 0;
         const reuseHasAddress = !!estimateAddress?.street;
-        if (reuseHasNotes || reuseHasAddress) {
+        if (reuseHasNotes || reuseHasAddress || serviceAddressRecreated) {
           const updatePayload: Partial<HousecallProEstimate> = {};
           const notesWithAddress = buildNotesWithAddress(reuseNotesText || undefined, estimateAddress);
           updatePayload.message = notesWithAddress;
@@ -218,11 +240,16 @@ export async function createOrConvertHcpEstimate(
           }
           if (serviceAddressId) {
             const currentAddrId = rawEstimateData.address_id || rawEstimateData.address?.id;
-            if (currentAddrId !== serviceAddressId) {
+            // When the address record was recreated, the local `currentAddrId`
+            // we just read may still equal `serviceAddressId` if HCP echoed
+            // the new id back — but the estimate may have been pinned to the
+            // old (now-deleted) id moments earlier. Force the PATCH in that
+            // case so HCP's estimate row is unambiguously repinned.
+            if (currentAddrId !== serviceAddressId || serviceAddressRecreated) {
               updatePayload.address_id = serviceAddressId;
             }
           }
-          log.info(`[scheduling] Updating reused estimate ${rawEstimateData.id} with notes/address (notes=${reuseHasNotes}, address=${reuseHasAddress}, addressId=${updatePayload.address_id ?? '<unchanged>'})`);
+          log.info(`[scheduling] Updating reused estimate ${rawEstimateData.id} with notes/address (notes=${reuseHasNotes}, address=${reuseHasAddress}, addressId=${updatePayload.address_id ?? '<unchanged>'}, recreated=${serviceAddressRecreated})`);
           try {
             const updateResult = await housecallProService.updateEstimate(tenantId, rawEstimateData.id, updatePayload);
             if (updateResult.success) {

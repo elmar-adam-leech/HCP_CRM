@@ -10,9 +10,32 @@ import { normalizePhoneForHcp } from '../utils/phone-normalizer';
 const log = logger('HcpSchedulingService');
 
 /**
+ * Loose normalizer used to detect material disagreement between a structured
+ * `street` component and the address string the user typed. We only need
+ * "does the street appear inside the string somewhere", not strict equality —
+ * users frequently expand "St" → "Street", lowercase tokens, etc., and any of
+ * those should still count as agreement.
+ */
+function normalizeStreetForCompare(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\./g, '')
+    .replace(/[,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
  * Resolves the address to send to HCP for a booking.
  * Priority: structured components from request → plain string from request →
  * contact's structured fields → contact's formatted address string.
+ *
+ * Conflict guard: if BOTH `customerAddressComponents` AND a non-empty
+ * `customerAddress` are present, but the components' street does not appear
+ * anywhere in the typed string, the typed string wins. This protects against
+ * non-conforming external callers (or stale clients that forget to clear
+ * components on manual edit) from pinning a downstream HCP record to a stale
+ * autocomplete pick instead of what the user actually typed.
  */
 export function resolveAddressComponents(
   request: BookingRequest,
@@ -20,17 +43,52 @@ export function resolveAddressComponents(
   contact?: { street?: string | null; city?: string | null; state?: string | null; zip?: string | null } | null
 ): AddressComponents | undefined {
   if (request.customerAddressComponents?.street) {
-    return {
-      street: request.customerAddressComponents.street,
-      city: request.customerAddressComponents.city || '',
-      state: request.customerAddressComponents.state || '',
-      zip: request.customerAddressComponents.zip || '',
-      country: request.customerAddressComponents.country || 'US',
-    };
+    const componentsStreet = request.customerAddressComponents.street;
+    const typed = request.customerAddress?.trim();
+    if (typed && typed.length > 0) {
+      const normTyped = normalizeStreetForCompare(typed);
+      const normComponents = normalizeStreetForCompare(componentsStreet);
+      if (normComponents && !normTyped.includes(normComponents)) {
+        // Material disagreement — the user's typed string does not contain
+        // the structured component's street. Prefer the typed string and
+        // fall through to the string-parse branches below.
+        log.warn(
+          `[scheduling] resolveAddressComponents: components.street="${componentsStreet}" not present in typed customerAddress="${typed}"; preferring typed string parse`,
+        );
+      } else {
+        return {
+          street: componentsStreet,
+          city: request.customerAddressComponents.city || '',
+          state: request.customerAddressComponents.state || '',
+          zip: request.customerAddressComponents.zip || '',
+          country: request.customerAddressComponents.country || 'US',
+        };
+      }
+    } else {
+      return {
+        street: componentsStreet,
+        city: request.customerAddressComponents.city || '',
+        state: request.customerAddressComponents.state || '',
+        zip: request.customerAddressComponents.zip || '',
+        country: request.customerAddressComponents.country || 'US',
+      };
+    }
   }
   if (request.customerAddress && hasRealStreetAddress(request.customerAddress)) {
     const parsed = parseAddressString(request.customerAddress);
     if (parsed.street && parsed.city) return parsed;
+  }
+  // Defense-in-depth: when the request supplies an address string that the
+  // strict `hasRealStreetAddress` check rejects (e.g. "123 New St, Salem NH"
+  // with no zip, or a single-line typed address with no comma), prefer that
+  // best-effort parse over the contact's stored fields. The user just typed
+  // it in this booking — we should never silently substitute the prior
+  // contact address for what they submitted. The downstream HCP request will
+  // carry the user's intent even when individual components can't all be
+  // extracted.
+  if (request.customerAddress && request.customerAddress.trim().length > 0) {
+    const parsed = parseAddressString(request.customerAddress);
+    if (parsed.street) return parsed;
   }
   if (contact?.street) {
     return {
@@ -63,6 +121,17 @@ type HcpAddressRecord = {
   country?: string;
   type?: string;
 };
+
+/**
+ * The result of synchronizing the HCP customer's service address.
+ * `recreated=true` indicates the existing address record was deleted and a new
+ * one POSTed (so any HCP estimate previously pinned via `address_id` is now
+ * dangling and must be re-pinned).
+ */
+export interface SyncedHcpAddress {
+  id: string;
+  recreated: boolean;
+}
 
 async function postNewServiceAddress(
   tenantId: string,
@@ -123,7 +192,7 @@ export async function syncHcpCustomerAddress(
   tenantId: string,
   customerId: string,
   addressData: { street: string; city: string; state: string; zip: string; country?: string }
-): Promise<string | undefined> {
+): Promise<SyncedHcpAddress | undefined> {
   const customerResult = await housecallProService.getCustomer(tenantId, customerId);
 
   if (!customerResult.success) {
@@ -143,7 +212,10 @@ export async function syncHcpCustomerAddress(
 
   if (!existingAddressId) {
     log.info(`[scheduling] HCP customer ${customerId} has no address record on file; creating one`);
-    return await postNewServiceAddress(tenantId, customerId, addressData);
+    const id = await postNewServiceAddress(tenantId, customerId, addressData);
+    // No existing record meant nothing was previously pinned to this customer
+    // either, so callers don't need to repin downstream estimate references.
+    return id ? { id, recreated: false } : undefined;
   }
 
   const addressPayload = {
@@ -166,7 +238,8 @@ export async function syncHcpCustomerAddress(
   if (!patchResult.success) {
     log.warn(`[scheduling] Per-address PATCH failed for HCP customer ${customerId} address ${existingAddressId}: ${patchResult.error}. Falling back to delete + recreate.`);
     await deleteAndVerifyAddress(tenantId, customerId, existingAddressId);
-    return await postNewServiceAddress(tenantId, customerId, addressData);
+    const id = await postNewServiceAddress(tenantId, customerId, addressData);
+    return id ? { id, recreated: true } : undefined;
   }
 
   // Verify the street actually persisted. HCP has been observed to return 2xx
@@ -175,7 +248,7 @@ export async function syncHcpCustomerAddress(
   const verifyResult = await housecallProService.getCustomer(tenantId, customerId);
   if (!verifyResult.success) {
     log.warn(`[scheduling] Could not re-fetch HCP customer ${customerId} after per-address PATCH to verify street persistence: ${verifyResult.error}`);
-    return existingAddressId;
+    return { id: existingAddressId, recreated: false };
   }
   const verifiedList: HcpAddressRecord[] = verifyResult.data?.addresses ?? [];
   const verifiedRecord = verifiedList.find((a) => a?.id === existingAddressId);
@@ -183,12 +256,13 @@ export async function syncHcpCustomerAddress(
   const expectedStreet = addressData.street.trim();
   if (persistedStreet === expectedStreet) {
     log.info(`[scheduling] Verified HCP address ${existingAddressId} street persisted as "${persistedStreet}" for customer ${customerId}`);
-    return existingAddressId;
+    return { id: existingAddressId, recreated: false };
   }
 
   log.warn(`[scheduling] HCP per-address PATCH returned success but street did not persist for customer ${customerId} address ${existingAddressId} (expected "${expectedStreet}", got "${persistedStreet}"). Deleting stale record and POSTing a fresh one.`);
   await deleteAndVerifyAddress(tenantId, customerId, existingAddressId);
-  return await postNewServiceAddress(tenantId, customerId, addressData);
+  const id = await postNewServiceAddress(tenantId, customerId, addressData);
+  return id ? { id, recreated: true } : undefined;
 }
 
 /**
@@ -227,6 +301,14 @@ async function deleteAndVerifyAddress(
 export interface ResolvedHcpCustomer {
   customerId: string;
   serviceAddressId?: string;
+  /**
+   * True when `syncHcpCustomerAddress` had to delete-and-recreate the
+   * underlying address record (per-address PATCH silently no-op'd or failed).
+   * Downstream estimate writes must repin to the new `serviceAddressId` even
+   * if everything else looks unchanged, otherwise the estimate's `address_id`
+   * still points at the now-deleted row.
+   */
+  serviceAddressRecreated?: boolean;
 }
 
 export async function resolveHcpCustomer(
@@ -244,11 +326,15 @@ export async function resolveHcpCustomer(
   const addressData = resolveAddressComponents(request, contact.address, contact);
 
   if (contact.housecallProCustomerId) {
-    let serviceAddressId: string | undefined;
+    let synced: SyncedHcpAddress | undefined;
     if (addressData?.street) {
-      serviceAddressId = await syncHcpCustomerAddress(tenantId, contact.housecallProCustomerId, addressData);
+      synced = await syncHcpCustomerAddress(tenantId, contact.housecallProCustomerId, addressData);
     }
-    return { customerId: contact.housecallProCustomerId, serviceAddressId };
+    return {
+      customerId: contact.housecallProCustomerId,
+      serviceAddressId: synced?.id,
+      serviceAddressRecreated: synced?.recreated ?? false,
+    };
   }
 
   const primaryEmail = contact.emails?.[0];
@@ -268,11 +354,15 @@ export async function resolveHcpCustomer(
       await db.update(contacts)
         .set({ housecallProCustomerId: hcpCustomerId })
         .where(eq(contacts.id, contact.id));
-      let serviceAddressId: string | undefined;
+      let synced: SyncedHcpAddress | undefined;
       if (addressData?.street) {
-        serviceAddressId = await syncHcpCustomerAddress(tenantId, hcpCustomerId, addressData);
+        synced = await syncHcpCustomerAddress(tenantId, hcpCustomerId, addressData);
       }
-      return { customerId: hcpCustomerId, serviceAddressId };
+      return {
+        customerId: hcpCustomerId,
+        serviceAddressId: synced?.id,
+        serviceAddressRecreated: synced?.recreated ?? false,
+      };
     }
   }
 
@@ -299,11 +389,15 @@ export async function resolveHcpCustomer(
     // always echo a usable address record back in the create response — and
     // even when it does, it can omit the street. Run the same sync routine
     // here so all three resolution paths converge on the same verified state.
-    let serviceAddressId: string | undefined;
+    let synced: SyncedHcpAddress | undefined;
     if (addressData?.street) {
-      serviceAddressId = await syncHcpCustomerAddress(tenantId, hcpCustomerId, addressData);
+      synced = await syncHcpCustomerAddress(tenantId, hcpCustomerId, addressData);
     }
-    return { customerId: hcpCustomerId, serviceAddressId };
+    return {
+      customerId: hcpCustomerId,
+      serviceAddressId: synced?.id,
+      serviceAddressRecreated: synced?.recreated ?? false,
+    };
   }
 
   log.warn(`Failed to create HCP customer: ${customerResult.error}`);

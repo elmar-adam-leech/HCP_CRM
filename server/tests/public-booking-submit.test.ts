@@ -250,3 +250,60 @@ describe('POST /api/public/book/:slug — duplicate-contact prevention', () => {
     expect(storageMock.deleteContact).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /api/public/book/:slug — submitted address propagation (Task #690)', () => {
+  it('(e) verified caller with NEW typed address overwrites contact fields and forwards new address to scheduling', async () => {
+    // Existing contact has the OLD address; the caller (verified via
+    // bookingCode) submits a NEW typed address. The submitted address must
+    // win — both in the contact write-back and in the scheduling payload.
+    const OLD_ADDR = '123 Maple St, Springfield, IL 62701';
+    const NEW_ADDR = '987 Oak Ave, Shelbyville, IL 62565';
+
+    storageMock.findMatchingContact.mockResolvedValue('existing-6');
+    storageMock.getContactByBookingCode.mockResolvedValue({
+      id: 'existing-6',
+      name: 'Reema Saeed',
+      address: OLD_ADDR,
+      street: '123 Maple St',
+      city: 'Springfield',
+      state: 'IL',
+      zip: '62701',
+    });
+
+    const app = makeApp();
+    const r = await postBook(app, {
+      ...baseBody,
+      address: NEW_ADDR,
+      bookingCode: 'short-code-xyz',
+    });
+
+    expect(r.status).toBe(200);
+    expect(r.body.booking.contactId).toBe('existing-6');
+
+    // 1. The contact was updated with the NEW typed address (canonical text +
+    //    parsed components) — no longer gated by the old hasRealStreetAddress
+    //    check.
+    expect(storageMock.updateContact).toHaveBeenCalledTimes(1);
+    const [updateContactId, updatedFields, updateTenantId] =
+      storageMock.updateContact.mock.calls[0];
+    expect(updateContactId).toBe('existing-6');
+    expect(updateTenantId).toBe(TENANT_ID);
+    expect(updatedFields.address).toBe(NEW_ADDR);
+    expect(updatedFields.street).toBe('987 Oak Ave');
+    expect(updatedFields.city).toBe('Shelbyville');
+    expect(updatedFields.state).toBe('IL');
+    expect(updatedFields.zip).toBe('62565');
+    // Never overwrite identity fields on a verified-reuse path.
+    expect(updatedFields.name).toBeUndefined();
+    expect(updatedFields.emails).toBeUndefined();
+    expect(updatedFields.phones).toBeUndefined();
+
+    // 2. The scheduling call carries the NEW typed address as the canonical
+    //    customerAddress so downstream HCP customer + estimate sync sees the
+    //    new street, not the old one.
+    expect(bookAppointmentMock).toHaveBeenCalledTimes(1);
+    const [, schedulingArgs] = bookAppointmentMock.mock.calls[0];
+    expect(schedulingArgs.contactId).toBe('existing-6');
+    expect(schedulingArgs.customerAddress).toBe(NEW_ADDR);
+  });
+});

@@ -91,6 +91,8 @@ describe('resolveHcpCustomer / syncHcpCustomerAddress', () => {
 
     expect(result?.customerId).toBe('hcp-1');
     expect(result?.serviceAddressId).toBe('addr-1');
+    // Brand-new customer means there was no prior estimate pin to invalidate.
+    expect(result?.serviceAddressRecreated).toBe(false);
     expect(hcp.searchCustomers).not.toHaveBeenCalled();
     expect(hcp.createCustomer).toHaveBeenCalledTimes(1);
     const [tenantArg, payload] = hcp.createCustomer.mock.calls[0];
@@ -117,6 +119,8 @@ describe('resolveHcpCustomer / syncHcpCustomerAddress', () => {
 
     expect(result?.customerId).toBe('hcp-2');
     expect(result?.serviceAddressId).toBe('addr-2');
+    // No existing record was deleted; nothing downstream needs repinning.
+    expect(result?.serviceAddressRecreated).toBe(false);
     expect(hcp.updateCustomerAddress).not.toHaveBeenCalled();
     expect(hcp.deleteCustomerAddress).not.toHaveBeenCalled();
     expect(hcp.createCustomerAddress).toHaveBeenCalledTimes(1);
@@ -155,7 +159,10 @@ describe('resolveHcpCustomer / syncHcpCustomerAddress', () => {
       });
     hcp.updateCustomerAddress.mockResolvedValue({ success: true, data: {} });
 
-    await resolveHcpCustomer(TENANT, 'c3', REQUEST);
+    const result = await resolveHcpCustomer(TENANT, 'c3', REQUEST);
+    // PATCH succeeded and persisted: the record was NOT deleted/recreated.
+    expect(result?.serviceAddressId).toBe('addr-3');
+    expect(result?.serviceAddressRecreated).toBe(false);
 
     expect(hcp.updateCustomerAddress).toHaveBeenCalledTimes(1);
     const [tenantArg, custIdArg, addressIdArg, payload] = hcp.updateCustomerAddress.mock.calls[0];
@@ -203,7 +210,10 @@ describe('resolveHcpCustomer / syncHcpCustomerAddress', () => {
     hcp.deleteCustomerAddress.mockResolvedValue({ success: true, data: {} });
     hcp.createCustomerAddress.mockResolvedValue({ success: true, data: { id: 'addr-4-new' } });
 
-    await resolveHcpCustomer(TENANT, 'c4', REQUEST);
+    const result = await resolveHcpCustomer(TENANT, 'c4', REQUEST);
+    // PATCH didn't persist → delete + recreate path; downstream pinning must repin.
+    expect(result?.serviceAddressId).toBe('addr-4-new');
+    expect(result?.serviceAddressRecreated).toBe(true);
 
     expect(hcp.updateCustomerAddress).toHaveBeenCalledTimes(1);
     expect(hcp.deleteCustomerAddress).toHaveBeenCalledWith(TENANT, 'hcp-4', 'addr-4');
@@ -243,7 +253,10 @@ describe('resolveHcpCustomer / syncHcpCustomerAddress', () => {
     hcp.deleteCustomerAddress.mockResolvedValue({ success: true, data: {} });
     hcp.createCustomerAddress.mockResolvedValue({ success: true, data: { id: 'addr-5-new' } });
 
-    await resolveHcpCustomer(TENANT, 'c5', REQUEST);
+    const result = await resolveHcpCustomer(TENANT, 'c5', REQUEST);
+    // PATCH itself failed → delete + recreate path; downstream pinning must repin.
+    expect(result?.serviceAddressId).toBe('addr-5-new');
+    expect(result?.serviceAddressRecreated).toBe(true);
 
     expect(hcp.updateCustomerAddress).toHaveBeenCalledTimes(1);
     expect(hcp.deleteCustomerAddress).toHaveBeenCalledWith(TENANT, 'hcp-5', 'addr-5');
@@ -294,6 +307,7 @@ describe('resolveHcpCustomer / syncHcpCustomerAddress', () => {
     // HCP lead's address_id to bind the estimate to the new row even though
     // the legacy row remained on the customer.
     expect(result?.serviceAddressId).toBe('addr-6-new');
+    expect(result?.serviceAddressRecreated).toBe(true);
     expect(hcp.deleteCustomerAddress).toHaveBeenCalledTimes(1);
     expect(hcp.createCustomerAddress).toHaveBeenCalledTimes(1);
   });

@@ -8,7 +8,7 @@ import { housecallSchedulingService } from "../housecall-scheduling-service";
 import { warmAvailabilityCache } from "../services/availability-cache";
 import { getAvailabilityForDate } from "../scheduling/availability";
 import { logConsent, hashIp } from "../utils/consent-log";
-import { parseAddressString, hasRealStreetAddress } from "../types/scheduling";
+import { parseAddressString } from "../types/scheduling";
 import { placesAutocomplete, placesDetails } from "../utils/places-client";
 import { createActivityAndBroadcast } from "../utils/activity";
 import { markContactScheduled } from "../services/contact-status";
@@ -419,36 +419,33 @@ export function registerPublicRoutes(app: Express): void {
       // Caller holds a valid booking token for this exact contact.
       contactId = existingContactId;
 
-      // Update address fields only when the submitted address is more
-      // complete than what is already stored. Never overwrite name/emails/phones.
-      const existingContact = tokenContact!;
-      const parsed = parseAddressString(address);
-      const submittedHasStreet = hasRealStreetAddress(address);
-      const existingHasStreet = !!(existingContact.street)
-        || hasRealStreetAddress(existingContact.address || '');
-
-      const addressFields: {
-        address?: string;
-        street?: string;
-        city?: string;
-        state?: string;
-        zip?: string;
-      } = {};
-
-      if (submittedHasStreet) {
-        addressFields.address = address;
-        addressFields.street = parsed.street;
-        addressFields.city = parsed.city;
-        addressFields.state = parsed.state;
-        addressFields.zip = parsed.zip;
-      } else if (!existingHasStreet) {
-        addressFields.address = address;
+      // The caller proved ownership of this contact via a valid booking
+      // token, and they just typed a fresh address into the form for THIS
+      // booking. Treat the submitted address as authoritative — overwrite the
+      // contact's address fields with whatever can be parsed, even when the
+      // strict `hasRealStreetAddress` heuristic rejects the string. The
+      // conservative gate is still appropriate for unverified public
+      // submissions (which never reach this branch — they fall through to
+      // createContact below). Never overwrite name/emails/phones.
+      if (address && address.trim().length > 0) {
+        const parsed = parseAddressString(address);
+        const addressFields: {
+          address: string;
+          street?: string;
+          city?: string;
+          state?: string;
+          zip?: string;
+        } = {
+          address,
+        };
+        // Always update the formatted address text. Update the structured
+        // components on a best-effort basis — if the parser couldn't recover
+        // a field we leave the existing one in place rather than blanking it.
+        if (parsed.street) addressFields.street = parsed.street;
         if (parsed.city) addressFields.city = parsed.city;
         if (parsed.state) addressFields.state = parsed.state;
         if (parsed.zip) addressFields.zip = parsed.zip;
-      }
 
-      if (Object.keys(addressFields).length > 0) {
         await storage.updateContact(existingContactId, { ...addressFields }, contractor.id);
         broadcastToContractor(contractor.id, { type: 'contact_updated', contactId: existingContactId });
       }

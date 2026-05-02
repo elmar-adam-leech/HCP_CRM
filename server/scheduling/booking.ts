@@ -2,7 +2,7 @@ import { db } from '../db';
 import { contacts, scheduledBookings, userContractors, contractors } from '@shared/schema';
 import { eq, and } from 'drizzle-orm';
 import type { BookingRequest, BookingResult, SalespersonInfo } from '../types/scheduling';
-import { parseAddressString, hasRealStreetAddress } from '../types/scheduling';
+import { parseAddressString } from '../types/scheduling';
 import { logger } from '../utils/logger';
 import { getSalespeople } from './queries';
 import { selectNextAvailableSalesperson, getAvailabilityForDate } from './availability';
@@ -76,15 +76,19 @@ export async function bookAppointment(tenantId: string, request: BookingRequest)
 
     if (requestOnlyAddress) {
       const stored = storedContactAddress;
-      const storedHasStreet = !!(stored.street)
-        || hasRealStreetAddress(stored.address || '');
-      const requestHasStreet = request.customerAddressComponents?.street
-        ? true
-        : request.customerAddress
-          ? hasRealStreetAddress(request.customerAddress)
-          : false;
+      // The internal booker is staff-authenticated; the public path only
+      // reaches `bookAppointment` after `callerOwnsContact` was verified
+      // upstream. In both cases, treat any non-empty submitted address as
+      // authoritative — the user just typed it for THIS booking and we should
+      // never silently substitute the prior stored address. (Public-path
+      // unverified submissions never share a contact id with an existing
+      // record, so they don't reach this writeback at all.)
+      const submittedAddressNonEmpty = !!(
+        request.customerAddressComponents?.street
+        || (request.customerAddress && request.customerAddress.trim().length > 0)
+      );
 
-      if (!storedHasStreet || requestHasStreet) {
+      if (submittedAddressNonEmpty) {
         const addressUpdate: Record<string, string> = {};
         if (requestOnlyAddress.street && requestOnlyAddress.street !== (stored.street ?? '')) {
           addressUpdate.street = requestOnlyAddress.street;
@@ -111,8 +115,6 @@ export async function bookAppointment(tenantId: string, request: BookingRequest)
             .where(eq(contacts.id, request.contactId));
           Object.assign(storedContactAddress, addressUpdate);
         }
-      } else {
-        log.info(`[scheduling] Skipping address writeback for contact ${request.contactId}: existing address is more complete than submitted`);
       }
     }
   }
@@ -128,7 +130,8 @@ export async function bookAppointment(tenantId: string, request: BookingRequest)
         endTime,
         storedContactAddress?.address,
         storedContactAddress,
-        resolved.serviceAddressId
+        resolved.serviceAddressId,
+        resolved.serviceAddressRecreated ?? false,
       );
       if (hcpResult) {
         hcpEstimateId = hcpResult.hcpEstimateId;
