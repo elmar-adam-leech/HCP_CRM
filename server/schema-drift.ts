@@ -1083,6 +1083,19 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
               ON "scheduled_bookings"("contractor_id", "created_at")`,
       description: 'scheduled_bookings (contractor_id, created_at) index for scheduling-source report (task #694)',
     },
+    // ---- AI SMS scheduling agent settings (task #697) ----
+    {
+      sql: `ALTER TABLE contractors ADD COLUMN IF NOT EXISTS ai_scheduling_enabled boolean NOT NULL DEFAULT false`,
+      description: 'contractors.ai_scheduling_enabled (master on/off for the AI SMS scheduling agent)',
+    },
+    {
+      sql: `ALTER TABLE contractors ADD COLUMN IF NOT EXISTS ai_scheduling_personality text`,
+      description: 'contractors.ai_scheduling_personality (free-text persona/tone instructions for the AI agent)',
+    },
+    {
+      sql: `ALTER TABLE contractors ADD COLUMN IF NOT EXISTS ai_scheduling_company_context text`,
+      description: 'contractors.ai_scheduling_company_context (free-text company background the AI agent should know)',
+    },
   ];
 
 export async function applyColumnMigrations(

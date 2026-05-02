@@ -27,6 +27,14 @@ export const contractors = pgTable("contractors", {
   // address to the matched contact's `emails` array so subsequent replies
   // match via the fast sender path. See server/sync/gmail.ts.
   autoLearnReplyAddresses: boolean("auto_learn_reply_addresses").default(true).notNull(),
+  // AI SMS scheduling agent settings (task #697). The agent responds to
+  // inbound text replies on contacts in an active scheduling-intent
+  // conversation, asks for the address, confirms availability, and books
+  // the appointment in HCP. These columns control whether it runs and how
+  // it sounds.
+  aiSchedulingEnabled: boolean("ai_scheduling_enabled").default(false).notNull(),
+  aiSchedulingPersonality: text("ai_scheduling_personality"),
+  aiSchedulingCompanyContext: text("ai_scheduling_company_context"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

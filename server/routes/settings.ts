@@ -134,6 +134,54 @@ export function registerSettingsRoutes(app: Express): void {
     });
   }));
 
+  // ---- AI SMS scheduling agent settings (task #697) ----
+  app.get("/api/settings/ai-scheduling", requireManagerOrAdmin, asyncHandler(async (req, res) => {
+    const contractor = await storage.getContractor(req.user.contractorId);
+    if (!contractor) {
+      res.status(404).json({ message: "Contractor not found" });
+      return;
+    }
+    res.json({
+      aiSchedulingEnabled: contractor.aiSchedulingEnabled ?? false,
+      aiSchedulingPersonality: contractor.aiSchedulingPersonality ?? "",
+      aiSchedulingCompanyContext: contractor.aiSchedulingCompanyContext ?? "",
+    });
+  }));
+
+  app.patch("/api/settings/ai-scheduling", requireManagerOrAdmin, asyncHandler(async (req, res) => {
+    const schema = z.object({
+      aiSchedulingEnabled: z.boolean().optional(),
+      // 2k char ceiling on each free-text field — comfortably more than
+      // anyone needs and keeps the prompt size bounded for the LLM call.
+      aiSchedulingPersonality: z.string().max(2000).nullable().optional(),
+      aiSchedulingCompanyContext: z.string().max(2000).nullable().optional(),
+    });
+    const parsed = parseBody(schema, req, res);
+    if (!parsed) return;
+    const patch: Record<string, unknown> = {};
+    if (parsed.aiSchedulingEnabled !== undefined) {
+      patch.aiSchedulingEnabled = parsed.aiSchedulingEnabled;
+    }
+    if (parsed.aiSchedulingPersonality !== undefined) {
+      const trimmed = (parsed.aiSchedulingPersonality ?? "").trim();
+      patch.aiSchedulingPersonality = trimmed.length > 0 ? trimmed : null;
+    }
+    if (parsed.aiSchedulingCompanyContext !== undefined) {
+      const trimmed = (parsed.aiSchedulingCompanyContext ?? "").trim();
+      patch.aiSchedulingCompanyContext = trimmed.length > 0 ? trimmed : null;
+    }
+    const updated = await storage.updateContractor(req.user.contractorId, patch);
+    if (!updated) {
+      res.status(404).json({ message: "Contractor not found" });
+      return;
+    }
+    res.json({
+      aiSchedulingEnabled: updated.aiSchedulingEnabled ?? false,
+      aiSchedulingPersonality: updated.aiSchedulingPersonality ?? "",
+      aiSchedulingCompanyContext: updated.aiSchedulingCompanyContext ?? "",
+    });
+  }));
+
   app.get("/api/booking-slug", asyncHandler(async (req, res) => {
     const contractor = await storage.getContractor(req.user.contractorId);
     if (!contractor) {
