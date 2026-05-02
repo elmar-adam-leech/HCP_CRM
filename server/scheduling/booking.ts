@@ -11,6 +11,8 @@ import { resolveHcpCustomer } from './hcp-customer';
 import { createOrConvertHcpEstimate } from './hcp-estimate';
 import { createCrmEstimate } from './crm-estimate';
 import { markContactScheduled } from '../services/contact-status';
+import { createActivityAndBroadcast } from '../utils/activity';
+import { storage } from '../storage';
 
 const log = logger('HcpSchedulingService');
 
@@ -144,8 +146,63 @@ export async function bookAppointment(tenantId: string, request: BookingRequest)
     }
   }
 
+  let crmEstimateId: string | undefined;
   if (request.contactId) {
-    await createCrmEstimate(tenantId, request.contactId, selectedSalesperson, request, endTime, hcpEstimateId);
+    crmEstimateId = await createCrmEstimate(tenantId, request.contactId, selectedSalesperson, request, endTime, hcpEstimateId);
+  }
+
+  // Surface the customer's booking note in the CRM activity feed and lead
+  // Notes panel. Writing this AFTER createCrmEstimate (and unconditionally —
+  // independent of HCP push success/failure) means the note always lands in
+  // the CRM even when `addEstimateNote` retries to HCP fail. Linking to both
+  // contactId and the local crmEstimateId keeps the row visible in the lead
+  // activity timeline AND on the estimate's own detail page.
+  //
+  // Dedup is double-guarded:
+  //   1. A deterministic `externalId` of `booking-note-<contactId>-<startMs>`
+  //      makes the activities table's `(contractorId, externalSource,
+  //      externalId)` unique partial index reject duplicate rows on retry.
+  //   2. A pre-insert lookup avoids hitting the unique-violation on the
+  //      common case (cleaner logs + lets us log the skip).
+  if (request.contactId) {
+    const customerNoteText = (request.notes || '').trim();
+    if (customerNoteText.length > 0) {
+      const isPublicBooking = request.scheduleSource === 'public_booking';
+      const prefix = isPublicBooking ? 'Booking note from customer' : 'Booking note';
+      const noteContent = `${prefix}:\n${customerNoteText}`;
+      const externalSource = isPublicBooking ? 'public_booking' : 'in_app_booking';
+      const externalId = `booking-note-${request.contactId}-${request.startTime.getTime()}`;
+
+      try {
+        const existing = await storage.getActivities(tenantId, {
+          contactId: request.contactId,
+          type: 'note',
+          limit: 100,
+        });
+        const alreadyWritten = existing.some(
+          (a) => a.externalSource === externalSource && a.externalId === externalId,
+        );
+        if (alreadyWritten) {
+          log.info(`[scheduling] Skipping duplicate booker-note activity for contact ${request.contactId} (externalId=${externalId})`);
+        } else {
+          await createActivityAndBroadcast(
+            tenantId,
+            {
+              type: 'note',
+              contactId: request.contactId,
+              estimateId: crmEstimateId,
+              content: noteContent,
+              externalSource,
+              externalId,
+            },
+            { type: 'activity_created', contactId: request.contactId },
+          );
+          log.info(`[scheduling] Wrote booker-note activity for contact ${request.contactId} (estimate=${crmEstimateId ?? '<none>'}, source=${externalSource})`);
+        }
+      } catch (err) {
+        log.warn(`[scheduling] Failed to write booker-note activity (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   // Centralized "mark this contact as scheduled" — flips status, fires the workflow

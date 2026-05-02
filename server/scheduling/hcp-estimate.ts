@@ -7,7 +7,6 @@ import type { HousecallProEstimate, HcpLeadConvertResponse } from '../hcp/types'
 import { logger } from '../utils/logger';
 import { ARRIVAL_WINDOW_MINUTES } from './availability';
 import { resolveAddressComponents } from './hcp-customer';
-import { createActivityAndBroadcast } from '../utils/activity';
 
 const log = logger('HcpSchedulingService');
 
@@ -448,10 +447,8 @@ export async function createOrConvertHcpEstimate(
   }
 
   const customerNotes = (request.notes || '').trim();
-  let bookerNoteAttached = customerNotes.length === 0;
   if (customerNotes.length > 0) {
     const ok = await addEstimateNoteWithRetry(tenantId, hcpEstimateId, customerNotes, 'booker notes');
-    bookerNoteAttached = ok;
     if (!ok) noteFailures.push('booker notes');
   }
 
@@ -460,27 +457,19 @@ export async function createOrConvertHcpEstimate(
   if (customerNotes.length > 0) {
     const verified = await verifyBookerNoteOnEstimate(tenantId, hcpEstimateId, customerNotes);
     if (!verified) {
-      bookerNoteAttached = false;
       if (!noteFailures.includes('booker notes')) noteFailures.push('booker notes');
     } else {
-      bookerNoteAttached = true;
       const idx = noteFailures.indexOf('booker notes');
       if (idx !== -1) noteFailures.splice(idx, 1);
     }
   }
 
-  // Activity-feed breadcrumb for the salesperson.
-  if (bookerNoteAttached && customerNotes.length > 0 && request.contactId) {
-    createActivityAndBroadcast(
-      tenantId,
-      {
-        type: 'note',
-        contactId: request.contactId,
-        content: `Booking notes attached to HCP estimate ${hcpEstimateId}`,
-      },
-      { type: 'activity_created', contactId: request.contactId },
-    ).catch((err) => log.warn(`[scheduling] Failed to write booker-notes activity breadcrumb (non-fatal): ${err instanceof Error ? err.message : String(err)}`));
-  }
+  // (The salesperson-facing activity-feed entry that surfaces the actual
+  // customer note text is written by `bookAppointment` in ./booking.ts AFTER
+  // the local CRM estimate is created. Doing it there — rather than here —
+  // lets the activity row be linked to both the contact and the local
+  // estimate id, and ensures the note still lands in the CRM even when the
+  // HCP-side `addEstimateNote` POST ultimately fails.)
 
   const optionId = rawEstimateData.options?.[0]?.id;
   let scheduleError: string | undefined;
