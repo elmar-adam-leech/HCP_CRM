@@ -1,4 +1,4 @@
-import { useCallback, useMemo, lazy, Suspense, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, lazy, Suspense, type ReactNode } from "react";
 import { useLocation, useSearch } from "wouter";
 import { Loader2 } from "lucide-react";
 import {
@@ -90,7 +90,7 @@ function lazyRender(node: ReactNode) {
   return <Suspense fallback={<ReportFallback />}>{node}</Suspense>;
 }
 
-type TabId = "leads" | "sales" | "estimates";
+type TabId = "leads" | "estimates";
 
 // Map each estimates report slug to the API endpoint it loads. Used to prefetch
 // the neighbors of the active report so the next click feels instant.
@@ -147,8 +147,6 @@ const TAB_REPORTS: Record<TabId, ReportItem[]> = {
       name: "Leads Trend",
       render: () => lazyRender(<LeadsTrendChart />),
     },
-  ],
-  sales: [
     {
       slug: "speed-to-lead",
       name: "Speed to Lead",
@@ -182,7 +180,7 @@ const TAB_REPORTS: Record<TabId, ReportItem[]> = {
 };
 
 function isTabId(v: string | null): v is TabId {
-  return v === "leads" || v === "sales" || v === "estimates";
+  return v === "leads" || v === "estimates";
 }
 
 function useReportsLocation() {
@@ -193,13 +191,30 @@ function useReportsLocation() {
   const tabParam = params.get("tab");
   const reportParam = params.get("report");
 
-  const activeTab: TabId = isTabId(tabParam) ? tabParam : "leads";
+  // Legacy redirect: the Sales tab no longer exists. Old bookmarks like
+  // /reports?tab=sales&report=speed-to-lead should land on Leads (and keep
+  // Speed to Lead selected if that's what was requested), with the URL
+  // rewritten so the address bar reflects the new canonical location.
+  const isLegacySalesTab = tabParam === "sales";
+  const activeTab: TabId = isLegacySalesTab
+    ? "leads"
+    : isTabId(tabParam)
+      ? tabParam
+      : "leads";
 
   const reportsForTab = TAB_REPORTS[activeTab];
   const reportInTab =
     reportParam && reportsForTab.some((r) => r.slug === reportParam)
       ? reportParam
       : reportsForTab[0].slug;
+
+  useEffect(() => {
+    if (!isLegacySalesTab) return;
+    const next = new URLSearchParams(params);
+    next.set("tab", "leads");
+    next.set("report", reportInTab);
+    setLocation(`/reports?${next.toString()}`, { replace: true });
+  }, [isLegacySalesTab, params, reportInTab, setLocation]);
 
   const setTab = useCallback(
     (tab: TabId) => {
@@ -247,9 +262,6 @@ export default function Reports() {
           <TabsTrigger value="leads" data-testid="tab-reports-leads">
             Leads
           </TabsTrigger>
-          <TabsTrigger value="sales" data-testid="tab-reports-sales">
-            Sales
-          </TabsTrigger>
           <TabsTrigger value="estimates" data-testid="tab-reports-estimates">
             Estimates
           </TabsTrigger>
@@ -261,15 +273,6 @@ export default function Reports() {
             activeSlug={activeReport}
             onSelect={setReport}
             testIdPrefix="leads-report"
-          />
-        </TabsContent>
-
-        <TabsContent value="sales" className="mt-6">
-          <ReportsTabLayout
-            items={TAB_REPORTS.sales}
-            activeSlug={activeReport}
-            onSelect={setReport}
-            testIdPrefix="sales-report"
           />
         </TabsContent>
 
