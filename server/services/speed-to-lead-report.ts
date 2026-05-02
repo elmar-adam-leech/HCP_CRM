@@ -125,12 +125,67 @@ export async function getSpeedToLeadReport(
   // a single row.
   const result = await db.execute<ReportRow>(sql`
     WITH outbound_calls AS (
-      SELECT a.user_id, a.contact_id, a.created_at
+      -- Resolve a "responsible user" for every outbound call activity.
+      -- Three sources, in priority order, so legacy Dialpad-webhook rows
+      -- (which historically left activities.user_id NULL) still get
+      -- attributed:
+      --   1. activities.user_id            (set by /api/calls/initiate,
+      --                                     /api/calls/log-personal,
+      --                                     POST /api/activities, and the
+      --                                     Dialpad webhook going forward)
+      --   2. metadata.operator_id          → dialpad_users.dialpad_user_id
+      --                                     → users.email → user_contractors
+      --   3. metadata.operator_email       → users.email → user_contractors
+      --   4. metadata.operatorName         → dialpad_users.full_name
+      --                                     → users.email → user_contractors
+      --                                     (legacy fallback — pre-fix
+      --                                     Dialpad-webhook rows only stored
+      --                                     the operator's display name)
+      -- Email/name comparisons are case-insensitive. Rows that still don't
+      -- resolve to a user are dropped at the salesperson_calls filter.
+      SELECT
+        COALESCE(
+          a.user_id,
+          (
+            SELECT uc.user_id
+            FROM dialpad_users du
+            JOIN users u
+              ON lower(u.email) = lower(du.email)
+            JOIN user_contractors uc
+              ON uc.user_id = u.id
+             AND uc.contractor_id = ${contractorId}
+            WHERE du.contractor_id = ${contractorId}
+              AND du.dialpad_user_id = (a.metadata::jsonb)->>'operator_id'
+            LIMIT 1
+          ),
+          (
+            SELECT uc.user_id
+            FROM users u
+            JOIN user_contractors uc
+              ON uc.user_id = u.id
+             AND uc.contractor_id = ${contractorId}
+            WHERE lower(u.email) = lower((a.metadata::jsonb)->>'operator_email')
+            LIMIT 1
+          ),
+          (
+            SELECT uc.user_id
+            FROM dialpad_users du
+            JOIN users u
+              ON lower(u.email) = lower(du.email)
+            JOIN user_contractors uc
+              ON uc.user_id = u.id
+             AND uc.contractor_id = ${contractorId}
+            WHERE du.contractor_id = ${contractorId}
+              AND lower(du.full_name) = lower((a.metadata::jsonb)->>'operatorName')
+            LIMIT 1
+          )
+        ) AS user_id,
+        a.contact_id,
+        a.created_at
       FROM activities a
       WHERE a.contractor_id = ${contractorId}
         AND a.type = 'call'
         AND (a.metadata::jsonb)->>'direction' = 'outbound'
-        AND a.user_id IS NOT NULL
     ),
     salesperson_calls AS (
       SELECT oc.user_id, oc.contact_id, oc.created_at
@@ -139,6 +194,7 @@ export async function getSpeedToLeadReport(
         ON uc.user_id = oc.user_id
        AND uc.contractor_id = ${contractorId}
        AND uc.is_salesperson = true
+      WHERE oc.user_id IS NOT NULL
     ),
     lead_user_calls AS (
       SELECT

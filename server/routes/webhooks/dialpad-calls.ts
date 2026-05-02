@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from "express";
 import express from "express";
 import { storage } from "../../storage";
-import { webhookEvents, dialpadPhoneNumbers, activities } from "@shared/schema";
+import { webhookEvents, dialpadPhoneNumbers, activities, dialpadUsers, users, userContractors } from "@shared/schema";
 import { db } from "../../db";
 import { eq, and, sql, desc } from "drizzle-orm";
 import { webhookRateLimiter } from "../../middleware/rate-limiter";
@@ -183,6 +183,70 @@ async function fetchRecordingDetailsFromApi(
     log.warn(`Follow-up GET /calls/${callId} failed for contractor ${contractorId}: ${(err as Error).message}`);
     return null;
   }
+}
+
+/**
+ * Resolve a Dialpad operator (the user who handled the call) to a CRM
+ * user.id within the given tenant so per-rep reports (Speed-to-Lead,
+ * etc.) can attribute the call. Two-step lookup:
+ *
+ *   1. operator_id  → dialpad_users.dialpad_user_id  → email → users.email
+ *      → user_contractors (matching contractorId).
+ *   2. operator_email → users.email → user_contractors.
+ *
+ * Email comparisons are case-insensitive. Returns `undefined` (not null)
+ * so the caller can spread the result without overriding when no mapping
+ * is found, and so it satisfies Drizzle's `userId?: string | undefined`
+ * insert type. This is best-effort: a miss leaves activities.user_id NULL
+ * and the SQL report falls back to the same operator_id/operator_email
+ * lookup at query time.
+ */
+async function resolveOperatorToUser(
+  contractorId: string,
+  operatorId: string | null,
+  operatorEmail: string | null,
+): Promise<string | undefined> {
+  try {
+    if (operatorId) {
+      const rows = await db
+        .select({ userId: userContractors.userId })
+        .from(dialpadUsers)
+        .innerJoin(users, sql`lower(${users.email}) = lower(${dialpadUsers.email})`)
+        .innerJoin(
+          userContractors,
+          and(
+            eq(userContractors.userId, users.id),
+            eq(userContractors.contractorId, contractorId),
+          ),
+        )
+        .where(
+          and(
+            eq(dialpadUsers.contractorId, contractorId),
+            eq(dialpadUsers.dialpadUserId, operatorId),
+          ),
+        )
+        .limit(1);
+      if (rows[0]?.userId) return rows[0].userId;
+    }
+    if (operatorEmail) {
+      const rows = await db
+        .select({ userId: userContractors.userId })
+        .from(users)
+        .innerJoin(
+          userContractors,
+          and(
+            eq(userContractors.userId, users.id),
+            eq(userContractors.contractorId, contractorId),
+          ),
+        )
+        .where(sql`lower(${users.email}) = lower(${operatorEmail})`)
+        .limit(1);
+      if (rows[0]?.userId) return rows[0].userId;
+    }
+  } catch (err) {
+    log.warn(`resolveOperatorToUser failed (operatorId=${operatorId}, hasEmail=${!!operatorEmail}): ${(err as Error).message}`);
+  }
+  return undefined;
 }
 
 /**
@@ -382,6 +446,11 @@ export async function processDialpadCallEvent(
   const title = buildTitle(direction, outcome, durationSeconds > 0 ? durationSeconds : undefined);
 
   const operatorName = payload.operator_name ?? payload.target?.name ?? null;
+  const operatorId = payload.operator_id != null
+    ? String(payload.operator_id)
+    : (payload.target?.id != null ? String(payload.target.id) : null);
+  const operatorEmail = payload.target?.email ?? null;
+  const resolvedUserId = await resolveOperatorToUser(contractorId, operatorId, operatorEmail);
 
   const { url: recordingUrl, isVoicemail: isVoicemailLink } = extractRecordingUrl(payload);
 
@@ -413,6 +482,13 @@ export async function processDialpadCallEvent(
     duration: durationSeconds,
     callId,
     operatorName: operatorName ?? null,
+    // Persist the Dialpad operator's ID and email so the speed-to-lead report
+    // (and any future per-rep aggregation) can resolve the call to a CRM
+    // user even when the activity row's user_id wasn't populated at insert
+    // time (e.g. legacy rows, or rows where the operator hasn't been mapped
+    // into dialpad_users / users yet).
+    operator_id: operatorId,
+    operator_email: operatorEmail,
     recording_url: recordingUrl,
     voicemail_link: payload.voicemail_link ?? null,
     recording_details: sanitizedDetails,
@@ -456,11 +532,25 @@ export async function processDialpadCallEvent(
     const mergedTitle = buildTitle(mergedDirection, mergedOutcome, mergedDuration > 0 ? mergedDuration : undefined);
     const mergedContent = buildContent(mergedTitle, mergedRecUrl, mergedIsVm, mergedOperatorName);
 
-    const updated = await storage.updateActivity(existingActivity.id, {
+    // Backfill user_id on the existing row if we didn't have one before but
+    // can resolve one from this newer event. Avoids overwriting an already
+    // attributed user (which could happen if a manual /api/calls/initiate
+    // POST created the row first and a Dialpad webhook later enriched it).
+    const updatePayload: {
+      title: string;
+      content: string;
+      metadata: Record<string, unknown>;
+      userId?: string;
+    } = {
       title: mergedTitle,
       content: mergedContent,
       metadata: mergedMeta,
-    }, contractorId);
+    };
+    if (!existingActivity.userId && resolvedUserId) {
+      updatePayload.userId = resolvedUserId;
+    }
+
+    const updated = await storage.updateActivity(existingActivity.id, updatePayload, contractorId);
 
     await db.update(webhookEvents)
       .set({
@@ -491,6 +581,12 @@ export async function processDialpadCallEvent(
     content,
     metadata: incomingMetadata,
     contactId,
+    // Attribute the call to the salesperson (the Dialpad operator) so
+    // per-rep reports like Speed-to-Lead can group by user_id. Resolved
+    // above via dialpad_users → users by email, with a direct
+    // users.email fallback. May still be null if the operator can't be
+    // mapped — the activity is still recorded.
+    userId: resolvedUserId,
     externalId: callId,
     externalSource: 'dialpad',
   }, contractorId);
