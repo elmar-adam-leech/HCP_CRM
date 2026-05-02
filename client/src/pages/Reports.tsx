@@ -27,6 +27,11 @@ const SpeedToLeadReport = lazy(() =>
     default: m.SpeedToLeadReport,
   })),
 );
+const SchedulingSourceReport = lazy(() =>
+  import("@/components/reports/leads/SchedulingSourceReport").then((m) => ({
+    default: m.SchedulingSourceReport,
+  })),
+);
 const RevenueReport = lazy(() =>
   import("@/components/reports/estimates/RevenueReport").then((m) => ({
     default: m.RevenueReport,
@@ -146,6 +151,11 @@ const TAB_REPORTS: Record<TabId, ReportItem[]> = {
       slug: "leads-trend",
       name: "Leads Trend",
       render: () => lazyRender(<LeadsTrendChart />),
+    },
+    {
+      slug: "scheduling-source",
+      name: "Self-Scheduled vs Sales-Scheduled",
+      render: () => lazyRender(<SchedulingSourceReport />),
     },
     {
       slug: "speed-to-lead",

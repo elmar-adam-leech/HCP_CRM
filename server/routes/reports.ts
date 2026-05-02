@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { AuthedRequest } from "../auth-service";
 import { asyncHandler } from "../utils/async-handler";
 import { getSpeedToLeadReport } from "../services/speed-to-lead-report";
+import { getLeadsSchedulingSourceReport } from "../services/leads-scheduling-source-report";
 import {
   getEstimateFilterOptions,
   getRevenueReport,
@@ -122,6 +123,14 @@ const cachedSpeedToLead = withReportCache(
     serialize: (args) => `${args[0].startDate.toISOString()}|${args[0].endDate.toISOString()}`,
   },
 );
+const cachedLeadsSchedulingSource = withReportCache(
+  "leads-scheduling-source",
+  (cid: string, range: { startDate: Date; endDate: Date }) =>
+    getLeadsSchedulingSourceReport(cid, range),
+  {
+    serialize: (args) => `${args[0].startDate.toISOString()}|${args[0].endDate.toISOString()}`,
+  },
+);
 
 export function registerReportsRoutes(app: Express): void {
   app.get(
@@ -156,6 +165,47 @@ export function registerReportsRoutes(app: Express): void {
       }
 
       const report = await cachedSpeedToLead(req.user.contractorId, {
+        startDate: start,
+        endDate: end,
+      });
+      res.json(report);
+    }),
+  );
+
+  // Self-Scheduled vs Sales-Scheduled bookings (Reports → Leads → task #694).
+  // Same date-range schema and defaults as /api/reports/speed-to-lead so the
+  // two leads-tab reports behave identically when the user moves between them.
+  app.get(
+    "/api/reports/leads/scheduling-source",
+    asyncHandler(async (req: AuthedRequest, res: Response) => {
+      const parsed = speedToLeadQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        res
+          .status(400)
+          .json({ message: parsed.error.issues[0]?.message ?? "Invalid query parameters" });
+        return;
+      }
+
+      const { startDate, endDate } = parsed.data;
+      let start: Date;
+      let end: Date;
+      if (startDate && endDate) {
+        start = new Date(startDate);
+        end = new Date(endDate);
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+          res.status(400).json({ message: "Invalid date" });
+          return;
+        }
+        if (end <= start) {
+          res.status(400).json({ message: "endDate must be after startDate" });
+          return;
+        }
+      } else {
+        end = new Date();
+        start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+      }
+
+      const report = await cachedLeadsSchedulingSource(req.user.contractorId, {
         startDate: start,
         endDate: end,
       });

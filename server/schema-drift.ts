@@ -1044,6 +1044,45 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
               ON "webhook_events"("contractor_id", "service", "event_type", "created_at" DESC)`,
       description: 'webhook_events composite index for HCP webhook-health checker (task #684)',
     },
+    // ---- Task #694: Self-Scheduled vs Sales-Scheduled report ----
+    // Persist the booking origin on every scheduled_bookings row so the new
+    // report can split totals into "self-scheduled" (public booking link) vs
+    // "scheduled by salesperson" without re-deriving from the activity log on
+    // every request. New rows default to 'in_app_booking'; the public booking
+    // path explicitly writes 'public_booking' (see server/scheduling/booking.ts).
+    {
+      sql: `ALTER TABLE scheduled_bookings
+            ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'in_app_booking'`,
+      description: 'scheduled_bookings.source (booking origin for scheduling-source report, task #694)',
+    },
+    // One-shot backfill for historical rows (idempotent — only touches rows
+    // still at the default 'in_app_booking' that have a 'public_booking'
+    // status_change activity for the same contact within ±10 minutes of the
+    // booking's created_at). The window is wide enough to absorb the small
+    // ordering gap between the activity log write in markContactScheduled
+    // and the subsequent scheduled_bookings insert in bookAppointment, but
+    // narrow enough that re-bookings of the same contact are not mis-tagged.
+    {
+      sql: `UPDATE scheduled_bookings sb
+              SET source = 'public_booking'
+              WHERE sb.source = 'in_app_booking'
+                AND sb.contact_id IS NOT NULL
+                AND EXISTS (
+                  SELECT 1 FROM activities a
+                  WHERE a.contact_id = sb.contact_id
+                    AND a.contractor_id = sb.contractor_id
+                    AND a.type = 'status_change'
+                    AND a.external_source = 'public_booking'
+                    AND a.created_at BETWEEN sb.created_at - interval '10 minutes'
+                                         AND sb.created_at + interval '10 minutes'
+                )`,
+      description: 'backfill scheduled_bookings.source = public_booking from activities log (task #694)',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS "scheduled_bookings_contractor_created_at_idx"
+              ON "scheduled_bookings"("contractor_id", "created_at")`,
+      description: 'scheduled_bookings (contractor_id, created_at) index for scheduling-source report (task #694)',
+    },
   ];
 
 export async function applyColumnMigrations(

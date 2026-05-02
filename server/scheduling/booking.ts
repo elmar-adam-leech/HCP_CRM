@@ -183,6 +183,11 @@ export async function bookAppointment(tenantId: string, request: BookingRequest)
     customerPhone: request.customerPhone,
     notes: request.notes,
     status: 'confirmed',
+    // Persist the booking origin so the Reports → Leads → Self-Scheduled vs
+    // Sales-Scheduled report can split totals without joining the activity
+    // log on every request (task #694). Defaults to 'in_app_booking' to match
+    // the column default for any caller that omits scheduleSource.
+    source: request.scheduleSource ?? 'in_app_booking',
     bookingPayload: request.bookingPayload ?? null,
   }).returning();
 

@@ -190,6 +190,11 @@ export const scheduledBookings = pgTable("scheduled_bookings", {
   customerPhone: text("customer_phone"),
   notes: text("notes"),
   status: text("status").notNull().default("confirmed"), // confirmed, cancelled, completed
+  // Where the booking originated. Mirrors `ScheduleSource` in
+  // server/services/contact-status.ts. Default 'in_app_booking' covers historical
+  // rows that were inserted before this column existed (the migration backfills
+  // the public-link bookings via the activity log).
+  source: text("source").notNull().default("in_app_booking"),
   bookingPayload: jsonb("booking_payload"), // Raw request body captured at booking time for audit trail
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
