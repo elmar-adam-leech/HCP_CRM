@@ -7,6 +7,7 @@ import { z } from "zod";
 import { cacheInvalidation } from "../services/cache";
 import { broadcastToContractor } from "../websocket";
 import { lookup as dnsLookup } from "dns/promises";
+import { LEAD_PLATFORMS, platformKey, type LeadPlatform } from "@shared/lib/lead-platform";
 
 export function registerSettingsRoutes(app: Express): void {
   app.get("/api/contractor", asyncHandler(async (req, res) => {
@@ -63,6 +64,97 @@ export function registerSettingsRoutes(app: Express): void {
       ? await storage.updateBusinessTargets(parsed, req.user.contractorId)
       : await storage.createBusinessTargets(parsed, req.user.contractorId);
     res.json(result);
+  }));
+
+  // ---- Task #696: media spend (manual ad-spend entries) ----
+  // Accepted platform keys are the lower-case form of LEAD_PLATFORMS so the
+  // ROI report and the Ad Spend page agree on the platform list.
+  const platformKeys = LEAD_PLATFORMS.map((p) => platformKey(p as LeadPlatform)) as [string, ...string[]];
+  const mediaSpendBodySchema = z.object({
+    platform: z.enum(platformKeys),
+    // ISO YYYY-MM-DD; we coerce to the first day of that month server-side.
+    month: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "month must be YYYY-MM-DD"),
+    amount: z.union([z.string(), z.number()])
+      .transform((v) => typeof v === "string" ? v : String(v))
+      .refine((v) => Number.isFinite(Number(v)) && Number(v) >= 0, { message: "amount must be a non-negative number" }),
+    note: z.string().max(500).nullable().optional(),
+  });
+
+  function normalizeMonth(input: string): string {
+    // Force first-of-month so the unique (contractor, platform, month) index
+    // can't be circumvented by varying day-of-month.
+    const [y, m] = input.split("-");
+    return `${y}-${m}-01`;
+  }
+
+  app.get("/api/media-spend", requireManagerOrAdmin, asyncHandler(async (req, res) => {
+    const rows = await storage.listMediaSpend(req.user.contractorId);
+    res.json(rows);
+  }));
+
+  app.post("/api/media-spend", requireManagerOrAdmin, asyncHandler(async (req, res) => {
+    const parsed = parseBody(mediaSpendBodySchema, req, res);
+    if (!parsed) return;
+    try {
+      const created = await storage.createMediaSpend(
+        {
+          platform: parsed.platform,
+          month: normalizeMonth(parsed.month),
+          amount: String(parsed.amount),
+          note: parsed.note ?? null,
+        },
+        req.user.contractorId,
+        req.user.userId,
+      );
+      res.json(created);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/unique|duplicate/i.test(message)) {
+        res.status(409).json({ message: "An entry already exists for this platform and month" });
+        return;
+      }
+      throw err;
+    }
+  }));
+
+  app.patch("/api/media-spend/:id", requireManagerOrAdmin, asyncHandler(async (req, res) => {
+    const patchSchema = mediaSpendBodySchema.partial();
+    const parsed = parseBody(patchSchema, req, res);
+    if (!parsed) return;
+    try {
+      const updated = await storage.updateMediaSpend(
+        req.params.id,
+        req.user.contractorId,
+        {
+          ...(parsed.platform !== undefined ? { platform: parsed.platform } : {}),
+          ...(parsed.month !== undefined ? { month: normalizeMonth(parsed.month) } : {}),
+          ...(parsed.amount !== undefined ? { amount: String(parsed.amount) } : {}),
+          ...(parsed.note !== undefined ? { note: parsed.note ?? null } : {}),
+        },
+        req.user.userId,
+      );
+      if (!updated) {
+        res.status(404).json({ message: "Spend entry not found" });
+        return;
+      }
+      res.json(updated);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/unique|duplicate/i.test(message)) {
+        res.status(409).json({ message: "An entry already exists for this platform and month" });
+        return;
+      }
+      throw err;
+    }
+  }));
+
+  app.delete("/api/media-spend/:id", requireManagerOrAdmin, asyncHandler(async (req, res) => {
+    const deleted = await storage.deleteMediaSpend(req.params.id, req.user.contractorId);
+    if (!deleted) {
+      res.status(404).json({ message: "Spend entry not found" });
+      return;
+    }
+    res.json({ success: true });
   }));
 
   app.get("/api/terminology", asyncHandler(async (req, res) => {

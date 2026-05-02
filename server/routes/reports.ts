@@ -19,6 +19,11 @@ import {
   type EstimatesReportFilters,
 } from "../services/estimates-reports";
 import { withReportCache } from "../services/report-cache";
+import {
+  getRoiBySourceReport,
+  type RoiBySourceFilters,
+  type RoiMode,
+} from "../services/roi-by-source";
 
 const speedToLeadQuerySchema = z
   .object({
@@ -249,4 +254,63 @@ export function registerReportsRoutes(app: Express): void {
   wire("/api/reports/estimates/in-progress", cachedInProgress);
   wire("/api/reports/estimates/sales-activity", cachedSalesActivity);
   wire("/api/reports/estimates/geographic", cachedGeographic);
+
+  // ---- Task #696: Lead-to-sale ROI by source ----
+  const roiBySourceQuerySchema = z.object({
+    startDate: z.string().datetime({ offset: true }).optional().or(z.string().date().optional()),
+    endDate: z.string().datetime({ offset: true }).optional().or(z.string().date().optional()),
+    mode: z.enum(["estimates", "jobs"]).optional(),
+  });
+
+  const cachedRoiBySource = withReportCache(
+    "roi-by-source",
+    (cid: string, filters: RoiBySourceFilters) => getRoiBySourceReport(cid, filters),
+    {
+      serialize: (args) => {
+        const f = args[0];
+        return [f.startDate.toISOString(), f.endDate.toISOString(), f.mode].join("|");
+      },
+    },
+  );
+
+  app.get(
+    "/api/reports/leads/roi-by-source",
+    asyncHandler(async (req: AuthedRequest, res: Response) => {
+      const parsed = roiBySourceQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        res
+          .status(400)
+          .json({ message: parsed.error.issues[0]?.message ?? "Invalid query parameters" });
+        return;
+      }
+      const { startDate, endDate, mode } = parsed.data;
+      let start: Date;
+      let end: Date;
+      if (startDate && endDate) {
+        start = new Date(startDate);
+        end = new Date(endDate);
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+          res.status(400).json({ message: "Invalid date" });
+          return;
+        }
+        if (end <= start) {
+          res.status(400).json({ message: "endDate must be after startDate" });
+          return;
+        }
+      } else {
+        end = new Date();
+        start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+      }
+      const resolvedMode: RoiMode = mode ?? "estimates";
+      const report = await cachedRoiBySource(req.user.contractorId, {
+        startDate: start,
+        endDate: end,
+        mode: resolvedMode,
+      });
+      res.json({
+        range: { start: start.toISOString(), end: end.toISOString() },
+        ...report,
+      });
+    }),
+  );
 }

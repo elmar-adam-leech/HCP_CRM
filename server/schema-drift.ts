@@ -1134,6 +1134,34 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `ALTER TABLE contractors ADD COLUMN IF NOT EXISTS ai_scheduling_company_context text`,
       description: 'contractors.ai_scheduling_company_context (free-text company background the AI agent should know)',
     },
+    // ---- Task #696: media_spend (manual ad-spend entries for ROI report) ----
+    {
+      sql: `CREATE TABLE IF NOT EXISTS "media_spend" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "contractor_id" varchar NOT NULL REFERENCES "contractors"("id"),
+        "platform" text NOT NULL,
+        "month" date NOT NULL,
+        "amount" decimal(12, 2) NOT NULL DEFAULT '0',
+        "note" text,
+        "created_by_user_id" varchar,
+        "updated_by_user_id" varchar,
+        "created_at" timestamp NOT NULL DEFAULT now(),
+        "updated_at" timestamp NOT NULL DEFAULT now()
+      )`,
+      description: 'media_spend table (task #696: manual ad-spend entries for ROI by Source report)',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS "media_spend_contractor_id_idx" ON "media_spend"("contractor_id")`,
+      description: 'media_spend tenant lookup index',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS "media_spend_contractor_month_idx" ON "media_spend"("contractor_id", "month")`,
+      description: 'media_spend (contractor_id, month) index for ROI report scans',
+    },
+    {
+      sql: `CREATE UNIQUE INDEX IF NOT EXISTS "media_spend_unique_platform_month_idx" ON "media_spend"("contractor_id", "platform", "month")`,
+      description: 'media_spend unique (contractor_id, platform, month) — one entry per platform per month',
+    },
   ];
 
 export async function applyColumnMigrations(

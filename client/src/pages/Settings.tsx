@@ -12,7 +12,8 @@ import { SalespeopleTab } from "@/components/settings/salespeople/SalespeopleTab
 import { AssignmentsTab } from "@/components/settings/assignments/AssignmentsTab";
 import { PrivacyTab } from "@/components/settings/privacy/PrivacyTab";
 import { SalesProcessTab } from "@/components/settings/sales-process/SalesProcessTab";
-type TabId = 'account' | 'integrations' | 'security' | 'targets' | 'webhooks' | 'salespeople' | 'assignments' | 'privacy' | 'sales_process';
+import { AdSpendTab } from "@/components/settings/ad-spend/AdSpendTab";
+type TabId = 'account' | 'integrations' | 'security' | 'targets' | 'webhooks' | 'salespeople' | 'assignments' | 'privacy' | 'sales_process' | 'ad_spend';
 
 export default function Settings() {
   const [, navigate] = useLocation();
@@ -62,6 +63,7 @@ export default function Settings() {
         {canManageIntegrations && tabBtn('integrations', 'Integrations', 'tab-integrations')}
         {tabBtn('security', 'Security', 'tab-security')}
         {isAdmin && tabBtn('targets', 'Performance Targets', 'tab-targets')}
+        {canManageIntegrations && tabBtn('ad_spend', 'Ad Spend', 'tab-ad-spend')}
         {tabBtn('webhooks', 'Webhooks', 'tab-webhooks')}
         {isAdmin && tabBtn('salespeople', 'Salespeople', 'tab-salespeople')}
         {isAdmin && tabBtn('assignments', 'Assignments', 'tab-assignments')}
@@ -73,6 +75,7 @@ export default function Settings() {
       {activeTab === 'integrations' && <IntegrationsTab />}
       {activeTab === 'security' && <SecurityTab />}
       {activeTab === 'targets' && <TargetsTab />}
+      {activeTab === 'ad_spend' && canManageIntegrations && <AdSpendTab />}
       {activeTab === 'webhooks' && <WebhooksTab />}
       {activeTab === 'salespeople' && <SalespeopleTab />}
       {activeTab === 'assignments' && isAdmin && <AssignmentsTab />}

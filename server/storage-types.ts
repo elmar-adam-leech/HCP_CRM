@@ -23,6 +23,7 @@ import type {
   InsertWorkflowStep,
   InsertWorkflowExecution,
   InsertLeadCaptureInbox,
+  InsertMediaSpend,
 } from "@shared/schema";
 
 export type UpdateUser = Omit<Partial<InsertUser>, 'contractorId'>;
@@ -49,3 +50,4 @@ export type UpdateWorkflow = Omit<Partial<InsertWorkflow>, 'contractorId' | 'cre
 export type UpdateWorkflowStep = Omit<Partial<InsertWorkflowStep>, 'workflowId'>;
 export type UpdateWorkflowExecution = Omit<Partial<InsertWorkflowExecution>, 'workflowId' | 'contractorId'>;
 export type UpdateLeadCaptureInbox = Omit<Partial<InsertLeadCaptureInbox>, 'contractorId'>;
+export type UpdateMediaSpend = Omit<Partial<InsertMediaSpend>, 'contractorId'>;

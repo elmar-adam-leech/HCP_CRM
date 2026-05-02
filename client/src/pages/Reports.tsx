@@ -32,6 +32,11 @@ const SchedulingSourceReport = lazy(() =>
     default: m.SchedulingSourceReport,
   })),
 );
+const ROIBySourceReport = lazy(() =>
+  import("@/components/reports/ROIBySourceReport").then((m) => ({
+    default: m.ROIBySourceReport,
+  })),
+);
 const RevenueReport = lazy(() =>
   import("@/components/reports/estimates/RevenueReport").then((m) => ({
     default: m.RevenueReport,
@@ -161,6 +166,11 @@ const TAB_REPORTS: Record<TabId, ReportItem[]> = {
       slug: "speed-to-lead",
       name: "Speed to Lead",
       render: () => lazyRender(<SpeedToLeadReport />),
+    },
+    {
+      slug: "roi-by-source",
+      name: "ROI by Source",
+      render: () => lazyRender(<ROIBySourceReport />),
     },
   ],
   estimates: [

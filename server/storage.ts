@@ -106,6 +106,7 @@ import { workflowMethods } from "./storage/workflows";
 import { leadCaptureMethods } from "./storage/lead-capture";
 import { salesProcessMethods } from "./storage/sales-process";
 import { refreshTokenMethods } from "./storage/refresh-tokens";
+import { mediaSpendMethods } from "./storage/media-spend";
 
 export interface IStorage {
   // User operations
@@ -612,6 +613,13 @@ export interface IStorage {
   skipPendingTasksForLead: typeof salesProcessMethods.skipPendingTasksForLead;
   claimDueAutoTasks: typeof salesProcessMethods.claimDueAutoTasks;
 
+  // Media spend (task #696 — manual ad-spend for ROI by Source report)
+  listMediaSpend: typeof mediaSpendMethods.listMediaSpend;
+  getMediaSpend: typeof mediaSpendMethods.getMediaSpend;
+  createMediaSpend: typeof mediaSpendMethods.createMediaSpend;
+  updateMediaSpend: typeof mediaSpendMethods.updateMediaSpend;
+  deleteMediaSpend: typeof mediaSpendMethods.deleteMediaSpend;
+
   // Refresh tokens (task #650 — persistent PWA login)
   createRefreshToken: typeof refreshTokenMethods.createRefreshToken;
   findRefreshTokenByHash: typeof refreshTokenMethods.findRefreshTokenByHash;
@@ -642,4 +650,5 @@ export const storage: IStorage = {
   ...leadCaptureMethods,
   ...salesProcessMethods,
   ...refreshTokenMethods,
+  ...mediaSpendMethods,
 };
