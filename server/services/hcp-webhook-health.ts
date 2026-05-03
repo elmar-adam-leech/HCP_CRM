@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { webhookEvents, contractorIntegrations, notifications, webhookIncidents } from "@shared/schema";
+import { webhookEvents, contractorIntegrations, webhookIncidents } from "@shared/schema";
 import { eq, and, desc, sql, gte, ne, isNull } from "drizzle-orm";
 import { storage } from "../storage";
 import { broadcastToContractor } from "../websocket";
@@ -9,7 +9,10 @@ import { logger } from "../utils/logger";
 import { formatDbError } from "../utils/db-error";
 import { runHcpWebhookBackfill, summarizeBackfill } from "../sync/hcp-backfill";
 import { sendHcpIncidentEmail } from "./hcp-incident-email";
-import { getLastAlertedAt, stampAlertThrottle } from "./webhook-alert-throttle";
+import {
+  notifyWebhookIncidentOpened,
+  ALERT_THROTTLE_WINDOW_MS as SHARED_ALERT_THROTTLE_WINDOW_MS,
+} from "./webhook-incident-notifier";
 
 const log = logger('HcpWebhookHealth');
 
@@ -44,11 +47,9 @@ const KIND_HEALTH_CHECK_FAILURE = 'health-check-failure';
 const KIND_SUBSCRIPTION_MISSING = 'subscription-missing';
 
 // Task #710 — per-(contractor, service, kind) cooldown for incident paging.
-// At most one email + one in-app notification per kind per contractor every
-// 24 hours, even if the underlying incident keeps opening and closing
-// (the DB pool flap pattern that was paging contractors every 5 minutes).
-// Tunable in code only — no settings UI in v1.
-export const ALERT_THROTTLE_WINDOW_MS = 24 * 60 * 60 * 1000;
+// Single source of truth lives in the shared notifier; re-exported here
+// to preserve the public surface that existing tests + callers expect.
+export const ALERT_THROTTLE_WINDOW_MS = SHARED_ALERT_THROTTLE_WINDOW_MS;
 
 
 /**
@@ -153,12 +154,6 @@ async function closeOpenIncident(contractorId: string, kind: string): Promise<vo
   // reliable signal that distinguishes a quiet flap interval from a true
   // recovery (the underlying outage source — DB pool flap, webhook
   // disable — is exactly the kind of failure that recovers and re-trips).
-}
-
-async function markIncidentNotified(incidentId: string): Promise<void> {
-  await db.update(webhookIncidents)
-    .set({ notifiedAt: new Date() })
-    .where(eq(webhookIncidents.id, incidentId));
 }
 
 async function markIncidentBackfill(incidentId: string, summary: string): Promise<void> {
@@ -416,122 +411,27 @@ export async function notifyIncidentOpened(params: {
 }): Promise<void> {
   const { contractorId, incidentId, kind, title, message, emailSubject, emailBody } = params;
 
-  // Task #710 — cooldown gate. If we've successfully paged this
-  // (contractor, service, kind) within the throttle window, suppress BOTH
-  // channels (email + in-app + websocket). We still stamp `notifiedAt` on
-  // the incident so subsequent ticks don't keep retrying the notify path.
-  // The cooldown is intentionally checked BEFORE the email send so we don't
-  // spam SendGrid either.
-  try {
-    const lastAlertedAt = await getLastAlertedAt(contractorId, SERVICE_HCP, kind);
-    if (lastAlertedAt) {
-      const elapsedMs = Date.now() - lastAlertedAt.getTime();
-      if (elapsedMs < ALERT_THROTTLE_WINDOW_MS) {
-        const nextEligibleAt = new Date(lastAlertedAt.getTime() + ALERT_THROTTLE_WINDOW_MS);
-        log.warn(
-          `Suppressing ${kind} alert for contractor ${contractorId} (cooldown active) — ` +
-          `lastAlertedAt=${lastAlertedAt.toISOString()} nextEligibleAt=${nextEligibleAt.toISOString()} ` +
-          `suppressedChannels=[email,in-app]`
-        );
-        await markIncidentNotified(incidentId).catch(err =>
-          log.warn(`Failed to mark suppressed ${kind} incident ${incidentId} notified: ${formatDbError(err)}`)
-        );
-        return;
-      }
-    }
-  } catch (err) {
-    // A throttle lookup failure must NOT block the alert — fall through
-    // to the normal notify path. Worst case we send an extra alert; the
-    // cooldown self-heals on the next successful page.
-    log.warn(`Throttle lookup failed for ${contractorId}/${kind}; proceeding without cooldown: ${formatDbError(err)}`);
-  }
-
-  // 1. Out-of-band SendGrid email FIRST — this is the channel that has
-  //    to land for an incident to count as "notified" for dedup purposes.
-  let emailResult: { sent: number; attempted: number } = { sent: 0, attempted: 0 };
-  try {
-    emailResult = await sendHcpIncidentEmail({
+  // Thin wrapper around the shared notifier — the actual cooldown gate,
+  // email-then-in-app ordering, transient-SMTP guard, and throttle stamp
+  // all live in server/services/webhook-incident-notifier.ts so the
+  // Dialpad health monitor can reuse exactly the same behaviour with
+  // `service = 'dialpad'` (Task #712).
+  await notifyWebhookIncidentOpened({
+    contractorId,
+    incidentId,
+    service: SERVICE_HCP,
+    kind,
+    title,
+    message,
+    link: '/settings/integrations',
+    sendEmail: () => sendHcpIncidentEmail({
       contractorId,
       kind,
       subject: emailSubject,
       body: emailBody,
       link: linkToIntegrations(),
-    });
-  } catch (err) {
-    // sendHcpIncidentEmail is documented to never throw, but defend anyway.
-    log.error(`Unexpected throw from sendHcpIncidentEmail for ${contractorId} (${kind})`, err);
-    emailResult = { sent: 0, attempted: 1 };
-  }
-
-  // 2. Transient delivery failure → bail out and let the next tick retry.
-  //    We deliberately skip the in-app insert here so the user doesn't get
-  //    a silent in-app row for an alert that nobody actually received.
-  if (emailResult.attempted > 0 && emailResult.sent === 0) {
-    log.warn(
-      `${kind} email delivery failed for ${contractorId} (0/${emailResult.attempted} sent) — ` +
-      `deferring in-app notify + dedup so the next tick can retry`
-    );
-    return;
-  }
-
-  // 3. Email succeeded (or there is no possibility of email): record the
-  //    in-app notifications, broadcast the websocket update, and stamp the
-  //    dedup marker.
-  let adminCount = 0;
-  let inAppInsertedCount = 0;
-  try {
-    const contractorUsers = await storage.getContractorUsers(contractorId);
-    const adminUsers = contractorUsers.filter(uc =>
-      uc.role === 'admin' || uc.role === 'super_admin'
-    );
-    adminCount = adminUsers.length;
-    for (const admin of adminUsers) {
-      try {
-        await db.insert(notifications).values({
-          userId: admin.userId,
-          contractorId,
-          type: 'system',
-          title,
-          message,
-          link: '/settings/integrations',
-        });
-        inAppInsertedCount += 1;
-      } catch (err) {
-        log.warn(`Failed to insert in-app notification for admin ${admin.userId} (${kind}): ${formatDbError(err)}`);
-      }
-    }
-  } catch (err) {
-    log.error(`Failed to enumerate admins for ${kind} in-app notification on ${contractorId}: ${formatDbError(err)}`);
-  }
-
-  try {
-    if (inAppInsertedCount > 0) {
-      broadcastToContractor(contractorId, { type: 'notification_updated' });
-    }
-  } catch (err) {
-    log.warn(`Websocket broadcast failed for ${contractorId} (${kind}): ${formatDbError(err)}`);
-  }
-
-  await markIncidentNotified(incidentId).catch(err =>
-    log.warn(`Failed to mark ${kind} incident ${incidentId} notified: ${formatDbError(err)}`)
-  );
-
-  // Task #710 — only stamp the throttle row when at least one channel
-  // actually delivered something the user will see. A SendGrid send to
-  // ≥1 recipient OR an in-app row inserted for ≥1 admin counts. If both
-  // failed (and email was attempted), the cooldown is NOT consumed so
-  // the next tick will retry; the email-only-failure case is already
-  // short-circuited above by the `attempted > 0 && sent === 0` branch.
-  if (emailResult.sent > 0 || inAppInsertedCount > 0) {
-    await stampAlertThrottle(contractorId, SERVICE_HCP, kind).catch(err =>
-      log.warn(`Failed to stamp alert throttle for ${contractorId}/${kind}: ${formatDbError(err)}`)
-    );
-  }
-
-  log.info(
-    `Notified ${inAppInsertedCount}/${adminCount} admin(s) in-app + ${emailResult.sent}/${emailResult.attempted} via email ` +
-    `about ${kind} incident on contractor ${contractorId}`
-  );
+    }),
+  });
 }
 
 

@@ -1,8 +1,10 @@
 import { db } from "../db";
-import { webhookEvents, contractorIntegrations } from "@shared/schema";
+import { webhookEvents, contractorIntegrations, webhookIncidents } from "@shared/schema";
 import { eq, and, desc, ne, like, sql, isNull, isNotNull } from "drizzle-orm";
 import { logger } from "../utils/logger";
 import { formatDbError } from "../utils/db-error";
+import { sendDialpadIncidentEmail, type DialpadIncidentKind } from "./dialpad-incident-email";
+import { notifyWebhookIncidentOpened } from "./webhook-incident-notifier";
 
 const log = logger('DialpadCallHealth');
 
@@ -12,6 +14,12 @@ const BACKLOG_CHECK_INTERVAL_MS = 15 * 60 * 1000; // every 15 minutes
 const BACKLOG_WARN_THRESHOLD = 50;
 const POLLER_CONSECUTIVE_FAILURE_THRESHOLD = 3;
 const INTEGRATIONS_FETCH_LIMIT = 100;
+
+const SERVICE_DIALPAD = 'dialpad';
+const KIND_STALENESS = 'staleness';
+const KIND_POLLER_FAILURE = 'poller-failure';
+const KIND_BACKLOG = 'backlog';
+const KIND_FAILED_EVENTS = 'failed-events';
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let backlogIntervalHandle: ReturnType<typeof setInterval> | null = null;
@@ -46,6 +54,137 @@ export function recordPollerOutcome(success: boolean): void {
 
 export function getPollerOutcomeState(): Readonly<PollerOutcomeState> {
   return pollerOutcome;
+}
+
+// ---------------------------------------------------------------------------
+// Incident helpers — Task #712 wires Dialpad health alerts through the same
+// throttled notifier that HCP uses, so a flapping outage pages once per 24h
+// per kind instead of every health-check tick. Pattern mirrors
+// hcp-webhook-health.ts; the unique partial index on
+// webhook_incidents (contractor_id, service, kind) WHERE closed_at IS NULL
+// makes "open if not already open" race-free.
+// ---------------------------------------------------------------------------
+
+async function getOpenIncident(contractorId: string, kind: string) {
+  const rows = await db.select()
+    .from(webhookIncidents)
+    .where(and(
+      eq(webhookIncidents.contractorId, contractorId),
+      eq(webhookIncidents.service, SERVICE_DIALPAD),
+      eq(webhookIncidents.kind, kind),
+      isNull(webhookIncidents.closedAt),
+    ))
+    .limit(1);
+  return rows[0];
+}
+
+async function openIncidentAtomic(contractorId: string, kind: string): Promise<{
+  incident: typeof webhookIncidents.$inferSelect;
+  created: boolean;
+}> {
+  const inserted = await db.insert(webhookIncidents).values({
+    contractorId,
+    service: SERVICE_DIALPAD,
+    kind,
+  })
+    .onConflictDoNothing()
+    .returning();
+  if (inserted[0]) {
+    return { incident: inserted[0], created: true };
+  }
+  const existing = await getOpenIncident(contractorId, kind);
+  if (!existing) {
+    throw new Error(`openIncidentAtomic: insert conflicted but no open incident found for ${contractorId}/${kind}`);
+  }
+  return { incident: existing, created: false };
+}
+
+async function closeOpenIncident(contractorId: string, kind: string): Promise<void> {
+  await db.update(webhookIncidents)
+    .set({ closedAt: new Date() })
+    .where(and(
+      eq(webhookIncidents.contractorId, contractorId),
+      eq(webhookIncidents.service, SERVICE_DIALPAD),
+      eq(webhookIncidents.kind, kind),
+      isNull(webhookIncidents.closedAt),
+    ));
+  // Throttle is intentionally NOT cleared — the 24h cooldown spans
+  // open/close cycles to suppress flap pages, matching HCP behaviour.
+}
+
+/**
+ * Thin wrapper around the shared notifier with `service = 'dialpad'`.
+ * Cooldown isolation is per-(contractor, service, kind), so an HCP
+ * staleness cooldown does NOT suppress a Dialpad staleness alert.
+ */
+async function notifyDialpadIncidentOpened(params: {
+  contractorId: string;
+  incidentId: string;
+  kind: DialpadIncidentKind;
+  title: string;
+  message: string;
+}): Promise<void> {
+  const { contractorId, incidentId, kind, title, message } = params;
+  await notifyWebhookIncidentOpened({
+    contractorId,
+    incidentId,
+    service: SERVICE_DIALPAD,
+    kind,
+    title,
+    message,
+    link: '/settings/integrations',
+    sendEmail: () => sendDialpadIncidentEmail({
+      contractorId,
+      kind,
+      subject: title,
+      body: message,
+      link: linkToIntegrations(),
+    }),
+  });
+}
+
+function linkToIntegrations(): string {
+  const base = (process.env.APP_URL || '').replace(/\/+$/, '');
+  return base ? `${base}/settings/integrations` : '/settings/integrations';
+}
+
+/**
+ * Open + notify (or skip notify if already open and previously paged).
+ * Best-effort: failures are logged so a notify outage doesn't mask the
+ * underlying health-check work.
+ */
+async function reportContractorIncident(
+  contractorId: string,
+  kind: DialpadIncidentKind,
+  title: string,
+  message: string,
+): Promise<void> {
+  let incident: typeof webhookIncidents.$inferSelect;
+  let created: boolean;
+  try {
+    const opened = await openIncidentAtomic(contractorId, kind);
+    incident = opened.incident;
+    created = opened.created;
+  } catch (err) {
+    log.error(`Failed to open ${kind} incident for ${contractorId}: ${formatDbError(err)}`);
+    return;
+  }
+  // If a prior tick already successfully paged, don't retry the notify
+  // path — `notifiedAt` is the dedup marker. Matches HCP semantics.
+  if (!created && incident.notifiedAt) {
+    return;
+  }
+  try {
+    await notifyDialpadIncidentOpened({
+      contractorId,
+      incidentId: incident.id,
+      kind,
+      title,
+      message,
+    });
+  } catch (err) {
+    log.error(`Failed to notify ${kind} incident for ${contractorId}: ${formatDbError(err)}`);
+  }
 }
 
 export async function checkDialpadCallHealth(): Promise<void> {
@@ -110,20 +249,24 @@ export async function checkDialpadCallHealth(): Promise<void> {
         const lastCallEventAt = receivedRows[0]?.createdAt ?? null;
         const lastProcessedAt = processedRows[0]?.processedAt ?? null;
 
+        let stale = false;
+        let staleMessage = '';
         if (!lastCallEventAt) {
-          log.warn(
-            `[DialpadCallHealth] Contractor ${contractorId}: Dialpad is enabled but no call events have ever been received. ` +
-            'Call subscriptions may be missing or misconfigured.'
-          );
+          stale = true;
+          staleMessage =
+            `Dialpad is enabled but no call events have ever been received. ` +
+            `Call subscriptions may be missing or misconfigured.`;
+          log.warn(`[DialpadCallHealth] Contractor ${contractorId}: ${staleMessage}`);
         } else {
           const ageMs = now - new Date(lastCallEventAt).getTime();
           if (ageMs > staleThresholdMs) {
             const staleDays = Math.floor(ageMs / (1000 * 60 * 60 * 24));
-            log.warn(
-              `[DialpadCallHealth] Contractor ${contractorId}: No call events received in ${staleDays} day(s). ` +
+            stale = true;
+            staleMessage =
+              `No Dialpad call events received in ${staleDays} day(s). ` +
               `Last call event was at ${lastCallEventAt.toISOString()}. ` +
-              'Call subscriptions may be stale or misconfigured.'
-            );
+              `Call subscriptions may be stale or misconfigured.`;
+            log.warn(`[DialpadCallHealth] Contractor ${contractorId}: ${staleMessage}`);
           } else {
             const processedSuffix = lastProcessedAt
               ? `, last processed ${new Date(lastProcessedAt).toISOString()}`
@@ -133,6 +276,19 @@ export async function checkDialpadCallHealth(): Promise<void> {
               `(last received ${new Date(lastCallEventAt).toISOString()}${processedSuffix})`
             );
           }
+        }
+
+        if (stale) {
+          await reportContractorIncident(
+            contractorId,
+            KIND_STALENESS,
+            'Dialpad call events are not arriving',
+            staleMessage,
+          );
+        } else {
+          await closeOpenIncident(contractorId, KIND_STALENESS).catch(err =>
+            log.warn(`Failed to close staleness incident for ${contractorId}: ${formatDbError(err)}`)
+          );
         }
       } catch (err) {
         log.error(
@@ -148,13 +304,17 @@ export async function checkDialpadCallHealth(): Promise<void> {
 /**
  * Backlog checker — runs more frequently than the staleness checker because
  * a stuck poller affects call ops on the timescale of minutes, not days.
- * Warns when:
+ * Warns + pages when:
  *   - The DialpadEventPoller has logged consecutive query failures.
  *   - Any contractor has accumulated more than BACKLOG_WARN_THRESHOLD
  *     unprocessed dialpad webhook_events rows.
+ *   - Any contractor has more than BACKLOG_WARN_THRESHOLD permanently-failed
+ *     events in the last 24h.
  */
 export async function checkDialpadBacklog(): Promise<void> {
   // 1. Surface poller failures even when the failing query line scrolled away.
+  // The poller is process-wide (not per-contractor), so we page every
+  // contractor that has Dialpad enabled — a poller outage affects them all.
   if (pollerOutcome.consecutiveFailures >= POLLER_CONSECUTIVE_FAILURE_THRESHOLD) {
     const lastFailure = pollerOutcome.lastFailureAt
       ? new Date(pollerOutcome.lastFailureAt).toISOString()
@@ -162,18 +322,59 @@ export async function checkDialpadBacklog(): Promise<void> {
     const lastSuccess = pollerOutcome.lastSuccessAt
       ? new Date(pollerOutcome.lastSuccessAt).toISOString()
       : 'never';
-    log.warn(
-      `[DialpadCallHealth] DialpadEventPoller has failed ${pollerOutcome.consecutiveFailures} consecutive ticks ` +
+    const pollerMessage =
+      `The Dialpad event poller has failed ${pollerOutcome.consecutiveFailures} consecutive ticks ` +
       `(last failure ${lastFailure}, last success ${lastSuccess}). ` +
-      'Unprocessed call/SMS events will not flow into activities until the poller recovers — ' +
-      'check the most recent "Failed to query unprocessed dialpad webhook events" log for the underlying postgres error.'
-    );
+      `Unprocessed call/SMS events will not flow into activities until the poller recovers.`;
+    log.warn(`[DialpadCallHealth] ${pollerMessage}`);
+
+    try {
+      const enabled = await db
+        .select({ contractorId: contractorIntegrations.contractorId })
+        .from(contractorIntegrations)
+        .where(and(
+          eq(contractorIntegrations.integrationName, 'dialpad'),
+          eq(contractorIntegrations.isEnabled, true),
+        ))
+        .limit(INTEGRATIONS_FETCH_LIMIT);
+      for (const { contractorId } of enabled) {
+        await reportContractorIncident(
+          contractorId,
+          KIND_POLLER_FAILURE,
+          'Dialpad event poller is failing',
+          pollerMessage,
+        );
+      }
+    } catch (err) {
+      log.error(`Failed to enumerate Dialpad-enabled contractors for poller-failure paging: ${formatDbError(err)}`);
+    }
+  } else if (pollerOutcome.lastSuccessAt) {
+    // Poller has recovered — close any open poller-failure incidents so
+    // the next genuine outage pages immediately (subject to the 24h cooldown).
+    try {
+      const openRows = await db.select({
+        contractorId: webhookIncidents.contractorId,
+      })
+        .from(webhookIncidents)
+        .where(and(
+          eq(webhookIncidents.service, SERVICE_DIALPAD),
+          eq(webhookIncidents.kind, KIND_POLLER_FAILURE),
+          isNull(webhookIncidents.closedAt),
+        ));
+      for (const row of openRows) {
+        await closeOpenIncident(row.contractorId, KIND_POLLER_FAILURE).catch(err =>
+          log.warn(`Failed to close poller-failure incident for ${row.contractorId}: ${formatDbError(err)}`)
+        );
+      }
+    } catch (err) {
+      log.warn(`Failed to look up open poller-failure incidents: ${formatDbError(err)}`);
+    }
   }
 
   // 2. Per-contractor backlog of pending (still-retryable) dialpad rows.
-  // Permanently-failed rows (failed_at IS NOT NULL) are no longer counted as
-  // backlog because the poller will not retry them — they need operator
-  // attention via the failed-events surface, not a backlog warning.
+  // Permanently-failed rows (failed_at IS NOT NULL) are counted separately
+  // below — the poller will not retry them so they need a different surface.
+  const contractorsWithBacklog = new Set<string>();
   try {
     const rows = await db
       .select({
@@ -191,11 +392,17 @@ export async function checkDialpadBacklog(): Promise<void> {
       .groupBy(webhookEvents.contractorId);
 
     for (const row of rows) {
-      if (row.backlog >= BACKLOG_WARN_THRESHOLD) {
-        log.warn(
-          `[DialpadCallHealth] Contractor ${row.contractorId ?? '(null)'}: ` +
-          `${row.backlog} pending dialpad webhook events (threshold ${BACKLOG_WARN_THRESHOLD}). ` +
-          'The poller may be failing or the worker is wedged — calls may not be appearing in the app.'
+      if (row.backlog >= BACKLOG_WARN_THRESHOLD && row.contractorId) {
+        contractorsWithBacklog.add(row.contractorId);
+        const message =
+          `${row.backlog} pending Dialpad webhook events (threshold ${BACKLOG_WARN_THRESHOLD}). ` +
+          `The poller may be failing or the worker is wedged — calls may not be appearing in the app.`;
+        log.warn(`[DialpadCallHealth] Contractor ${row.contractorId}: ${message}`);
+        await reportContractorIncident(
+          row.contractorId,
+          KIND_BACKLOG,
+          'Dialpad webhook backlog is growing',
+          message,
         );
       }
     }
@@ -203,9 +410,28 @@ export async function checkDialpadBacklog(): Promise<void> {
     log.error(`[DialpadCallHealth] Backlog check query failed: ${formatDbError(err)}`);
   }
 
-  // 3. Per-contractor count of permanently-failed dialpad rows in the last
-  // 24h. Surfaced separately so a backlog of failed events doesn't hide
-  // behind the pending-only count above.
+  // Auto-close backlog incidents for contractors that dropped below threshold.
+  try {
+    const openBacklog = await db.select({ contractorId: webhookIncidents.contractorId })
+      .from(webhookIncidents)
+      .where(and(
+        eq(webhookIncidents.service, SERVICE_DIALPAD),
+        eq(webhookIncidents.kind, KIND_BACKLOG),
+        isNull(webhookIncidents.closedAt),
+      ));
+    for (const row of openBacklog) {
+      if (!contractorsWithBacklog.has(row.contractorId)) {
+        await closeOpenIncident(row.contractorId, KIND_BACKLOG).catch(err =>
+          log.warn(`Failed to close backlog incident for ${row.contractorId}: ${formatDbError(err)}`)
+        );
+      }
+    }
+  } catch (err) {
+    log.warn(`Failed to look up open backlog incidents: ${formatDbError(err)}`);
+  }
+
+  // 3. Per-contractor count of permanently-failed dialpad rows in the last 24h.
+  const contractorsWithFailedEvents = new Set<string>();
   try {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const rows = await db
@@ -224,17 +450,42 @@ export async function checkDialpadBacklog(): Promise<void> {
       .groupBy(webhookEvents.contractorId);
 
     for (const row of rows) {
-      if (row.failed >= BACKLOG_WARN_THRESHOLD) {
-        log.warn(
-          `[DialpadCallHealth] Contractor ${row.contractorId ?? '(null)'}: ` +
-          `${row.failed} dialpad webhook events permanently failed in the last 24h. ` +
-          'These rows are out of the backlog but still need investigation — ' +
-          'inspect webhook_events.error_message or use the retry endpoint.'
+      if (row.failed >= BACKLOG_WARN_THRESHOLD && row.contractorId) {
+        contractorsWithFailedEvents.add(row.contractorId);
+        const message =
+          `${row.failed} Dialpad webhook events permanently failed in the last 24h. ` +
+          `These rows are out of the backlog but still need investigation — ` +
+          `inspect webhook_events.error_message or use the retry endpoint.`;
+        log.warn(`[DialpadCallHealth] Contractor ${row.contractorId}: ${message}`);
+        await reportContractorIncident(
+          row.contractorId,
+          KIND_FAILED_EVENTS,
+          'Dialpad webhook events are failing',
+          message,
         );
       }
     }
   } catch (err) {
     log.error(`[DialpadCallHealth] Failed-events check query failed: ${formatDbError(err)}`);
+  }
+
+  try {
+    const openFailed = await db.select({ contractorId: webhookIncidents.contractorId })
+      .from(webhookIncidents)
+      .where(and(
+        eq(webhookIncidents.service, SERVICE_DIALPAD),
+        eq(webhookIncidents.kind, KIND_FAILED_EVENTS),
+        isNull(webhookIncidents.closedAt),
+      ));
+    for (const row of openFailed) {
+      if (!contractorsWithFailedEvents.has(row.contractorId)) {
+        await closeOpenIncident(row.contractorId, KIND_FAILED_EVENTS).catch(err =>
+          log.warn(`Failed to close failed-events incident for ${row.contractorId}: ${formatDbError(err)}`)
+        );
+      }
+    }
+  } catch (err) {
+    log.warn(`Failed to look up open failed-events incidents: ${formatDbError(err)}`);
   }
 }
 
