@@ -118,7 +118,13 @@ export function hasRealStreetAddress(address: string): boolean {
   const trimmed = address.trim();
   if (!trimmed) return false;
   const parts = trimmed.split(',').map(s => s.trim());
-  if (parts.length >= 3) return true;
+  // For multi-part addresses, require a real US `<STATE> <ZIP>` tail.
+  // Without this, strings like "123 Main, Some Town, foo bar" produce
+  // garbage city/state/zip from the loose parser.
+  if (parts.length >= 3) {
+    const tail = parts.slice(2).join(' ');
+    return /\b[A-Za-z]{2}\b\s+\d{5}(?:-\d{4})?\b/.test(tail);
+  }
   // Comma-less: only treat as "real" when we can actually parse a full
   // <number street...> <city> <STATE> <ZIP> tail. This protects callers
   // (e.g. public booking writeback) from persisting empty city/state/zip

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, lazy, Suspense } from "react";
+import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import { useParams, useSearch } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Calendar as CalendarIcon, Clock, User, Mail, Phone, MapPin, CheckCircle, Loader2, AlertCircle } from "lucide-react";
-import { AddressAutocomplete, AddressComponents } from "@/components/ui/AddressAutocomplete";
+import { AddressAutocomplete, AddressComponents, AddressAutocompleteRef } from "@/components/ui/AddressAutocomplete";
 import { useToast } from "@/hooks/use-toast";
 import { buildBrandColorCss } from "@shared/brand-color";
 
@@ -101,6 +101,7 @@ export default function PublicBooking() {
   const [bookingWarning, setBookingWarning] = useState<{ message: string; notesEcho?: string } | null>(null);
   const [bookingDetails, setBookingDetails] = useState<{ startTime: string } | null>(null);
   const [addressComponents, setAddressComponents] = useState<AddressComponents | null>(null);
+  const addressAutocompleteRef = useRef<AddressAutocompleteRef>(null);
   const { toast } = useToast();
 
   const { data: contractorData, isLoading: contractorLoading, error: contractorError } = useQuery<{ contractor: ContractorInfo }>({
@@ -247,7 +248,14 @@ export default function PublicBooking() {
   }, [prefillData, form]);
 
   const bookingMutation = useMutation({
-    mutationFn: async (data: BookingFormValues) => {
+    mutationFn: async (
+      data: BookingFormValues & {
+        resolvedAddress?: string;
+        resolvedComponents?: AddressComponents | null;
+      },
+    ) => {
+      const submittedAddress = data.resolvedAddress ?? data.address;
+      const submittedComponents = data.resolvedComponents ?? addressComponents;
       const response = await fetch(`/api/public/book/${slug}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -255,8 +263,8 @@ export default function PublicBooking() {
           name: data.name,
           email: data.email || undefined,
           phone: data.phone || undefined,
-          address: data.address || undefined,
-          customerAddressComponents: addressComponents || undefined,
+          address: submittedAddress || undefined,
+          customerAddressComponents: submittedComponents || undefined,
           startTime: data.timeSlot,
           notes: data.notes,
           source: 'public_booking',
@@ -298,8 +306,19 @@ export default function PublicBooking() {
     },
   });
 
-  const onSubmit = (data: BookingFormValues) => {
-    bookingMutation.mutate(data);
+  const onSubmit = async (data: BookingFormValues) => {
+    let resolvedAddress: string | undefined;
+    let resolvedComponents: AddressComponents | null | undefined;
+    try {
+      const result = await addressAutocompleteRef.current?.resolvePending();
+      if (result) {
+        resolvedAddress = result.formatted;
+        resolvedComponents = result.components;
+      }
+    } catch {
+      // Best-effort — never block submit on resolver failures.
+    }
+    bookingMutation.mutate({ ...data, resolvedAddress, resolvedComponents });
   };
 
   if (contractorError) {
@@ -468,6 +487,7 @@ export default function PublicBooking() {
                         </FormLabel>
                         <FormControl>
                           <AddressAutocomplete
+                            ref={addressAutocompleteRef}
                             endpoint="/api/public/places"
                             credentials="omit"
                             value={field.value || ''}

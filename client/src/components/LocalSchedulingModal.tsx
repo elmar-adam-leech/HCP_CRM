@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -17,7 +17,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { formatDateScheduling } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-import { AddressAutocomplete, AddressComponents } from "@/components/ui/AddressAutocomplete";
+import { AddressAutocomplete, AddressComponents, AddressAutocompleteRef } from "@/components/ui/AddressAutocomplete";
 import type { SchedulingLead } from "@/hooks/useCommunicationActions";
 
 interface Salesperson {
@@ -77,6 +77,7 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
   const queryClient = useQueryClient();
   const [selectedSalesperson, setSelectedSalesperson] = useState<Salesperson | null>(null);
   const [addressComponents, setAddressComponents] = useState<AddressComponents | null>(null);
+  const addressAutocompleteRef = useRef<AddressAutocompleteRef>(null);
 
   const { data: allTeamMembers = [], isLoading: salespeopleLoading } = useQuery<Salesperson[]>({
     queryKey: ['/api/scheduling/salespeople'],
@@ -149,7 +150,12 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
   })();
 
   const scheduleMutation = useMutation({
-    mutationFn: async (data: ScheduleFormValues) => {
+    mutationFn: async (
+      data: ScheduleFormValues & {
+        resolvedAddress?: string;
+        resolvedComponents?: AddressComponents | null;
+      },
+    ) => {
       const salesperson = salespeople.find(s => s.userId === data.salespersonId);
 
       const scheduledDate = format(data.date, 'yyyy-MM-dd');
@@ -157,21 +163,24 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
       const startDateTime = new Date(data.date);
       startDateTime.setHours(hour, minute, 0, 0);
 
+      const submittedAddress = data.resolvedAddress ?? data.address;
+      const submittedComponents = data.resolvedComponents ?? addressComponents;
+
       const bookingPayload: Record<string, any> = {
         startTime: startDateTime.toISOString(),
         title: `Estimate Appointment - ${lead?.name || 'Lead'}`,
         customerName: lead?.name || 'Unknown',
         customerEmail: lead?.email,
         customerPhone: lead?.phone,
-        customerAddress: data.address,
+        customerAddress: submittedAddress,
         notes: data.notes,
         contactId: lead?.id,
         salespersonId: data.salespersonId,
         timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       };
 
-      if (addressComponents) {
-        bookingPayload.customerAddressComponents = addressComponents;
+      if (submittedComponents) {
+        bookingPayload.customerAddressComponents = submittedComponents;
       }
 
       if (salesperson?.housecallProUserId) {
@@ -184,7 +193,7 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
       await apiRequest('PATCH', `/api/contacts/${lead?.id}`, {
         status: 'scheduled',
         scheduledDate: `${format(data.date, 'MMM dd, yyyy')} at ${data.timeSlot}`,
-        ...(data.address ? { address: data.address } : {}),
+        ...(submittedAddress ? { address: submittedAddress } : {}),
       });
 
       return {
@@ -227,8 +236,19 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
     },
   });
 
-  const onSubmit = (data: ScheduleFormValues) => {
-    scheduleMutation.mutate(data);
+  const onSubmit = async (data: ScheduleFormValues) => {
+    let resolvedAddress: string | undefined;
+    let resolvedComponents: AddressComponents | null | undefined;
+    try {
+      const result = await addressAutocompleteRef.current?.resolvePending();
+      if (result) {
+        resolvedAddress = result.formatted;
+        resolvedComponents = result.components;
+      }
+    } catch {
+      // Best-effort — never block submit on resolver failures.
+    }
+    scheduleMutation.mutate({ ...data, resolvedAddress, resolvedComponents });
   };
 
   useEffect(() => {
@@ -312,6 +332,7 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
                   </FormLabel>
                   <FormControl>
                     <AddressAutocomplete
+                      ref={addressAutocompleteRef}
                       endpoint="/api/places"
                       value={field.value || ""}
                       onChange={(v) => {

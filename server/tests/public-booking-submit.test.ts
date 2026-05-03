@@ -61,9 +61,12 @@ vi.mock('../utils/consent-log', () => ({
   logConsent: (...args: unknown[]) => logConsentMock(...args),
   hashIp: () => 'hashed-ip',
 }));
+const placesResolveAddressComponentsMock = vi.fn();
 vi.mock('../utils/places-client', () => ({
   placesAutocomplete: vi.fn(),
   placesDetails: vi.fn(),
+  placesResolveAddressComponents: (...args: unknown[]) =>
+    placesResolveAddressComponentsMock(...args),
 }));
 vi.mock('../utils/activity', () => ({
   createActivityAndBroadcast: (...args: unknown[]) => createActivityMock(...args),
@@ -148,6 +151,10 @@ const baseBody = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: no Places fallback resolution (preserves prior test
+  // expectations — those bodies all carry full `123 Maple St, Springfield,
+  // IL 62701` strings that the parser can already split).
+  placesResolveAddressComponentsMock.mockResolvedValue(undefined);
   storageMock.getContractorBySlug.mockResolvedValue({
     id: TENANT_ID,
     slug: SLUG,
@@ -413,5 +420,164 @@ describe('POST /api/public/book/:slug — submitted address propagation (Task #6
     const [, schedulingArgs] = bookAppointmentMock.mock.calls[0];
     expect(schedulingArgs.contactId).toBe('existing-6');
     expect(schedulingArgs.customerAddress).toBe(NEW_ADDR);
+  });
+});
+
+describe('POST /api/public/book/:slug — server-side Places auto-resolve fallback', () => {
+  it('(f) submission without components triggers placesResolveAddressComponents and enriches the scheduling payload', async () => {
+    // Caller posts a typed address but no `customerAddressComponents` —
+    // server fallback must canonicalize and forward to scheduling.
+    placesResolveAddressComponentsMock.mockResolvedValue({
+      street: '987 Oak Avenue',
+      city: 'Shelbyville',
+      state: 'IL',
+      zip: '62565',
+      country: 'US',
+    });
+    storageMock.findMatchingContact.mockResolvedValue('existing-7');
+    storageMock.getContactByBookingCode.mockResolvedValue({
+      id: 'existing-7',
+      name: 'Reema Saeed',
+      address: '123 Maple St, Springfield, IL 62701',
+      street: '123 Maple St',
+    });
+
+    const app = makeApp();
+    const r = await postBook(app, {
+      ...baseBody,
+      address: '987 Oak Ave Shelbyville', // partial — no zip
+      bookingCode: 'short-code-xyz',
+      // explicitly NO customerAddressComponents
+    });
+
+    expect(r.status).toBe(200);
+    expect(placesResolveAddressComponentsMock).toHaveBeenCalledTimes(1);
+    expect(placesResolveAddressComponentsMock).toHaveBeenCalledWith('987 Oak Ave Shelbyville');
+
+    // Resolved components are forwarded to the scheduling layer.
+    expect(bookAppointmentMock).toHaveBeenCalledTimes(1);
+    const [, schedulingArgs] = bookAppointmentMock.mock.calls[0];
+    expect(schedulingArgs.customerAddressComponents).toEqual({
+      street: '987 Oak Avenue',
+      city: 'Shelbyville',
+      state: 'IL',
+      zip: '62565',
+      country: 'US',
+    });
+
+    // And used to overwrite the verified contact's structured fields rather
+    // than running the partial address through the loose string parser.
+    expect(storageMock.updateContact).toHaveBeenCalledTimes(1);
+    const [, updatedFields] = storageMock.updateContact.mock.calls[0];
+    expect(updatedFields.street).toBe('987 Oak Avenue');
+    expect(updatedFields.city).toBe('Shelbyville');
+    expect(updatedFields.state).toBe('IL');
+    expect(updatedFields.zip).toBe('62565');
+  });
+
+  it('(f2) submission with PARTIAL components (street only, no city/state/zip) still triggers the Places fallback', async () => {
+    // Synthetic partial components (street only) must NOT be treated as
+    // authoritative — the fallback must run and replace them.
+    placesResolveAddressComponentsMock.mockResolvedValue({
+      street: '987 Oak Avenue',
+      city: 'Shelbyville',
+      state: 'IL',
+      zip: '62565',
+      country: 'US',
+    });
+    storageMock.findMatchingContact.mockResolvedValue('existing-7p');
+    storageMock.getContactByBookingCode.mockResolvedValue({
+      id: 'existing-7p',
+      name: 'Reema Saeed',
+      address: '123 Maple St, Springfield, IL 62701',
+      street: '123 Maple St',
+    });
+
+    const app = makeApp();
+    const r = await postBook(app, {
+      ...baseBody,
+      address: '987 Oak Ave Shelbyville',
+      bookingCode: 'short-code-xyz',
+      // Synthetic partial set — what the client emits on details failure.
+      customerAddressComponents: {
+        street: '987 Oak Ave Shelbyville',
+        city: '',
+        state: '',
+        zip: '',
+        country: 'US',
+      },
+    });
+
+    expect(r.status).toBe(200);
+    expect(placesResolveAddressComponentsMock).toHaveBeenCalledTimes(1);
+
+    // The fully-resolved components — not the partial input — reach scheduling.
+    const [, schedulingArgs] = bookAppointmentMock.mock.calls[0];
+    expect(schedulingArgs.customerAddressComponents).toEqual({
+      street: '987 Oak Avenue',
+      city: 'Shelbyville',
+      state: 'IL',
+      zip: '62565',
+      country: 'US',
+    });
+  });
+
+  it('(g) submission WITH complete client-supplied components skips the Places fallback', async () => {
+    // When the client already auto-resolved, we must not waste a Places
+    // call on the server.
+    storageMock.findMatchingContact.mockResolvedValue('existing-8');
+    storageMock.getContactByBookingCode.mockResolvedValue({
+      id: 'existing-8',
+      name: 'Reema Saeed',
+      address: '123 Maple St, Springfield, IL 62701',
+      street: '123 Maple St',
+    });
+
+    const app = makeApp();
+    const r = await postBook(app, {
+      ...baseBody,
+      bookingCode: 'short-code-xyz',
+      customerAddressComponents: {
+        street: '987 Oak Ave',
+        city: 'Shelbyville',
+        state: 'IL',
+        zip: '62565',
+        country: 'US',
+      },
+    });
+
+    expect(r.status).toBe(200);
+    expect(placesResolveAddressComponentsMock).not.toHaveBeenCalled();
+
+    // The client-supplied components are what reach scheduling.
+    const [, schedulingArgs] = bookAppointmentMock.mock.calls[0];
+    expect(schedulingArgs.customerAddressComponents.street).toBe('987 Oak Ave');
+  });
+
+  it('(h) Places fallback failure is non-fatal — booking still proceeds with parsed components', async () => {
+    // If Google Places is down or returns nothing, the booking must still
+    // go through; the existing best-effort string parser handles it.
+    placesResolveAddressComponentsMock.mockResolvedValue(undefined);
+    storageMock.findMatchingContact.mockResolvedValue('existing-9');
+    storageMock.getContactByBookingCode.mockResolvedValue({
+      id: 'existing-9',
+      name: 'Reema Saeed',
+      address: '123 Maple St, Springfield, IL 62701',
+      street: '123 Maple St',
+    });
+
+    const app = makeApp();
+    const r = await postBook(app, {
+      ...baseBody,
+      bookingCode: 'short-code-xyz',
+    });
+
+    expect(r.status).toBe(200);
+    expect(placesResolveAddressComponentsMock).toHaveBeenCalledTimes(1);
+    // No structured components reach scheduling (the body had none and the
+    // fallback resolved to undefined). resolveAddressComponents inside the
+    // scheduling layer will then run its own parser path.
+    const [, schedulingArgs] = bookAppointmentMock.mock.calls[0];
+    expect(schedulingArgs.customerAddressComponents).toBeUndefined();
   });
 });

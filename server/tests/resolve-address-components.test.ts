@@ -10,7 +10,7 @@
 import { describe, it, expect } from 'vitest';
 
 import { resolveAddressComponents } from '../scheduling/hcp-customer';
-import type { BookingRequest } from '../types/scheduling';
+import { hasRealStreetAddress, type BookingRequest } from '../types/scheduling';
 
 const STORED_CONTACT = {
   street: '100 Old Way',
@@ -167,6 +167,43 @@ describe('resolveAddressComponents', () => {
     );
     expect(result?.street).toBe('123 New St');
     expect(result?.country).toBe('US');
+  });
+
+  // The loose parser is last-resort — auto-resolve paths fill in partials.
+  // It only runs when a real US `<STATE> <ZIP>` is present in the tail.
+  describe('hasRealStreetAddress', () => {
+    it('accepts a full 3-part address with state + zip in the tail', () => {
+      expect(hasRealStreetAddress('123 Maple St, Springfield, IL 62701')).toBe(true);
+    });
+
+    it('accepts a 4-part address with apt + state + zip', () => {
+      expect(hasRealStreetAddress('123 Maple St, Apt 4, Springfield, IL 62701')).toBe(true);
+    });
+
+    it('accepts a comma-less address with a clear <street> <STATE> <ZIP> tail', () => {
+      expect(hasRealStreetAddress('123 Maple St Springfield IL 62701')).toBe(true);
+    });
+
+    it('REJECTS a 3-part address whose tail has no state + zip (used to slip through)', () => {
+      // Previously `parts.length >= 3` was enough — this would route the
+      // user's submission straight into the loose parser and produce
+      // garbage city/state/zip. Now: rejected → caller falls through to
+      // the Places fallback path.
+      expect(hasRealStreetAddress('123 Maple St, Some Town, foo bar')).toBe(false);
+    });
+
+    it('REJECTS a 2-part address with no zip', () => {
+      expect(hasRealStreetAddress('123 New St, Salem NH')).toBe(false);
+    });
+
+    it('REJECTS a comma-less single-line typed string with no tail', () => {
+      expect(hasRealStreetAddress('123 New Street')).toBe(false);
+    });
+
+    it('REJECTS empty / whitespace-only input', () => {
+      expect(hasRealStreetAddress('')).toBe(false);
+      expect(hasRealStreetAddress('   ')).toBe(false);
+    });
   });
 
   it('CONFLICT GUARD: agreement is case- and punctuation-insensitive (no false-positive disagreement)', () => {

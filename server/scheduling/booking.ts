@@ -13,12 +13,34 @@ import { createCrmEstimate } from './crm-estimate';
 import { markContactScheduled } from '../services/contact-status';
 import { createActivityAndBroadcast } from '../utils/activity';
 import { storage } from '../storage';
+import { placesResolveAddressComponents } from '../utils/places-client';
 
 const log = logger('HcpSchedulingService');
 
 const SLOT_DURATION_MINUTES = 60;
 
 export async function bookAppointment(tenantId: string, request: BookingRequest): Promise<BookingResult> {
+  // If components are missing or partial, try to canonicalize via Places
+  // before we hand off to HCP. Non-fatal — falls through to the parser
+  // inside resolveAddressComponents.
+  const componentsComplete = !!(
+    request.customerAddressComponents?.street &&
+    request.customerAddressComponents?.city &&
+    request.customerAddressComponents?.state &&
+    request.customerAddressComponents?.zip
+  );
+  if (!componentsComplete && request.customerAddress) {
+    try {
+      const resolved = await placesResolveAddressComponents(request.customerAddress);
+      if (resolved) {
+        log.info(`[scheduling] Server-side Places fallback resolved components for "${request.customerAddress}" → street="${resolved.street}", city="${resolved.city}", state="${resolved.state}", zip="${resolved.zip}"`);
+        request = { ...request, customerAddressComponents: resolved };
+      }
+    } catch (err) {
+      log.warn(`[scheduling] Server-side Places resolve threw for "${request.customerAddress}" (non-fatal):`, err instanceof Error ? err.message : err);
+    }
+  }
+
   let selectedSalesperson: SalespersonInfo | null = null;
 
   if (request.salespersonId) {

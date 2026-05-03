@@ -9,7 +9,8 @@ import { warmAvailabilityCache } from "../services/availability-cache";
 import { getAvailabilityForDate } from "../scheduling/availability";
 import { logConsent, hashIp } from "../utils/consent-log";
 import { parseAddressString } from "../types/scheduling";
-import { placesAutocomplete, placesDetails } from "../utils/places-client";
+import { placesAutocomplete, placesDetails, placesResolveAddressComponents } from "../utils/places-client";
+import type { AddressComponents } from "../types/scheduling";
 import { createActivityAndBroadcast } from "../utils/activity";
 import { markContactScheduled } from "../services/contact-status";
 import { sendEmail } from "../emails/client";
@@ -338,7 +339,11 @@ export function registerPublicRoutes(app: Express): void {
   // Create a booking from public page (stricter rate limit for submissions)
   app.post("/api/public/book/:slug", publicBookingSubmitRateLimiter, asyncHandler(async (req: Request, res: Response) => {
     const { slug } = req.params;
-    const { name, email, phone, address, customerAddressComponents, startTime, notes, source, timeZone, bookingCode, contactId: legacyContactIdParam } = req.body;
+    const { name, email, phone, address, customerAddressComponents: rawSubmittedComponents, startTime, notes, source, timeZone, bookingCode, contactId: legacyContactIdParam } = req.body;
+    let customerAddressComponents: AddressComponents | undefined =
+      rawSubmittedComponents && typeof rawSubmittedComponents === 'object'
+        ? (rawSubmittedComponents as AddressComponents)
+        : undefined;
     
     // Find contractor by booking slug
     const contractor = await storage.getContractorBySlug(slug);
@@ -361,6 +366,27 @@ export function registerPublicRoutes(app: Express): void {
     if (!address || typeof address !== 'string' || address.trim().length < 5) {
       res.status(400).json({ message: "A valid address is required" });
       return;
+    }
+
+    // If components are missing or partial (e.g. street only), canonicalize
+    // the typed address via Places so HCP receives a complete service
+    // address. Failures fall through to the loose string parser.
+    const componentsComplete = !!(
+      customerAddressComponents?.street &&
+      customerAddressComponents?.city &&
+      customerAddressComponents?.state &&
+      customerAddressComponents?.zip
+    );
+    if (!componentsComplete && address) {
+      try {
+        const resolved = await placesResolveAddressComponents(address);
+        if (resolved) {
+          log.info(`[PublicBooking] Server-side Places resolved components for typed address "${address}" → street="${resolved.street}", city="${resolved.city}", state="${resolved.state}", zip="${resolved.zip}" (had partial=${!!customerAddressComponents?.street})`);
+          customerAddressComponents = resolved;
+        }
+      } catch (err) {
+        log.warn(`[PublicBooking] Server-side Places resolve threw for "${address}" (non-fatal):`, err instanceof Error ? err.message : err);
+      }
     }
 
     // Parse and validate start time
@@ -428,7 +454,10 @@ export function registerPublicRoutes(app: Express): void {
       // submissions (which never reach this branch — they fall through to
       // createContact below). Never overwrite name/emails/phones.
       if (address && address.trim().length > 0) {
-        const parsed = parseAddressString(address);
+        // Prefer resolved/client-supplied components over the loose parser.
+        const parsed = customerAddressComponents?.street
+          ? customerAddressComponents
+          : parseAddressString(address);
         const addressFields: {
           address: string;
           street?: string;
@@ -438,9 +467,8 @@ export function registerPublicRoutes(app: Express): void {
         } = {
           address,
         };
-        // Always update the formatted address text. Update the structured
-        // components on a best-effort basis — if the parser couldn't recover
-        // a field we leave the existing one in place rather than blanking it.
+        // Update components on a best-effort basis: leave existing values in
+        // place rather than blanking out fields we couldn't recover.
         if (parsed.street) addressFields.street = parsed.street;
         if (parsed.city) addressFields.city = parsed.city;
         if (parsed.state) addressFields.state = parsed.state;
