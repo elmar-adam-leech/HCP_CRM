@@ -39,7 +39,8 @@ export type ScheduleSource =
   | 'hcp_lead_converted'
   | 'hcp_estimate_link'
   | 'manual_status_update'
-  | 'bulk_status_update';
+  | 'bulk_status_update'
+  | 'ai_agent';
 
 export interface MarkScheduledOptions {
   /** User who initiated the scheduling action (if known). */

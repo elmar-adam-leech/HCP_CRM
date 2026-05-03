@@ -71,6 +71,41 @@ export class AIService {
   }
 
   /**
+   * Generate a JSON object from the model with `response_format: json_object`
+   * enforced. Returns the raw JSON text plus latency/usage stats so callers
+   * can log token consumption per-request. Used by structured-output paths
+   * like the AI scheduling agent where the response must be parseable JSON.
+   */
+  async generateJson(opts: {
+    systemPrompt: string;
+    userPrompt: string;
+    temperature?: number;
+    maxTokens?: number;
+  }): Promise<{ content: string; latencyMs: number; promptTokens: number; completionTokens: number }> {
+    if (!this.client) {
+      throw new Error('AI service is not available - XAI_API_KEY not configured');
+    }
+    const startedAt = Date.now();
+    const completion = await this.client.chat.completions.create({
+      model: 'grok-4-fast-reasoning',
+      messages: [
+        { role: 'system', content: opts.systemPrompt },
+        { role: 'user', content: opts.userPrompt },
+      ],
+      temperature: opts.temperature ?? 0.2,
+      max_tokens: opts.maxTokens ?? 600,
+      response_format: { type: "json_object" },
+    });
+    const latencyMs = Date.now() - startedAt;
+    return {
+      content: (completion.choices[0]?.message?.content || '').trim(),
+      latencyMs,
+      promptTokens: completion.usage?.prompt_tokens ?? 0,
+      completionTokens: completion.usage?.completion_tokens ?? 0,
+    };
+  }
+
+  /**
    * Analyze data and return structured insights
    * @param data - The data to analyze
    * @param analysisType - Type of analysis to perform (sentiment, priority, category, etc.)

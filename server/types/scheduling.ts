@@ -153,7 +153,7 @@ export interface BookingRequest {
    * markContactScheduled helper so the audit trail distinguishes in-app bookings
    * from public booking widget submissions. Defaults to 'in_app_booking'.
    */
-  scheduleSource?: 'in_app_booking' | 'public_booking';
+  scheduleSource?: 'in_app_booking' | 'public_booking' | 'ai_agent';
 }
 
 export interface BookingResult {

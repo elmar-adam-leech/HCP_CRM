@@ -439,6 +439,41 @@ export function registerSettingsRoutes(app: Express): void {
     });
   }));
 
+  // ---- Task #706: AI scheduling agent — runtime endpoints ----
+
+  // Returns the open AI scheduling conversation (if any) for a contact.
+  // Used by the contact detail sheet to show a "AI is handling this lead"
+  // banner with a Take Over button.
+  app.get(
+    "/api/ai-scheduling/conversations/by-contact/:contactId",
+    asyncHandler(async (req, res) => {
+      const { aiSchedulingConversations } = await import("@shared/schema");
+      const { db } = await import("../db");
+      const { and, eq, sql: dsql } = await import("drizzle-orm");
+      const [row] = await db.select().from(aiSchedulingConversations).where(and(
+        eq(aiSchedulingConversations.contractorId, req.user.contractorId),
+        eq(aiSchedulingConversations.contactId, req.params.contactId),
+        dsql`${aiSchedulingConversations.status} IN ('active','awaiting_confirmation')`,
+      )).limit(1);
+      res.json(row ?? null);
+    }),
+  );
+
+  // Manual take-over: ends the AI agent's open conversation for this contact
+  // and writes a handoff activity. Idempotent.
+  app.post(
+    "/api/ai-scheduling/conversations/by-contact/:contactId/take-over",
+    asyncHandler(async (req, res) => {
+      const { aiSchedulingAgent } = await import("../services/ai-scheduling-agent");
+      const ok = await aiSchedulingAgent.takeOverConversation(
+        req.user.contractorId,
+        req.params.contactId,
+        req.user.userId,
+      );
+      res.json({ tookOver: ok });
+    }),
+  );
+
   app.get("/api/booking-slug", asyncHandler(async (req, res) => {
     const contractor = await storage.getContractor(req.user.contractorId);
     if (!contractor) {

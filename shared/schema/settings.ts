@@ -35,6 +35,9 @@ export const contractors = pgTable("contractors", {
   aiSchedulingEnabled: boolean("ai_scheduling_enabled").default(false).notNull(),
   aiSchedulingPersonality: text("ai_scheduling_personality"),
   aiSchedulingCompanyContext: text("ai_scheduling_company_context"),
+  // How long after a flagged outreach SMS the AI agent is allowed to engage
+  // with an inbound reply. Default 72h. Tenant-tunable but not user-facing yet.
+  aiSchedulingWindowHours: integer("ai_scheduling_window_hours").notNull().default(72),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

@@ -22,6 +22,13 @@ export const messages = pgTable("messages", {
   userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Track which user sent the message (for outbound) or assigned to (for inbound)
   externalMessageId: text("external_message_id"), // Dialpad message ID for tracking
   contractorId: varchar("contractor_id").notNull().references(() => contractors.id),
+  // Set true on outbound messages composed by the AI scheduling agent.
+  // Used to badge AI replies in the UI and to filter conversation context.
+  aiAuthored: boolean("ai_authored").notNull().default(false),
+  // Set true on outbound workflow SMS rows whose workflow step was marked as
+  // "scheduling-intent". The inbound webhook reads this flag (within the
+  // contractor's `aiSchedulingWindowHours`) to decide whether to engage.
+  isSchedulingIntent: boolean("is_scheduling_intent").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   readAt: timestamp("read_at"),
 }, (table) => ({

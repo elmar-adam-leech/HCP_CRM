@@ -48,5 +48,6 @@ export * from "./integrations";
 export * from "./notifications";
 export * from "./workflows";
 export * from "./assignments";
+export * from "./ai-scheduling";
 export * from "./sales-process";
 export * from "./media-spend";

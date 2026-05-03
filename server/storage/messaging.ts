@@ -173,6 +173,7 @@ async function getConversations(contractorId: string, options: {
         contractorId: messages.contractorId, createdAt: messages.createdAt,
         readAt: messages.readAt,
         userName: users.name,
+        aiAuthored: messages.aiAuthored, isSchedulingIntent: messages.isSchedulingIntent,
       })
       .from(messages)
       .leftJoin(users, eq(messages.userId, users.id))
@@ -357,6 +358,7 @@ async function getConversationMessages(contractorId: string, contactId: string):
       contactId: messages.contactId, estimateId: messages.estimateId, userId: messages.userId,
       externalMessageId: messages.externalMessageId, contractorId: messages.contractorId,
       createdAt: messages.createdAt, readAt: messages.readAt, userName: users.name,
+      aiAuthored: messages.aiAuthored, isSchedulingIntent: messages.isSchedulingIntent,
     }).from(messages).leftJoin(users, eq(messages.userId, users.id))
       .where(and(eq(messages.contractorId, contractorId), eq(messages.contactId, contactId), ne(messages.status, 'failed')))
       .orderBy(desc(messages.createdAt))

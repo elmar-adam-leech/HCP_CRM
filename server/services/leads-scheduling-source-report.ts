@@ -9,8 +9,9 @@
  *     `selfBooked` and `salespersonBooked` counts (zero-filled days included so
  *     the stacked-bar chart has no gaps).
  *   - Per-salesperson breakdown of bookings the salesperson assisted with —
- *     i.e. rows whose `source != 'public_booking'` grouped by
- *     `assigned_salesperson_id`.
+ *     i.e. rows whose `source NOT IN ('public_booking','ai_agent')` grouped
+ *     by `assigned_salesperson_id`. Both the public booking widget and the
+ *     AI scheduling agent count as customer-self-scheduled.
  *
  * Cancellations are NOT subtracted: every booking row counts once toward the
  * day it was created. This matches how the rest of the leads reports treat
@@ -157,7 +158,7 @@ export async function getLeadsSchedulingSourceReport(
         sb.id,
         sb.assigned_salesperson_id,
         sb.source,
-        (sb.source = 'public_booking') AS is_self_booked,
+        (sb.source IN ('public_booking', 'ai_agent')) AS is_self_booked,
         (sb.created_at AT TIME ZONE (SELECT tz FROM ctr))::date AS local_date
       FROM scheduled_bookings sb
       WHERE sb.contractor_id = ${contractorId}

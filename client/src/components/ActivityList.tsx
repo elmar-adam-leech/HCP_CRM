@@ -108,6 +108,8 @@ function getActorLabel(activity: Activity): string {
 
   // Tagged at write time by the public booking widget endpoint.
   if (activity.externalSource === 'public_booking') return 'Online Booking';
+  // Tagged at write time by the AI scheduling agent (auto-booked SMS flow).
+  if (activity.externalSource === 'ai_agent') return 'AI Scheduling Agent';
 
   // Webhook-driven activities (HCP lead.converted status flips, Dialpad call
   // logs, future Gmail-only inbound webhooks) have no human actor — surface

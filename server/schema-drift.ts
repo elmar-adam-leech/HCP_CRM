@@ -1134,6 +1134,55 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `ALTER TABLE contractors ADD COLUMN IF NOT EXISTS ai_scheduling_company_context text`,
       description: 'contractors.ai_scheduling_company_context (free-text company background the AI agent should know)',
     },
+    // ---- Task #706: AI SMS scheduling agent ----
+    {
+      sql: `ALTER TABLE contractors ADD COLUMN IF NOT EXISTS ai_scheduling_window_hours integer NOT NULL DEFAULT 72`,
+      description: 'contractors.ai_scheduling_window_hours (how long after a flagged outreach SMS the AI may engage)',
+    },
+    {
+      sql: `ALTER TABLE messages ADD COLUMN IF NOT EXISTS ai_authored boolean NOT NULL DEFAULT false`,
+      description: 'messages.ai_authored (true when an outbound message was composed by the AI scheduling agent)',
+    },
+    {
+      sql: `ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_scheduling_intent boolean NOT NULL DEFAULT false`,
+      description: 'messages.is_scheduling_intent (true on outbound workflow SMS rows whose step was marked scheduling-intent)',
+    },
+    {
+      sql: `CREATE TABLE IF NOT EXISTS "ai_scheduling_conversations" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "contractor_id" varchar NOT NULL REFERENCES "contractors"("id") ON DELETE CASCADE,
+        "contact_id" varchar NOT NULL REFERENCES "contacts"("id") ON DELETE CASCADE,
+        "triggering_message_id" varchar REFERENCES "messages"("id") ON DELETE SET NULL,
+        "triggering_workflow_execution_id" varchar REFERENCES "workflow_executions"("id") ON DELETE SET NULL,
+        "status" text NOT NULL DEFAULT 'active',
+        "proposed_start_time" timestamp,
+        "proposed_salesperson_user_id" varchar REFERENCES "users"("id") ON DELETE SET NULL,
+        "proposed_address" text,
+        "exchange_count" integer NOT NULL DEFAULT 0,
+        "last_inbound_message_id" varchar REFERENCES "messages"("id") ON DELETE SET NULL,
+        "last_outbound_message_id" varchar REFERENCES "messages"("id") ON DELETE SET NULL,
+        "handoff_reason" text,
+        "created_at" timestamp NOT NULL DEFAULT now(),
+        "updated_at" timestamp NOT NULL DEFAULT now()
+      )`,
+      description: 'ai_scheduling_conversations table (task #706: AI SMS scheduling agent state)',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS ai_sched_conv_contractor_idx ON ai_scheduling_conversations (contractor_id)`,
+      description: 'ai_scheduling_conversations.contractor_id index',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS ai_sched_conv_contact_idx ON ai_scheduling_conversations (contact_id)`,
+      description: 'ai_scheduling_conversations.contact_id index',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS ai_sched_conv_status_idx ON ai_scheduling_conversations (status)`,
+      description: 'ai_scheduling_conversations.status index',
+    },
+    {
+      sql: `CREATE UNIQUE INDEX IF NOT EXISTS ai_sched_conv_unique_open_idx ON ai_scheduling_conversations (contractor_id, contact_id) WHERE status IN ('active','awaiting_confirmation')`,
+      description: 'ai_scheduling_conversations partial unique index — at most one open conversation per contact',
+    },
     // ---- Task #696: media_spend (manual ad-spend entries for ROI report) ----
     {
       sql: `CREATE TABLE IF NOT EXISTS "media_spend" (

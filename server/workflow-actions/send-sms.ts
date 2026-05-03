@@ -14,6 +14,10 @@ interface SendSmsConfig {
   message: string;
   fromNumber?: string;
   updateStatus?: string;
+  // Task #706: when true, mark the saved outbound message row with
+  // is_scheduling_intent so the inbound SMS webhook knows to wake the AI
+  // scheduling agent on any reply within the contractor's window.
+  isSchedulingIntent?: boolean;
 }
 
 function parseSendSmsConfig(raw: Record<string, unknown>): SendSmsConfig {
@@ -22,6 +26,7 @@ function parseSendSmsConfig(raw: Record<string, unknown>): SendSmsConfig {
     message: String(raw.message ?? ''),
     fromNumber: raw.fromNumber != null ? String(raw.fromNumber) : undefined,
     updateStatus: raw.updateStatus != null ? String(raw.updateStatus) : undefined,
+    isSchedulingIntent: raw.isSchedulingIntent === true,
   };
 }
 
@@ -30,7 +35,7 @@ export async function handleSendSMS(
   context: ExecutionContext
 ): Promise<StepResult> {
   try {
-    const { to, message, fromNumber } = parseSendSmsConfig(config);
+    const { to, message, fromNumber, isSchedulingIntent } = parseSendSmsConfig(config);
 
     const rawTo = replaceVariablesInObject(to, context.variables) as string;
     log.info(`[phone-pipeline] SMS step resolved {{phones}} variable to: "${rawTo}" (workflowId: ${context.workflowId})`);
@@ -130,6 +135,7 @@ export async function handleSendSMS(
           contactId: resolvedContactId,
           userId: context.workflowCreatorId,
           externalMessageId: result.messageId,
+          isSchedulingIntent: isSchedulingIntent === true,
         },
         context.contractorId
       );

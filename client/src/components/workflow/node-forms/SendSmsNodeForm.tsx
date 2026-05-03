@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { VariableInputField, VariableTextareaField, AfterSendingSection, insertVariableAtCursor } from './shared-fields';
 
@@ -19,6 +20,19 @@ export function SendSmsNodeForm({ formData, handleChange, entityType, isAdmin, p
     <>
       <VariableInputField label="To (Phone Number)" fieldName="to" inputRef={smsToRef} entityType={entityType} value={String(formData.to || '')} onChange={(e) => handleChange('to', e.target.value)} onVariableSelect={(v) => insertVariableAtCursor('to', v, smsToRef, String(formData.to || ''), handleChange)} placeholder="(555) 123-4567 or {{lead.phones}}" testId="input-sms-to" />
       <VariableTextareaField label="Message" fieldName="message" textareaRef={messageRef} entityType={entityType} value={String(formData.message || '')} onChange={(e) => handleChange('message', e.target.value)} onVariableSelect={(v) => insertVariableAtCursor('message', v, messageRef, String(formData.message || ''), handleChange)} placeholder="SMS message content (use Insert Variable button)" rows={3} testId="input-sms-message" />
+
+      <div className="flex items-start gap-2 rounded-md border p-3">
+        <Checkbox
+          id="isSchedulingIntent"
+          checked={formData.isSchedulingIntent === true}
+          onCheckedChange={(v) => handleChange('isSchedulingIntent', v === true)}
+          data-testid="checkbox-sms-scheduling-intent"
+        />
+        <div className="grid gap-1 leading-none">
+          <Label htmlFor="isSchedulingIntent" className="cursor-pointer">Scheduling intent</Label>
+          <p className="text-xs text-muted-foreground">If your AI scheduling agent is enabled, it will reply to inbound responses to this SMS and try to book the appointment.</p>
+        </div>
+      </div>
 
       {isAdmin && (
         <div className="space-y-3 pt-3 border-t">

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import DOMPurify from "dompurify";
-import { ArrowDownLeft, ArrowUpRight } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Bot } from "lucide-react";
 import { formatPhoneNumber } from "@/lib/utils";
 
 const URL_REGEX = /(https?:\/\/[^\s<>"']+)/gi;
@@ -67,6 +67,7 @@ interface Message {
   type?: string;
   userId?: string | null;
   userName?: string | null;
+  aiAuthored?: boolean;
 }
 
 interface MessageHistoryProps {
@@ -188,7 +189,13 @@ export function MessageHistory({
                           <span className="text-xs opacity-70">
                             {formatTimestamp(msg.createdAt)}
                           </span>
-                          {!isInbound && msg.userName && (
+                          {!isInbound && msg.aiAuthored && (
+                            <span className="text-xs opacity-90 inline-flex items-center gap-1" data-testid={`badge-ai-authored-${msg.id}`}>
+                              <Bot className="h-3 w-3" />
+                              AI agent
+                            </span>
+                          )}
+                          {!isInbound && !msg.aiAuthored && msg.userName && (
                             <span className="text-xs opacity-70">
                               by {msg.userName}
                             </span>

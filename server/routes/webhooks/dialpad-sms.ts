@@ -342,6 +342,19 @@ export async function processSmsMessageEvent(
     contactType: contact?.type === 'customer' ? 'customer' : 'lead'
   });
 
+  // Fire-and-forget dispatch to the AI scheduling agent. The agent itself
+  // rechecks `aiSchedulingEnabled` and short-circuits when there is no
+  // recent scheduling-intent outreach, so this is safe for every inbound.
+  if (direction === 'inbound' && contactId) {
+    import('../../services/ai-scheduling-agent')
+      .then(({ aiSchedulingAgent }) => aiSchedulingAgent.handleInbound({
+        contractorId,
+        contactId,
+        messageId: newMessage.id,
+      }))
+      .catch((err) => log.error('AI scheduling agent dispatch failed:', err));
+  }
+
   await db.update(webhookEvents)
     .set({
       processed: true,

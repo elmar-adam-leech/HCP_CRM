@@ -189,10 +189,15 @@ export async function bookAppointment(tenantId: string, request: BookingRequest)
   if (request.contactId) {
     const customerNoteText = (request.notes || '').trim();
     if (customerNoteText.length > 0) {
-      const isPublicBooking = request.scheduleSource === 'public_booking';
-      const prefix = isPublicBooking ? 'Booking note from customer' : 'Booking note';
+      const customerOriginated = request.scheduleSource === 'public_booking'
+        || request.scheduleSource === 'ai_agent';
+      const prefix = customerOriginated ? 'Booking note from customer' : 'Booking note';
       const noteContent = `${prefix}:\n${customerNoteText}`;
-      const externalSource = isPublicBooking ? 'public_booking' : 'in_app_booking';
+      const externalSource = request.scheduleSource === 'public_booking'
+        ? 'public_booking'
+        : request.scheduleSource === 'ai_agent'
+          ? 'ai_agent'
+          : 'in_app_booking';
       const externalId = `booking-note-${request.contactId}-${request.startTime.getTime()}`;
 
       try {
@@ -230,21 +235,26 @@ export async function bookAppointment(tenantId: string, request: BookingRequest)
   // Centralized "mark this contact as scheduled" — flips status, fires the workflow
   // trigger exactly once, writes the activity log. Idempotent if the HCP webhook later
   // arrives and hits the same code path.
-  const isPublicBooking = request.scheduleSource === 'public_booking';
+  const customerOriginated = request.scheduleSource === 'public_booking'
+    || request.scheduleSource === 'ai_agent';
+  const activityExternalSource = request.scheduleSource === 'public_booking'
+    ? 'public_booking'
+    : request.scheduleSource === 'ai_agent'
+      ? 'ai_agent'
+      : undefined;
   if (request.contactId) {
     try {
       await markContactScheduled(request.contactId, tenantId, {
         source: request.scheduleSource ?? 'in_app_booking',
         scheduledByUserId: selectedSalesperson.userId,
-        // For public bookings the customer self-scheduled — the auto-assigned
-        // salesperson is the assignee, not the actor. Leave activityUserId
-        // unset so the frontend's getActorLabel falls through to the
-        // externalSource = 'public_booking' branch and renders "Online
-        // Booking" instead of crediting the salesperson (task #698).
-        // For in-app bookings, attribute the status_change row to the rep
-        // who scheduled it so the activity feed shows their name.
-        activityUserId: isPublicBooking ? undefined : selectedSalesperson.userId,
-        activityExternalSource: isPublicBooking ? 'public_booking' : undefined,
+        // Customer-originated bookings (public widget, AI agent) — the
+        // auto-assigned salesperson is the assignee, not the actor. Leave
+        // activityUserId unset so the frontend's getActorLabel falls through
+        // to the externalSource branch ("Online Booking" / "AI Scheduling
+        // Agent") instead of crediting the salesperson. For in-app bookings,
+        // attribute the status_change row to the rep who scheduled it.
+        activityUserId: customerOriginated ? undefined : selectedSalesperson.userId,
+        activityExternalSource,
       });
     } catch (err) {
       log.error('[scheduling] markContactScheduled failed (non-fatal):', err);

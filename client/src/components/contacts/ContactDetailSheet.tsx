@@ -22,10 +22,11 @@ import { Separator } from "@/components/ui/separator";
 import { Mail, Phone, MapPin, Trash2, Users, Briefcase, FileText, ExternalLink, Download, ShieldOff, Tag, Pencil, Check, X } from "lucide-react";
 import { getInitials } from "@/lib/utils";
 import { Link } from "wouter";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import type { Contact } from "@shared/schema";
+import type { Contact, AiSchedulingConversation } from "@shared/schema";
+import { Bot } from "lucide-react";
 
 function formatSource(source: string | null | undefined): string {
   if (!source || !source.trim()) return "Unknown";
@@ -103,6 +104,32 @@ export function ContactDetailSheet({
     },
   });
 
+  // Task #706: surface the AI scheduling agent's open conversation (if any)
+  // so a human can take over with one click.
+  const aiConvQuery = useQuery<AiSchedulingConversation | null>({
+    queryKey: ["/api/ai-scheduling/conversations/by-contact", contact?.id],
+    enabled: !!contact?.id,
+  });
+
+  const takeOver = useMutation({
+    mutationFn: async () => {
+      if (!contact) throw new Error("No contact");
+      return apiRequest(
+        "POST",
+        `/api/ai-scheduling/conversations/by-contact/${contact.id}/take-over`,
+      );
+    },
+    onSuccess: () => {
+      toast({ title: "AI agent stopped — you're taking over" });
+      queryClient.invalidateQueries({
+        queryKey: ["/api/ai-scheduling/conversations/by-contact", contact?.id],
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not take over", description: err.message, variant: "destructive" });
+    },
+  });
+
   const headerSubtitle = contact ? `${contact.type} · ${contact.status}` : "";
 
   const headerNode = contact && (
@@ -121,6 +148,29 @@ export function ContactDetailSheet({
 
   const bodyNode = contact && (
     <div className="space-y-4">
+      {aiConvQuery.data && (
+        <div
+          className="rounded-md border bg-muted/40 p-3 flex items-start gap-3"
+          data-testid="banner-ai-scheduling-active"
+        >
+          <Bot className="h-4 w-4 mt-0.5 shrink-0" />
+          <div className="flex-1 text-sm">
+            <div className="font-medium">AI scheduling agent is handling this lead</div>
+            <div className="text-xs text-muted-foreground">
+              Status: {aiConvQuery.data.status === "awaiting_confirmation" ? "Waiting for customer to confirm" : "Chatting with customer"}
+            </div>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={takeOver.isPending}
+            onClick={() => takeOver.mutate()}
+            data-testid="button-ai-take-over"
+          >
+            Take over
+          </Button>
+        </div>
+      )}
       <div className="space-y-2">
         {contact.emails?.map((email) => (
           <div key={email} className="flex items-center gap-2 text-sm min-w-0">
