@@ -42,6 +42,31 @@ function logFatalAndExit(label: string, err: unknown): void {
 process.on('unhandledRejection', (reason) => logFatalAndExit('[unhandledRejection]', reason));
 process.on('uncaughtException',  (err)    => logFatalAndExit('[uncaughtException]',  err));
 
+// ─── Boot-step tracking + startup watchdog ───────────────────────────────
+// Some startup failures present as a *hung* promise (e.g. a DDL waiting on
+// a lock held by a previous crash-looping instance). In that case Node
+// exits silently with code 13 ("Unfinished Top-Level Await") and neither
+// the unhandledRejection nor uncaughtException handler fires — there is
+// nothing to handle. The `step()` helper records where we are in boot, and
+// the watchdog converts a silent exit-13 hang into a visible exit-1 with
+// the wedged step name. The watchdog must NOT be `.unref()`d — its job is
+// to keep the loop alive long enough to fire when everything else has gone
+// idle. It is cleared inside the `server.listen` callback on the happy
+// path.
+let bootStep = 'pre-init';
+function step(name: string): void {
+  bootStep = name;
+  process.stderr.write(`[startup] step: ${name}\n`);
+}
+const STARTUP_WATCHDOG_MS = 60_000;
+const startupWatchdog = setTimeout(() => {
+  process.stderr.write(
+    `[startup] watchdog: still hung at step "${bootStep}" after ` +
+    `${STARTUP_WATCHDOG_MS / 1000}s — exiting\n`
+  );
+  process.exit(1);
+}, STARTUP_WATCHDOG_MS);
+
 const app = express();
 const isProd = process.env.NODE_ENV === "production";
 
@@ -249,13 +274,16 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   try {
   // Ensure pg_trgm extension exists before serving any traffic (required for
   // GIN trigram indexes used by ILIKE search queries).
+  step('initDb');
   await initDb();
 
   // One-time migration: move plaintext webhookApiKey values from the contractors
   // table into CredentialService (encrypted at rest), then drop the column.
+  step('migrateDialpadWebhookApiKeys');
   await migrateDialpadWebhookApiKeys();
 
   // Initialize provider service (registers default providers)
+  step('providerService');
   log("Initializing multi-provider communication system...");
   const providers = providerService; // This triggers singleton initialization and provider registration
   log(`Provider system initialized with ${providers.getAvailableProviders('email').length} email, ${providers.getAvailableProviders('sms').length} SMS, ${providers.getAvailableProviders('calling').length} calling providers`);
@@ -272,6 +300,7 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   workflowEngine.startSuspendedPoller();
 
   // Start the sync scheduler for daily syncs
+  step('syncScheduler.start');
   log("Starting sync scheduler...");
   await syncScheduler.start();
   
@@ -280,10 +309,12 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   messageCleanupService.start();
 
   // Start the HCP webhook health checker (skipped if no HCP tenants exist)
+  step('startHcpWebhookHealthCheck');
   log("Starting HCP webhook health checker...");
   await startHcpWebhookHealthCheck();
 
   // Start the Dialpad call webhook health checker
+  step('startDialpadCallHealthCheck');
   log("Starting Dialpad call health checker...");
   await startDialpadCallHealthCheck();
 
@@ -346,6 +377,7 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   log("AdSpendSyncJob registered (runs every 6 h)");
 
   // Sales-process cron: poll for due auto-mode tasks and dispatch them.
+  step('import sales-process-cron');
   const { salesProcessCron } = await import("./services/sales-process-cron");
   salesProcessCron.start();
   log("SalesProcessCron registered (runs every 60s)");
@@ -382,6 +414,7 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   }, 24 * 60 * 60 * 1000));
 
 
+  step('registerRoutes');
   const server = await registerRoutes(app);
 
   // Global error-handling contract:
@@ -405,8 +438,10 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   // setting up all the other routes so the catch-all route
   // doesn't interfere with the other routes
   if (app.get("env") === "development") {
+    step('setupVite');
     await setupVite(app, server);
   } else {
+    step('serveStatic');
     // Prevent browsers from caching index.html across deployments.
     // Vite gives JS/CSS assets content-hashed filenames so those can be cached
     // safely, but index.html itself must never be stale — a cached copy
@@ -426,12 +461,15 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   // Other ports are firewalled. Default to 5000 if not specified.
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
+  step('server.listen');
   const port = parseInt(process.env.PORT || '5000', 10);
   server.listen({
     port,
     host: "0.0.0.0",
     reusePort: true,
   }, () => {
+    clearTimeout(startupWatchdog);
+    bootStep = 'serving';
     log(`serving on port ${port}`);
   });
 

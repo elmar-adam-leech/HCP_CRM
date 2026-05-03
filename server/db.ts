@@ -24,8 +24,22 @@ function initializeDatabase(): { pool: AppPool; db: ReturnType<typeof neonDrizzl
       throw new Error("NEON_DATABASE_URL must be set in production.");
     }
     neonConfig.webSocketConstructor = ws;
+    // Force every server-side session to have a 60s statement_timeout via the
+    // Postgres `options` startup parameter. This is applied at session-start
+    // by the server itself — no extra SQL round-trip, no race window where a
+    // first query could run without the timeout. Without this, a DDL waiting
+    // on a lock (e.g. held by a previous crash-looping instance) hangs
+    // forever and Node exits silently with code 13 ("Unfinished Top-Level
+    // Await") — no error, no stack trace. 60s is comfortably longer than any
+    // legitimate query/DDL in this codebase and short enough to surface lock
+    // contention as a real Postgres rejection that the unhandledRejection
+    // handler can catch.
+    const neonUrl = new URL(process.env.NEON_DATABASE_URL);
+    if (!neonUrl.searchParams.has('options')) {
+      neonUrl.searchParams.set('options', '-c statement_timeout=60000');
+    }
     const neonPool = new NeonPool({
-      connectionString: process.env.NEON_DATABASE_URL,
+      connectionString: neonUrl.toString(),
       max: Number(process.env.DB_POOL_MAX ?? 20),
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 5_000,
@@ -57,6 +71,7 @@ process.stderr.write(
 export { pool, db };
 
 export async function initDb(): Promise<void> {
+  process.stderr.write('[db] step: pg_trgm\n');
   try {
     await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
   } catch (err: unknown) {
@@ -67,7 +82,9 @@ export async function initDb(): Promise<void> {
     );
   }
 
-
+  process.stderr.write('[db] step: applyColumnMigrations\n');
   await applyColumnMigrations(pool);
+  process.stderr.write('[db] step: runSchemaDriftCheck\n');
   await runSchemaDriftCheck(pool);
+  process.stderr.write('[db] step: initDb done\n');
 }
