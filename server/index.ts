@@ -36,11 +36,11 @@ import { recordRequest, normalizePath } from "./services/latency-stats";
 function logFatalAndExit(label: string, err: unknown): void {
   const message = err instanceof Error ? err.message : String(err);
   const stack = err instanceof Error && err.stack ? err.stack : '(no stack)';
-  process.stderr.write(`[${label}] ${message}\n${stack}\n`);
+  process.stderr.write(`${label}: ${message}\n${stack}\n`);
   process.exit(1);
 }
-process.on('unhandledRejection', (reason) => logFatalAndExit('unhandledRejection', reason));
-process.on('uncaughtException',  (err)    => logFatalAndExit('uncaughtException',  err));
+process.on('unhandledRejection', (reason) => logFatalAndExit('[unhandledRejection]', reason));
+process.on('uncaughtException',  (err)    => logFatalAndExit('[uncaughtException]',  err));
 
 const app = express();
 const isProd = process.env.NODE_ENV === "production";
@@ -513,6 +513,6 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   process.on("SIGINT",  () => gracefulShutdown("SIGINT"));
   // ─────────────────────────────────────────────────────────────────────────
   } catch (err) {
-    logFatalAndExit('startup fatal', err);
+    logFatalAndExit('[startup] fatal', err);
   }
-})().catch((err) => logFatalAndExit('startup fatal (unhandled)', err));
+})().catch((err) => logFatalAndExit('[startup] fatal (unhandled)', err));
