@@ -37,6 +37,20 @@ interface RoiSourceBreakdown {
   wonRevenue: number;
 }
 
+interface RoiCampaignBreakdown {
+  campaign: string | null;
+  label: string;
+  leadCount: number;
+  wonCount: number;
+  wonRevenue: number;
+  spend: number | null;
+  costPerLead: number | null;
+  costPerWon: number | null;
+  roas: number | null;
+  roiPercent: number | null;
+  bySource: RoiSourceBreakdown[];
+}
+
 interface RoiPlatformRow {
   platform: string;
   platformKey: string;
@@ -49,6 +63,7 @@ interface RoiPlatformRow {
   roas: number | null;
   roiPercent: number | null;
   bySource: RoiSourceBreakdown[];
+  byCampaign: RoiCampaignBreakdown[];
 }
 
 interface RoiBySourceData {
@@ -121,11 +136,16 @@ function formatRoas(value: number | null): string {
   return `${value.toFixed(2)}×`;
 }
 
+function campaignKeyFor(c: RoiCampaignBreakdown): string {
+  return c.campaign ?? "__unattributed__";
+}
+
 export function ROIBySourceReport() {
   const [preset, setPreset] = useState<RangePreset>("30d");
   const [customRange, setCustomRange] = useState<DateRange | undefined>(undefined);
   const [mode, setMode] = useState<RoiMode>("estimates");
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expandedPlatforms, setExpandedPlatforms] = useState<Set<string>>(new Set());
+  const [expandedCampaigns, setExpandedCampaigns] = useState<Set<string>>(new Set());
 
   const customRangeResolved = useMemo(
     () => (preset === "custom" ? rangeFromCustom(customRange) : null),
@@ -173,11 +193,20 @@ export function ROIBySourceReport() {
     }));
   }, [data]);
 
-  function toggleRow(platform: string) {
-    setExpanded((prev) => {
+  function togglePlatform(platform: string) {
+    setExpandedPlatforms((prev) => {
       const next = new Set(prev);
       if (next.has(platform)) next.delete(platform);
       else next.add(platform);
+      return next;
+    });
+  }
+
+  function toggleCampaign(key: string) {
+    setExpandedCampaigns((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }
@@ -189,7 +218,7 @@ export function ROIBySourceReport() {
           <CardTitle>ROI by Source</CardTitle>
           <CardDescription>
             Spend vs. revenue per advertising platform, with cost per lead, cost per
-            sale, and ROI %. Toggle between approved estimates and completed jobs.
+            sale, and ROI %. Expand a platform to see per-campaign performance.
           </CardDescription>
         </div>
         <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-start">
@@ -355,17 +384,18 @@ export function ROIBySourceReport() {
                 </TableHeader>
                 <TableBody>
                   {data.platforms.map((row) => {
-                    const isOpen = expanded.has(row.platformKey);
+                    const isOpen = expandedPlatforms.has(row.platformKey);
                     const noSpend = row.spend === null;
+                    const hasDrill = row.byCampaign.length > 0;
                     return (
                       <Fragment key={row.platformKey}>
                         <TableRow
-                          className="cursor-pointer hover-elevate"
-                          onClick={() => toggleRow(row.platformKey)}
+                          className={cn(hasDrill && "cursor-pointer hover-elevate")}
+                          onClick={() => hasDrill && togglePlatform(row.platformKey)}
                           data-testid={`row-platform-${row.platformKey}`}
                         >
                           <TableCell>
-                            {row.bySource.length > 0 ? (
+                            {hasDrill ? (
                               isOpen ? (
                                 <ChevronDown className="h-4 w-4" />
                               ) : (
@@ -406,39 +436,17 @@ export function ROIBySourceReport() {
                             {formatPercent(row.roiPercent)}
                           </TableCell>
                         </TableRow>
-                        {isOpen && row.bySource.length > 0 && (
-                          <TableRow
-                            data-testid={`row-platform-${row.platformKey}-detail`}
-                          >
+                        {isOpen && hasDrill && (
+                          <TableRow data-testid={`row-platform-${row.platformKey}-detail`}>
                             <TableCell />
                             <TableCell colSpan={9} className="p-0">
-                              <div className="bg-muted/30 px-4 py-2">
-                                <Table>
-                                  <TableHeader>
-                                    <TableRow>
-                                      <TableHead>Source</TableHead>
-                                      <TableHead className="text-right">Leads</TableHead>
-                                      <TableHead className="text-right">Won</TableHead>
-                                      <TableHead className="text-right">Revenue</TableHead>
-                                    </TableRow>
-                                  </TableHeader>
-                                  <TableBody>
-                                    {row.bySource.map((src) => (
-                                      <TableRow key={src.source ?? "__unknown__"}>
-                                        <TableCell>{src.label}</TableCell>
-                                        <TableCell className="text-right tabular-nums">
-                                          {src.leadCount}
-                                        </TableCell>
-                                        <TableCell className="text-right tabular-nums">
-                                          {src.wonCount}
-                                        </TableCell>
-                                        <TableCell className="text-right tabular-nums">
-                                          {formatCurrency(src.wonRevenue)}
-                                        </TableCell>
-                                      </TableRow>
-                                    ))}
-                                  </TableBody>
-                                </Table>
+                              <div className="bg-muted/30 px-4 py-3">
+                                <CampaignDrilldown
+                                  platformKey={row.platformKey}
+                                  campaigns={row.byCampaign}
+                                  expandedCampaigns={expandedCampaigns}
+                                  onToggleCampaign={toggleCampaign}
+                                />
                               </div>
                             </TableCell>
                           </TableRow>
@@ -486,6 +494,131 @@ export function ROIBySourceReport() {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function CampaignDrilldown({
+  platformKey,
+  campaigns,
+  expandedCampaigns,
+  onToggleCampaign,
+}: {
+  platformKey: string;
+  campaigns: RoiCampaignBreakdown[];
+  expandedCampaigns: Set<string>;
+  onToggleCampaign: (key: string) => void;
+}) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead className="w-8" />
+          <TableHead>Campaign</TableHead>
+          <TableHead className="text-right">Leads</TableHead>
+          <TableHead className="text-right">Won</TableHead>
+          <TableHead className="text-right">Revenue</TableHead>
+          <TableHead className="text-right">Spend</TableHead>
+          <TableHead className="text-right">$/Lead</TableHead>
+          <TableHead className="text-right">$/Sale</TableHead>
+          <TableHead className="text-right">ROAS</TableHead>
+          <TableHead className="text-right">ROI %</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {campaigns.map((camp) => {
+          const ck = `${platformKey}::${campaignKeyFor(camp)}`;
+          const isOpen = expandedCampaigns.has(ck);
+          const hasSourceDrill = camp.bySource.length > 0;
+          const isUnattributed = camp.campaign === null;
+          return (
+            <Fragment key={ck}>
+              <TableRow
+                className={cn(hasSourceDrill && "cursor-pointer hover-elevate")}
+                onClick={() => hasSourceDrill && onToggleCampaign(ck)}
+                data-testid={`row-campaign-${ck}`}
+              >
+                <TableCell>
+                  {hasSourceDrill ? (
+                    isOpen ? (
+                      <ChevronDown className="h-4 w-4" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4" />
+                    )
+                  ) : null}
+                </TableCell>
+                <TableCell className={cn("font-medium", isUnattributed && "italic text-muted-foreground")}>
+                  {camp.label}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">{camp.leadCount}</TableCell>
+                <TableCell className="text-right tabular-nums">{camp.wonCount}</TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {formatCurrency(camp.wonRevenue)}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {camp.spend === null ? (
+                    <span className="text-muted-foreground">—</span>
+                  ) : (
+                    formatCurrency(camp.spend)
+                  )}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {formatCurrencyExact(camp.costPerLead)}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {formatCurrencyExact(camp.costPerWon)}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {formatRoas(camp.roas)}
+                </TableCell>
+                <TableCell
+                  className={cn(
+                    "text-right tabular-nums",
+                    camp.roiPercent !== null && camp.roiPercent < 0 && "text-destructive",
+                  )}
+                >
+                  {formatPercent(camp.roiPercent)}
+                </TableCell>
+              </TableRow>
+              {isOpen && hasSourceDrill && (
+                <TableRow data-testid={`row-campaign-${ck}-detail`}>
+                  <TableCell />
+                  <TableCell colSpan={9} className="p-0">
+                    <div className="bg-muted/40 px-4 py-2">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Source</TableHead>
+                            <TableHead className="text-right">Leads</TableHead>
+                            <TableHead className="text-right">Won</TableHead>
+                            <TableHead className="text-right">Revenue</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {camp.bySource.map((src) => (
+                            <TableRow key={src.source ?? "__unknown__"}>
+                              <TableCell>{src.label}</TableCell>
+                              <TableCell className="text-right tabular-nums">
+                                {src.leadCount}
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums">
+                                {src.wonCount}
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums">
+                                {formatCurrency(src.wonRevenue)}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )}
+            </Fragment>
+          );
+        })}
+      </TableBody>
+    </Table>
   );
 }
 

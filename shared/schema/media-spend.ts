@@ -7,19 +7,21 @@ import {
   decimal,
   date,
   index,
-  uniqueIndex,
+  unique,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { contractors } from "./settings";
 
 // Manual ad-spend entries used by the ROI by Source report. One row per
-// (contractor, platform, month). `month` stores the first day of the month
-// the spend applies to (UTC), `amount` is dollars.
+// (contractor, platform, campaign, month). `month` stores the first day of
+// the month the spend applies to (UTC); `amount` is dollars.
 //
-// Auto-import of ad spend from Facebook / Google Ads is intentionally out of
-// scope for task #696 — entries are created by the user in the Ad Spend
-// settings page.
+// `campaign` is optional — when null the row is platform-level spend and
+// shows as "Unattributed" in the ROI report's per-campaign drill-down.
+//
+// Entries are created by the user in the Ad Spend settings page; auto-import
+// from ad networks is out of scope.
 export const mediaSpend = pgTable(
   "media_spend",
   {
@@ -29,6 +31,10 @@ export const mediaSpend = pgTable(
     // e.g. "facebook", "google", "yelp"). Mirrors the rollup in
     // shared/lib/lead-platform.ts so the report and settings page agree.
     platform: text("platform").notNull(),
+    // Optional campaign name within the platform. Matched against
+    // leads.utm_campaign (case/space-insensitive) by the ROI report.
+    // NULL means platform-level spend (Unattributed in the report).
+    campaign: text("campaign"),
     // First day of the month this spend applies to (UTC).
     month: date("month").notNull(),
     amount: decimal("amount", { precision: 12, scale: 2 }).notNull().default("0"),
@@ -46,13 +52,15 @@ export const mediaSpend = pgTable(
       table.contractorId,
       table.month,
     ),
-    // One row per (contractor, platform, month) — keeps the UI free of
-    // duplicate entries and lets the ROI service sum without dedup tricks.
-    uniquePlatformMonth: uniqueIndex("media_spend_unique_platform_month_idx").on(
-      table.contractorId,
-      table.platform,
-      table.month,
-    ),
+    // One row per (contractor, platform, campaign, month). NULLS NOT DISTINCT
+    // so two platform-level (campaign=NULL) rows for the same platform+month
+    // still collide, preserving the "one entry per platform/month" guarantee
+    // for un-campaigned spend.
+    uniquePlatformCampaignMonth: unique(
+      "media_spend_unique_platform_campaign_month_idx",
+    )
+      .on(table.contractorId, table.platform, table.campaign, table.month)
+      .nullsNotDistinct(),
   }),
 );
 
@@ -67,6 +75,7 @@ export const insertMediaSpendSchema = createInsertSchema(mediaSpend).omit({
   month: z.union([z.string(), z.date()]).transform((v) =>
     typeof v === "string" ? v : v.toISOString().slice(0, 10)
   ),
+  campaign: z.string().nullable().optional(),
 });
 
 export type InsertMediaSpend = z.infer<typeof insertMediaSpendSchema>;

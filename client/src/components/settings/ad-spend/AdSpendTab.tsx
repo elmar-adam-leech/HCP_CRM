@@ -40,6 +40,8 @@ const formSchema = z.object({
   platform: z.enum(platformKeyValues),
   month: z.string().regex(/^\d{4}-\d{2}$/, "Pick a month"),
   amount: z.coerce.number().min(0, "Amount must be 0 or more"),
+  // Empty campaign means platform-level spend.
+  campaign: z.string().max(200).optional(),
   note: z.string().max(500).optional(),
 });
 
@@ -157,6 +159,7 @@ export function AdSpendTab() {
                       <TableHeader>
                         <TableRow>
                           <TableHead>Platform</TableHead>
+                          <TableHead>Campaign</TableHead>
                           <TableHead className="text-right">Amount</TableHead>
                           <TableHead>Note</TableHead>
                           <TableHead className="w-32 text-right">Actions</TableHead>
@@ -167,6 +170,9 @@ export function AdSpendTab() {
                           <TableRow key={row.id} data-testid={`row-spend-${row.id}`}>
                             <TableCell className="font-medium">
                               {platformLabel(row.platform)}
+                            </TableCell>
+                            <TableCell className="text-muted-foreground">
+                              {row.campaign ?? <span className="italic">All campaigns</span>}
                             </TableCell>
                             <TableCell className="text-right tabular-nums">
                               {formatCurrency(row.amount)}
@@ -262,6 +268,7 @@ function SpendDialog({
         ? String(existing.month).slice(0, 7)
         : currentMonthInput(),
       amount: existing ? Number(existing.amount) : 0,
+      campaign: existing?.campaign ?? "",
       note: existing?.note ?? "",
     },
   });
@@ -272,6 +279,7 @@ function SpendDialog({
         platform: values.platform,
         month: `${values.month}-01`,
         amount: String(values.amount),
+        campaign: values.campaign?.trim() ? values.campaign.trim() : null,
         note: values.note?.trim() ? values.note.trim() : null,
       };
       if (isEdit && existing) {
@@ -299,8 +307,8 @@ function SpendDialog({
         <DialogHeader>
           <DialogTitle>{isEdit ? "Edit ad spend" : "Add ad spend"}</DialogTitle>
           <DialogDescription>
-            One entry per platform per month. Re-adding for the same month will
-            update the existing entry.
+            One entry per platform + campaign per month. Leave the campaign
+            blank for platform-level (Unattributed) spend.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -352,6 +360,24 @@ function SpendDialog({
                       onChange={field.onChange}
                       disabled={isEdit}
                       data-testid="input-month"
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="campaign"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Campaign (optional)</FormLabel>
+                  <FormControl>
+                    <Input
+                      placeholder="e.g. Spring Promo — match utm_campaign"
+                      value={field.value ?? ""}
+                      onChange={field.onChange}
+                      data-testid="input-campaign"
                     />
                   </FormControl>
                   <FormMessage />

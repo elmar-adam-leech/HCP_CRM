@@ -1162,6 +1162,19 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `CREATE UNIQUE INDEX IF NOT EXISTS "media_spend_unique_platform_month_idx" ON "media_spend"("contractor_id", "platform", "month")`,
       description: 'media_spend unique (contractor_id, platform, month) — one entry per platform per month',
     },
+    // ---- media_spend campaign-level entries ----
+    {
+      sql: `ALTER TABLE "media_spend" ADD COLUMN IF NOT EXISTS "campaign" text`,
+      description: 'media_spend.campaign (optional campaign within a platform)',
+    },
+    {
+      sql: `DROP INDEX IF EXISTS "media_spend_unique_platform_month_idx"`,
+      description: 'drop old (contractor_id, platform, month) unique index — replaced by campaign-aware index',
+    },
+    {
+      sql: `CREATE UNIQUE INDEX IF NOT EXISTS "media_spend_unique_platform_campaign_month_idx" ON "media_spend"("contractor_id", "platform", "campaign", "month") NULLS NOT DISTINCT`,
+      description: 'media_spend unique (contractor_id, platform, campaign, month) NULLS NOT DISTINCT',
+    },
   ];
 
 export async function applyColumnMigrations(

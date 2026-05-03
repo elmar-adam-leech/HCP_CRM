@@ -1,5 +1,5 @@
 /**
- * ROI by Source report (task #696).
+ * ROI by Source report.
  *
  * Returns per-platform aggregates over a date range:
  *   - leadCount     : leads.created_at falls in [start, end), grouped by source
@@ -11,9 +11,12 @@
  *
  * Raw lead sources are rolled up to platforms (Facebook, Google, Yelp, ...)
  * via shared/lib/lead-platform.ts so the report and the Ad Spend settings
- * page agree on the bucket list. Each platform also exposes a `bySource`
- * drill-down with the same per-row metrics for the raw sources that rolled
- * into it.
+ * page agree on the bucket list. Each platform exposes:
+ *   - `bySource`   : raw-source drill-down.
+ *   - `byCampaign` : campaign drill-down. Leads/wins are matched to campaigns
+ *                    via lead.utm_campaign (case/space-insensitive). Spend
+ *                    rows with no campaign and leads/wins without
+ *                    utm_campaign collapse into a single "Unattributed" bucket.
  */
 
 import { db } from "../db";
@@ -37,6 +40,23 @@ export interface RoiSourceBreakdown {
   wonRevenue: number;
 }
 
+export interface RoiCampaignBreakdown {
+  /** Normalized campaign key (lowercased+trimmed) or null for "Unattributed". */
+  campaign: string | null;
+  /** Friendly label — original campaign text or "Unattributed". */
+  label: string;
+  leadCount: number;
+  wonCount: number;
+  wonRevenue: number;
+  spend: number | null;
+  costPerLead: number | null;
+  costPerWon: number | null;
+  roas: number | null;
+  roiPercent: number | null;
+  /** Raw sources that rolled up into this campaign within the platform. */
+  bySource: RoiSourceBreakdown[];
+}
+
 export interface RoiPlatformRow {
   platform: LeadPlatform;
   /** Lower-case canonical key — also used as `media_spend.platform`. */
@@ -56,6 +76,8 @@ export interface RoiPlatformRow {
   roiPercent: number | null;
   /** Drill-down: the raw sources that rolled up into this platform. */
   bySource: RoiSourceBreakdown[];
+  /** Drill-down: campaigns within this platform. */
+  byCampaign: RoiCampaignBreakdown[];
 }
 
 export interface RoiBySourceReport {
@@ -91,35 +113,47 @@ function sourceLabel(source: string | null): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Fetch leads grouped by raw source for the given window. */
+/** Fetch leads grouped by raw source + utm_campaign for the given window. */
 async function fetchLeadsBySource(
   contractorId: string,
   startDate: Date,
   endDate: Date,
-): Promise<{ source: string | null; count: number }[]> {
-  const result = await db.execute<{ source: string | null; count: string | number }>(sql`
-    SELECT LOWER(source) AS source, COUNT(*)::int AS count
+): Promise<{ source: string | null; campaignKey: string | null; campaignLabel: string; count: number }[]> {
+  const result = await db.execute<{
+    source: string | null;
+    campaign_key: string | null;
+    campaign_label: string | null;
+    count: string | number;
+  }>(sql`
+    SELECT
+      LOWER(source) AS source,
+      NULLIF(LOWER(TRIM(utm_campaign)), '') AS campaign_key,
+      MIN(NULLIF(TRIM(utm_campaign), '')) AS campaign_label,
+      COUNT(*)::int AS count
     FROM leads
     WHERE contractor_id = ${contractorId}
       AND created_at >= ${startDate.toISOString()}
       AND created_at < ${endDate.toISOString()}
-    GROUP BY LOWER(source)
+    GROUP BY LOWER(source), NULLIF(LOWER(TRIM(utm_campaign)), '')
   `);
   return result.rows.map((r) => ({
     source: r.source ?? null,
+    campaignKey: r.campaign_key ?? null,
+    campaignLabel: r.campaign_label ?? "Unattributed",
     count: num(r.count),
   }));
 }
 
-/** Won estimates grouped by source. Uses the canonical-estimate dedup CTE so
- *  HCP option rows don't double-count. Source = COALESCE(lead.source, contact.source). */
+/** Won estimates grouped by source + utm_campaign. */
 async function fetchWonEstimatesBySource(
   contractorId: string,
   startDate: Date,
   endDate: Date,
-): Promise<{ source: string | null; count: number; revenue: number }[]> {
+): Promise<{ source: string | null; campaignKey: string | null; campaignLabel: string; count: number; revenue: number }[]> {
   const result = await db.execute<{
     source: string | null;
+    campaign_key: string | null;
+    campaign_label: string | null;
     count: string | number;
     revenue: string | null;
   }>(sql`
@@ -132,65 +166,120 @@ async function fetchWonEstimatesBySource(
                amount::numeric DESC NULLS LAST,
                updated_at DESC
     ),
-    -- Resolve one source per canonical estimate (lead → contact fallback). The
-    -- subquery + LIMIT 1 prevents multiple leads pointing at the same estimate
-    -- from multiplying the COUNT/SUM in the aggregate below.
+    estimate_lead AS (
+      -- Pick a single lead per estimate so source and utm_campaign always
+      -- come from the same row (avoids cross-attribution when an estimate
+      -- has multiple converted leads).
+      SELECT DISTINCT ON (l.converted_to_estimate_id)
+        l.converted_to_estimate_id AS estimate_id,
+        l.source AS source,
+        l.utm_campaign AS utm_campaign
+      FROM leads l
+      WHERE l.contractor_id = ${contractorId}
+        AND l.converted_to_estimate_id IS NOT NULL
+      ORDER BY l.converted_to_estimate_id,
+               (l.source IS NULL),
+               (l.utm_campaign IS NULL),
+               l.created_at DESC
+    ),
     estimate_source AS (
       SELECT
         e.id,
         e.amount,
         LOWER(COALESCE(
-          (SELECT l.source FROM leads l
-            WHERE l.converted_to_estimate_id = e.id
-              AND l.source IS NOT NULL
-            LIMIT 1),
-          (SELECT c.source FROM contacts c
-            WHERE c.id = e.contact_id LIMIT 1)
-        )) AS source
+          el.source,
+          (SELECT c.source FROM contacts c WHERE c.id = e.contact_id LIMIT 1)
+        )) AS source,
+        NULLIF(TRIM(COALESCE(
+          el.utm_campaign,
+          (SELECT c.utm_campaign FROM contacts c WHERE c.id = e.contact_id LIMIT 1)
+        )), '') AS campaign_raw
       FROM canonical e
+      LEFT JOIN estimate_lead el ON el.estimate_id = e.id
       WHERE e.status = 'approved'
         AND e.created_at >= ${startDate.toISOString()}
         AND e.created_at < ${endDate.toISOString()}
     )
     SELECT
       source,
+      LOWER(campaign_raw) AS campaign_key,
+      MIN(campaign_raw) AS campaign_label,
       COUNT(*)::int AS count,
       SUM(amount::numeric)::float8 AS revenue
     FROM estimate_source
-    GROUP BY source
+    GROUP BY source, LOWER(campaign_raw)
   `);
   return result.rows.map((r) => ({
     source: r.source ?? null,
+    campaignKey: r.campaign_key ?? null,
+    campaignLabel: r.campaign_label ?? "Unattributed",
     count: num(r.count),
     revenue: round2(num(r.revenue)),
   }));
 }
 
-/** Won (completed) jobs grouped by source. Source resolved by:
- *  1. lead.converted_to_job_id → job, 2. lead.converted_to_estimate_id → job.estimate_id, 3. contact.source. */
+/** Won (completed) jobs grouped by source + utm_campaign. */
 async function fetchWonJobsBySource(
   contractorId: string,
   startDate: Date,
   endDate: Date,
-): Promise<{ source: string | null; count: number; revenue: number }[]> {
+): Promise<{ source: string | null; campaignKey: string | null; campaignLabel: string; count: number; revenue: number }[]> {
   const result = await db.execute<{
     source: string | null;
+    campaign_key: string | null;
+    campaign_label: string | null;
     count: string | number;
     revenue: string | null;
   }>(sql`
-    WITH job_source AS (
+    WITH job_lead AS (
+      -- One lead row per job (direct conversion preferred over estimate path),
+      -- so source and utm_campaign always come from the same lead.
+      SELECT DISTINCT ON (job_id)
+        job_id,
+        source,
+        utm_campaign
+      FROM (
+        SELECT
+          l.converted_to_job_id AS job_id,
+          0 AS priority,
+          l.source,
+          l.utm_campaign,
+          l.created_at
+        FROM leads l
+        WHERE l.contractor_id = ${contractorId}
+          AND l.converted_to_job_id IS NOT NULL
+        UNION ALL
+        SELECT
+          j.id AS job_id,
+          1 AS priority,
+          l.source,
+          l.utm_campaign,
+          l.created_at
+        FROM jobs j
+        JOIN leads l ON l.converted_to_estimate_id = j.estimate_id
+        WHERE j.contractor_id = ${contractorId}
+          AND j.estimate_id IS NOT NULL
+          AND l.contractor_id = ${contractorId}
+      ) candidates
+      ORDER BY job_id, priority,
+               (source IS NULL),
+               (utm_campaign IS NULL),
+               created_at DESC
+    ),
+    job_source AS (
       SELECT
         j.id,
         j.value,
         LOWER(COALESCE(
-          (SELECT source FROM leads l
-            WHERE l.converted_to_job_id = j.id LIMIT 1),
-          (SELECT source FROM leads l
-            WHERE l.converted_to_estimate_id = j.estimate_id LIMIT 1),
-          (SELECT source FROM contacts c
-            WHERE c.id = j.contact_id LIMIT 1)
-        )) AS source
+          jl.source,
+          (SELECT c.source FROM contacts c WHERE c.id = j.contact_id LIMIT 1)
+        )) AS source,
+        NULLIF(TRIM(COALESCE(
+          jl.utm_campaign,
+          (SELECT c.utm_campaign FROM contacts c WHERE c.id = j.contact_id LIMIT 1)
+        )), '') AS campaign_raw
       FROM jobs j
+      LEFT JOIN job_lead jl ON jl.job_id = j.id
       WHERE j.contractor_id = ${contractorId}
         AND j.status = 'completed'
         AND j.created_at >= ${startDate.toISOString()}
@@ -198,36 +287,50 @@ async function fetchWonJobsBySource(
     )
     SELECT
       source,
+      LOWER(campaign_raw) AS campaign_key,
+      MIN(campaign_raw) AS campaign_label,
       COUNT(*)::int AS count,
       SUM(value::numeric)::float8 AS revenue
     FROM job_source
-    GROUP BY source
+    GROUP BY source, LOWER(campaign_raw)
   `);
   return result.rows.map((r) => ({
     source: r.source ?? null,
+    campaignKey: r.campaign_key ?? null,
+    campaignLabel: r.campaign_label ?? "Unattributed",
     count: num(r.count),
     revenue: round2(num(r.revenue)),
   }));
 }
 
-/** Manual ad spend whose month overlaps [startDate, endDate). */
+/** Manual ad spend whose month overlaps [startDate, endDate). Grouped by
+ *  platform + campaign so each campaign gets its own ROI line. */
 async function fetchSpendByPlatform(
   contractorId: string,
   startDate: Date,
   endDate: Date,
-): Promise<{ platformKey: string; spend: number }[]> {
-  const result = await db.execute<{ platform: string; spend: string | null }>(sql`
+): Promise<{ platformKey: string; campaignKey: string | null; campaignLabel: string; spend: number }[]> {
+  const result = await db.execute<{
+    platform: string;
+    campaign_key: string | null;
+    campaign_label: string | null;
+    spend: string | null;
+  }>(sql`
     SELECT
       LOWER(platform) AS platform,
+      NULLIF(LOWER(TRIM(campaign)), '') AS campaign_key,
+      MIN(NULLIF(TRIM(campaign), '')) AS campaign_label,
       SUM(amount::numeric)::float8 AS spend
     FROM media_spend
     WHERE contractor_id = ${contractorId}
       AND month < date_trunc('month', ${endDate.toISOString()}::timestamptz) + interval '1 month'
       AND (month + interval '1 month') > date_trunc('month', ${startDate.toISOString()}::timestamptz)
-    GROUP BY LOWER(platform)
+    GROUP BY LOWER(platform), NULLIF(LOWER(TRIM(campaign)), '')
   `);
   return result.rows.map((r) => ({
     platformKey: r.platform,
+    campaignKey: r.campaign_key ?? null,
+    campaignLabel: r.campaign_label ?? "Unattributed",
     spend: round2(num(r.spend)),
   }));
 }
@@ -242,12 +345,24 @@ async function tenantHasAnySpend(contractorId: string): Promise<boolean> {
   return Boolean(result.rows[0]?.exists_);
 }
 
-interface PlatformAccumulator {
+interface CampaignAccumulator {
+  campaign: string | null;
+  label: string;
   leadCount: number;
   wonCount: number;
   wonRevenue: number;
   bySource: Map<string, RoiSourceBreakdown>;
 }
+
+interface PlatformAccumulator {
+  leadCount: number;
+  wonCount: number;
+  wonRevenue: number;
+  bySource: Map<string, RoiSourceBreakdown>;
+  byCampaign: Map<string, CampaignAccumulator>;
+}
+
+const CAMPAIGN_NULL_KEY = "__unattributed__";
 
 function ensurePlatform(
   acc: Map<LeadPlatform, PlatformAccumulator>,
@@ -255,18 +370,24 @@ function ensurePlatform(
 ): PlatformAccumulator {
   let entry = acc.get(platform);
   if (!entry) {
-    entry = { leadCount: 0, wonCount: 0, wonRevenue: 0, bySource: new Map() };
+    entry = {
+      leadCount: 0,
+      wonCount: 0,
+      wonRevenue: 0,
+      bySource: new Map(),
+      byCampaign: new Map(),
+    };
     acc.set(platform, entry);
   }
   return entry;
 }
 
 function ensureSource(
-  acc: PlatformAccumulator,
+  bySource: Map<string, RoiSourceBreakdown>,
   source: string | null,
 ): RoiSourceBreakdown {
   const key = source ?? "__unknown__";
-  let entry = acc.bySource.get(key);
+  let entry = bySource.get(key);
   if (!entry) {
     entry = {
       source,
@@ -275,7 +396,30 @@ function ensureSource(
       wonCount: 0,
       wonRevenue: 0,
     };
-    acc.bySource.set(key, entry);
+    bySource.set(key, entry);
+  }
+  return entry;
+}
+
+function ensureCampaign(
+  acc: PlatformAccumulator,
+  campaignKey: string | null,
+  label: string,
+): CampaignAccumulator {
+  const key = campaignKey ?? CAMPAIGN_NULL_KEY;
+  let entry = acc.byCampaign.get(key);
+  if (!entry) {
+    entry = {
+      campaign: campaignKey,
+      label,
+      leadCount: 0,
+      wonCount: 0,
+      wonRevenue: 0,
+      bySource: new Map(),
+    };
+    acc.byCampaign.set(key, entry);
+  } else if (entry.label === "Unattributed" && label !== "Unattributed") {
+    entry.label = label;
   }
   return entry;
 }
@@ -329,8 +473,11 @@ export async function getRoiBySourceReport(
     const platform = getLeadPlatform(row.source);
     const acc = ensurePlatform(platforms, platform);
     acc.leadCount += row.count;
-    const sourceEntry = ensureSource(acc, row.source);
-    sourceEntry.leadCount += row.count;
+    ensureSource(acc.bySource, row.source).leadCount += row.count;
+
+    const camp = ensureCampaign(acc, row.campaignKey, row.campaignLabel);
+    camp.leadCount += row.count;
+    ensureSource(camp.bySource, row.source).leadCount += row.count;
   }
 
   for (const row of wonBySource) {
@@ -338,40 +485,113 @@ export async function getRoiBySourceReport(
     const acc = ensurePlatform(platforms, platform);
     acc.wonCount += row.count;
     acc.wonRevenue += row.revenue;
-    const sourceEntry = ensureSource(acc, row.source);
-    sourceEntry.wonCount += row.count;
-    sourceEntry.wonRevenue += row.revenue;
+    const sEntry = ensureSource(acc.bySource, row.source);
+    sEntry.wonCount += row.count;
+    sEntry.wonRevenue += row.revenue;
+
+    const camp = ensureCampaign(acc, row.campaignKey, row.campaignLabel);
+    camp.wonCount += row.count;
+    camp.wonRevenue += row.revenue;
+    const csEntry = ensureSource(camp.bySource, row.source);
+    csEntry.wonCount += row.count;
+    csEntry.wonRevenue += row.revenue;
   }
 
-  // Spend lookup keyed by platformKey (lowercase). Ensure every platform with
-  // spend appears even if it had zero leads/wins (so wasted spend is visible).
-  const spendByKey = new Map<string, number>();
+  // Spend lookup: total per platform, plus per (platform, campaign).
+  const spendByPlatformKey = new Map<string, number>();
+  const spendByCampaign = new Map<string, Map<string, { spend: number; label: string }>>();
   for (const row of spendByPlatform) {
-    spendByKey.set(row.platformKey, row.spend);
-    // Map back to a known LeadPlatform — unknown keys fall through to "Other".
+    spendByPlatformKey.set(
+      row.platformKey,
+      (spendByPlatformKey.get(row.platformKey) ?? 0) + row.spend,
+    );
     const platform =
       LEAD_PLATFORMS.find((p) => platformKey(p) === row.platformKey) ?? "Other";
-    ensurePlatform(platforms, platform);
+    const acc = ensurePlatform(platforms, platform);
+    // Make sure the campaign bucket exists even when no leads/wins matched it.
+    ensureCampaign(acc, row.campaignKey, row.campaignLabel);
+
+    let perCampaign = spendByCampaign.get(row.platformKey);
+    if (!perCampaign) {
+      perCampaign = new Map();
+      spendByCampaign.set(row.platformKey, perCampaign);
+    }
+    const campKey = row.campaignKey ?? CAMPAIGN_NULL_KEY;
+    const existing = perCampaign.get(campKey);
+    if (existing) {
+      existing.spend += row.spend;
+    } else {
+      perCampaign.set(campKey, { spend: row.spend, label: row.campaignLabel });
+    }
   }
 
   const platformRows: RoiPlatformRow[] = Array.from(platforms.entries()).map(
     ([platform, acc]) => {
       const key = platformKey(platform);
-      const spend = spendByKey.has(key) ? spendByKey.get(key)! : null;
+      const spend = spendByPlatformKey.has(key)
+        ? round2(spendByPlatformKey.get(key)!)
+        : null;
       const rates = computeRates(spend, acc.leadCount, acc.wonCount, acc.wonRevenue);
       const bySource = Array.from(acc.bySource.values()).sort((a, b) => {
         if (b.leadCount !== a.leadCount) return b.leadCount - a.leadCount;
         return b.wonRevenue - a.wonRevenue;
       });
+
+      const campSpendMap = spendByCampaign.get(key);
+      const byCampaign: RoiCampaignBreakdown[] = Array.from(acc.byCampaign.values())
+        .map((camp) => {
+          const campKey = camp.campaign ?? CAMPAIGN_NULL_KEY;
+          const campSpend = campSpendMap?.get(campKey)?.spend ?? null;
+          const campSpendRounded = campSpend === null ? null : round2(campSpend);
+          const campRates = computeRates(
+            campSpendRounded,
+            camp.leadCount,
+            camp.wonCount,
+            camp.wonRevenue,
+          );
+          const campSources = Array.from(camp.bySource.values()).sort((a, b) => {
+            if (b.leadCount !== a.leadCount) return b.leadCount - a.leadCount;
+            return b.wonRevenue - a.wonRevenue;
+          });
+          return {
+            campaign: camp.campaign,
+            label: camp.label,
+            leadCount: camp.leadCount,
+            wonCount: camp.wonCount,
+            wonRevenue: round2(camp.wonRevenue),
+            spend: campSpendRounded,
+            ...campRates,
+            bySource: campSources,
+          };
+        })
+        // Hide a noise-only Unattributed bucket (no leads, no wins, no spend).
+        .filter(
+          (c) =>
+            c.leadCount > 0 ||
+            c.wonCount > 0 ||
+            c.wonRevenue > 0 ||
+            (c.spend !== null && c.spend > 0),
+        )
+        .sort((a, b) => {
+          // Real campaigns first, "Unattributed" last.
+          const aUn = a.campaign === null ? 1 : 0;
+          const bUn = b.campaign === null ? 1 : 0;
+          if (aUn !== bUn) return aUn - bUn;
+          if (b.wonRevenue !== a.wonRevenue) return b.wonRevenue - a.wonRevenue;
+          if (b.leadCount !== a.leadCount) return b.leadCount - a.leadCount;
+          return a.label.localeCompare(b.label);
+        });
+
       return {
         platform,
         platformKey: key,
         leadCount: acc.leadCount,
         wonCount: acc.wonCount,
         wonRevenue: round2(acc.wonRevenue),
-        spend: spend === null ? null : round2(spend),
+        spend,
         ...rates,
         bySource,
+        byCampaign,
       };
     },
   );

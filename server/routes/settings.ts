@@ -66,7 +66,7 @@ export function registerSettingsRoutes(app: Express): void {
     res.json(result);
   }));
 
-  // ---- Task #696: media spend (manual ad-spend entries) ----
+  // ---- Media spend (manual ad-spend entries) ----
   // Accepted platform keys are the lower-case form of LEAD_PLATFORMS so the
   // ROI report and the Ad Spend page agree on the platform list.
   const platformKeys = LEAD_PLATFORMS.map((p) => platformKey(p as LeadPlatform)) as [string, ...string[]];
@@ -77,8 +77,17 @@ export function registerSettingsRoutes(app: Express): void {
     amount: z.union([z.string(), z.number()])
       .transform((v) => typeof v === "string" ? v : String(v))
       .refine((v) => Number.isFinite(Number(v)) && Number(v) >= 0, { message: "amount must be a non-negative number" }),
+    // Optional campaign within the platform. null/empty stores as
+    // platform-level spend (shown as "Unattributed" in the ROI report).
+    campaign: z.string().max(200).nullable().optional(),
     note: z.string().max(500).nullable().optional(),
   });
+
+  function normalizeCampaign(input: string | null | undefined): string | null {
+    if (input === undefined || input === null) return null;
+    const trimmed = input.trim();
+    return trimmed.length === 0 ? null : trimmed;
+  }
 
   function normalizeMonth(input: string): string {
     // Force first-of-month so the unique (contractor, platform, month) index
@@ -99,6 +108,7 @@ export function registerSettingsRoutes(app: Express): void {
       const created = await storage.createMediaSpend(
         {
           platform: parsed.platform,
+          campaign: normalizeCampaign(parsed.campaign),
           month: normalizeMonth(parsed.month),
           amount: String(parsed.amount),
           note: parsed.note ?? null,
@@ -110,7 +120,7 @@ export function registerSettingsRoutes(app: Express): void {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       if (/unique|duplicate/i.test(message)) {
-        res.status(409).json({ message: "An entry already exists for this platform and month" });
+        res.status(409).json({ message: "An entry already exists for this platform, campaign, and month" });
         return;
       }
       throw err;
@@ -129,6 +139,7 @@ export function registerSettingsRoutes(app: Express): void {
           ...(parsed.platform !== undefined ? { platform: parsed.platform } : {}),
           ...(parsed.month !== undefined ? { month: normalizeMonth(parsed.month) } : {}),
           ...(parsed.amount !== undefined ? { amount: String(parsed.amount) } : {}),
+          ...(parsed.campaign !== undefined ? { campaign: normalizeCampaign(parsed.campaign) } : {}),
           ...(parsed.note !== undefined ? { note: parsed.note ?? null } : {}),
         },
         req.user.userId,
@@ -141,7 +152,7 @@ export function registerSettingsRoutes(app: Express): void {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       if (/unique|duplicate/i.test(message)) {
-        res.status(409).json({ message: "An entry already exists for this platform and month" });
+        res.status(409).json({ message: "An entry already exists for this platform, campaign, and month" });
         return;
       }
       throw err;
