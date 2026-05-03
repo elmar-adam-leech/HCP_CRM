@@ -1162,6 +1162,19 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `CREATE UNIQUE INDEX IF NOT EXISTS "media_spend_unique_platform_month_idx" ON "media_spend"("contractor_id", "platform", "month")`,
       description: 'media_spend unique (contractor_id, platform, month) — one entry per platform per month',
     },
+    // ---- Task #702: media_spend auto-sync columns ----
+    {
+      sql: `ALTER TABLE media_spend ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'manual'`,
+      description: 'media_spend.source (task #702: manual vs auto-synced row marker)',
+    },
+    {
+      sql: `ALTER TABLE media_spend ADD COLUMN IF NOT EXISTS external_account_id text`,
+      description: 'media_spend.external_account_id (task #702: originating ad account id)',
+    },
+    {
+      sql: `ALTER TABLE media_spend ADD COLUMN IF NOT EXISTS last_synced_at timestamp`,
+      description: 'media_spend.last_synced_at (task #702: when this row was last touched by auto-sync)',
+    },
     // ---- media_spend campaign-level entries ----
     {
       sql: `ALTER TABLE "media_spend" ADD COLUMN IF NOT EXISTS "campaign" text`,

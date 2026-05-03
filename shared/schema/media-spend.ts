@@ -20,8 +20,14 @@ import { contractors } from "./settings";
 // `campaign` is optional — when null the row is platform-level spend and
 // shows as "Unattributed" in the ROI report's per-campaign drill-down.
 //
-// Entries are created by the user in the Ad Spend settings page; auto-import
-// from ad networks is out of scope.
+// Task #702 extends this with auto-import support (Facebook Ads / Google
+// Ads). The `source` column distinguishes manual vs auto rows so the
+// settings UI can label them and the sync job can avoid clobbering manual
+// entries. `externalAccountId` records the originating ad account (FB
+// `act_<id>` or Google customer id) for auditability, and `lastSyncedAt`
+// drives the "Last synced" timestamp shown next to auto rows.
+export const MEDIA_SPEND_SOURCES = ["manual", "facebook_ads", "google_ads"] as const;
+export type MediaSpendSource = typeof MEDIA_SPEND_SOURCES[number];
 export const mediaSpend = pgTable(
   "media_spend",
   {
@@ -39,6 +45,16 @@ export const mediaSpend = pgTable(
     month: date("month").notNull(),
     amount: decimal("amount", { precision: 12, scale: 2 }).notNull().default("0"),
     note: text("note"),
+    // Where this row came from. Defaults to 'manual' so existing rows and
+    // any code path that omits it continues to behave like a user-entered
+    // entry (in particular: protected from auto-sync overwrite).
+    source: text("source").notNull().default("manual"),
+    // Ad account identifier from the upstream platform (FB ad account id,
+    // Google Ads customer id). Null for manual rows.
+    externalAccountId: text("external_account_id"),
+    // When this row was last touched by the auto-sync job. Null for manual
+    // rows; surfaced in the UI as "Last synced".
+    lastSyncedAt: timestamp("last_synced_at"),
     // CRM user ids of the people who created/last-edited this row. Not FK'd
     // to keep this schema file independent of the users table import order.
     createdByUserId: varchar("created_by_user_id"),
@@ -76,6 +92,7 @@ export const insertMediaSpendSchema = createInsertSchema(mediaSpend).omit({
     typeof v === "string" ? v : v.toISOString().slice(0, 10)
   ),
   campaign: z.string().nullable().optional(),
+  source: z.enum(MEDIA_SPEND_SOURCES).optional(),
 });
 
 export type InsertMediaSpend = z.infer<typeof insertMediaSpendSchema>;

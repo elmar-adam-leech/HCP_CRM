@@ -619,6 +619,9 @@ export interface IStorage {
   createMediaSpend: typeof mediaSpendMethods.createMediaSpend;
   updateMediaSpend: typeof mediaSpendMethods.updateMediaSpend;
   deleteMediaSpend: typeof mediaSpendMethods.deleteMediaSpend;
+  upsertAutoSyncedSpend: typeof mediaSpendMethods.upsertAutoSyncedSpend;
+  listContractorsWithAutoSpend: typeof mediaSpendMethods.listContractorsWithAutoSpend;
+  getLastSyncedAt: typeof mediaSpendMethods.getLastSyncedAt;
 
   // Refresh tokens (task #650 — persistent PWA login)
   createRefreshToken: typeof refreshTokenMethods.createRefreshToken;

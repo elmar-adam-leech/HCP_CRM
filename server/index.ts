@@ -20,6 +20,7 @@ import { GmailOAuthCleanupJob } from "./services/gmail-oauth-cleanup-job";
 import { RateLimitCleanupJob } from "./services/rate-limit-cleanup-job";
 import { SpamAuditCleanupJob } from "./services/spam-audit-cleanup-job";
 import { RefreshTokenCleanupJob } from "./services/refresh-token-cleanup-job";
+import { AdSpendSyncJob } from "./services/ad-spend-sync-job";
 import { webhookEvents } from "@shared/schema";
 import { and, eq, lt, or, isNotNull, sql } from "drizzle-orm";
 import { CredentialService } from "./credential-service";
@@ -323,6 +324,10 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   refreshTokenCleanupJob.start();
   log("RefreshTokenCleanupJob registered (runs every 24 h)");
 
+  const adSpendSyncJob = new AdSpendSyncJob();
+  adSpendSyncJob.start();
+  log("AdSpendSyncJob registered (runs every 6 h)");
+
   // Sales-process cron: poll for due auto-mode tasks and dispatch them.
   const { salesProcessCron } = await import("./services/sales-process-cron");
   salesProcessCron.start();
@@ -466,6 +471,7 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
       rateLimitCleanupJob.stop();
       spamAuditCleanupJob.stop();
       refreshTokenCleanupJob.stop();
+      adSpendSyncJob.stop();
       salesProcessCron.stop();
       dialpadEventPoller.stop();
       stopHcpWebhookHealthCheck();

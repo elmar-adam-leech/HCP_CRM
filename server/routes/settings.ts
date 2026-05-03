@@ -8,6 +8,13 @@ import { cacheInvalidation } from "../services/cache";
 import { broadcastToContractor } from "../websocket";
 import { lookup as dnsLookup } from "dns/promises";
 import { LEAD_PLATFORMS, platformKey, type LeadPlatform } from "@shared/lib/lead-platform";
+import { CredentialService } from "../credential-service";
+import {
+  syncFacebookAdSpendForContractor,
+  syncGoogleAdSpendForContractor,
+  FACEBOOK_INTEGRATION_NAME,
+  GOOGLE_INTEGRATION_NAME,
+} from "../services/ad-spend-sync";
 
 export function registerSettingsRoutes(app: Express): void {
   app.get("/api/contractor", asyncHandler(async (req, res) => {
@@ -131,6 +138,15 @@ export function registerSettingsRoutes(app: Express): void {
     const patchSchema = mediaSpendBodySchema.partial();
     const parsed = parseBody(patchSchema, req, res);
     if (!parsed) return;
+    const existing = await storage.getMediaSpend(req.params.id, req.user.contractorId);
+    if (!existing) {
+      res.status(404).json({ message: "Spend entry not found" });
+      return;
+    }
+    if (existing.source && existing.source !== "manual") {
+      res.status(409).json({ message: "This row is auto-synced from the ad platform and cannot be edited." });
+      return;
+    }
     try {
       const updated = await storage.updateMediaSpend(
         req.params.id,
@@ -160,12 +176,147 @@ export function registerSettingsRoutes(app: Express): void {
   }));
 
   app.delete("/api/media-spend/:id", requireManagerOrAdmin, asyncHandler(async (req, res) => {
+    const existing = await storage.getMediaSpend(req.params.id, req.user.contractorId);
+    if (!existing) {
+      res.status(404).json({ message: "Spend entry not found" });
+      return;
+    }
+    if (existing.source && existing.source !== "manual") {
+      res.status(409).json({ message: "This row is auto-synced from the ad platform and cannot be deleted." });
+      return;
+    }
     const deleted = await storage.deleteMediaSpend(req.params.id, req.user.contractorId);
     if (!deleted) {
       res.status(404).json({ message: "Spend entry not found" });
       return;
     }
     res.json({ success: true });
+  }));
+
+  type AutoSyncSource = "facebook_ads" | "google_ads";
+  const SOURCE_TO_INTEGRATION: Record<AutoSyncSource, string> = {
+    facebook_ads: FACEBOOK_INTEGRATION_NAME,
+    google_ads: GOOGLE_INTEGRATION_NAME,
+  };
+  const SOURCE_REQUIRED_KEYS: Record<AutoSyncSource, string[]> = {
+    facebook_ads: ["access_token", "ad_account_id"],
+    google_ads: ["developer_token", "client_id", "client_secret", "refresh_token", "customer_id"],
+  };
+
+  async function summarizeConnection(contractorId: string, source: AutoSyncSource) {
+    const integrationName = SOURCE_TO_INTEGRATION[source];
+    const enabled = await storage.getContractorIntegration(contractorId, integrationName);
+    const masked = await CredentialService.getMaskedCredentials(contractorId, integrationName);
+    const required = SOURCE_REQUIRED_KEYS[source];
+    const hasAllRequired = required.every((k) => masked[k]);
+    const lastSyncedAt = await storage.getLastSyncedAt(contractorId, source);
+    return {
+      source,
+      integrationName,
+      isEnabled: !!(enabled?.isEnabled && hasAllRequired),
+      hasCredentials: hasAllRequired,
+      maskedCredentials: masked,
+      lastSyncedAt,
+    };
+  }
+
+  app.get("/api/ad-spend/connections", requireAdmin, asyncHandler(async (req, res) => {
+    const [facebook, google] = await Promise.all([
+      summarizeConnection(req.user.contractorId, "facebook_ads"),
+      summarizeConnection(req.user.contractorId, "google_ads"),
+    ]);
+    res.json({ facebook, google });
+  }));
+
+  const facebookCredentialsSchema = z.object({
+    access_token: z.string().min(10).max(2000),
+    ad_account_id: z.string().regex(/^act_\d+$/, "ad_account_id must look like act_1234567890"),
+  });
+  const googleCredentialsSchema = z.object({
+    developer_token: z.string().min(5).max(200),
+    client_id: z.string().min(5).max(500),
+    client_secret: z.string().min(5).max(500),
+    refresh_token: z.string().min(5).max(2000),
+    customer_id: z.string().regex(/^\d{6,}$/, "customer_id must be the numeric Google Ads customer id"),
+    login_customer_id: z.string().regex(/^\d{6,}$/).optional(),
+  });
+
+  // Optional credential keys whose blank value should clear the stored
+  // credential rather than be silently ignored.
+  const SOURCE_OPTIONAL_KEYS: Record<AutoSyncSource, string[]> = {
+    facebook_ads: [],
+    google_ads: ["login_customer_id"],
+  };
+
+  async function persistConnection(
+    contractorId: string,
+    userId: string,
+    source: AutoSyncSource,
+    creds: Record<string, string | undefined>,
+  ): Promise<void> {
+    const integrationName = SOURCE_TO_INTEGRATION[source];
+    const optional = SOURCE_OPTIONAL_KEYS[source];
+    for (const [key, value] of Object.entries(creds)) {
+      if (value === undefined || value === "") {
+        if (optional.includes(key)) {
+          await CredentialService.disableCredential(contractorId, integrationName, key);
+        }
+        continue;
+      }
+      await CredentialService.setCredential(contractorId, integrationName, key, value);
+    }
+    await storage.enableContractorIntegration(contractorId, integrationName, userId);
+  }
+
+  app.post("/api/ad-spend/connections/facebook", requireAdmin, asyncHandler(async (req, res) => {
+    const parsed = parseBody(facebookCredentialsSchema, req, res);
+    if (!parsed) return;
+    await persistConnection(req.user.contractorId, req.user.userId, "facebook_ads", parsed);
+    const initial = await syncFacebookAdSpendForContractor(req.user.contractorId);
+    const summary = await summarizeConnection(req.user.contractorId, "facebook_ads");
+    res.json({ ...summary, initialSync: initial });
+  }));
+
+  app.post("/api/ad-spend/connections/google", requireAdmin, asyncHandler(async (req, res) => {
+    const parsed = parseBody(googleCredentialsSchema, req, res);
+    if (!parsed) return;
+    await persistConnection(req.user.contractorId, req.user.userId, "google_ads", parsed);
+    const initial = await syncGoogleAdSpendForContractor(req.user.contractorId);
+    const summary = await summarizeConnection(req.user.contractorId, "google_ads");
+    res.json({ ...summary, initialSync: initial });
+  }));
+
+  const sourceParamSchema = z.object({ source: z.enum(["facebook", "google"]) });
+
+  app.delete("/api/ad-spend/connections/:source", requireAdmin, asyncHandler(async (req, res) => {
+    const params = sourceParamSchema.safeParse(req.params);
+    if (!params.success) {
+      res.status(400).json({ message: "Unknown source" });
+      return;
+    }
+    const source: AutoSyncSource = params.data.source === "facebook" ? "facebook_ads" : "google_ads";
+    const integrationName = SOURCE_TO_INTEGRATION[source];
+    await CredentialService.deleteIntegrationCredentials(req.user.contractorId, integrationName);
+    await storage.disableContractorIntegration(req.user.contractorId, integrationName);
+    res.json({ success: true });
+  }));
+
+  app.post("/api/ad-spend/connections/:source/sync", requireAdmin, asyncHandler(async (req, res) => {
+    const params = sourceParamSchema.safeParse(req.params);
+    if (!params.success) {
+      res.status(400).json({ message: "Unknown source" });
+      return;
+    }
+    const result = params.data.source === "facebook"
+      ? await syncFacebookAdSpendForContractor(req.user.contractorId)
+      : await syncGoogleAdSpendForContractor(req.user.contractorId);
+    if (result.error) {
+      // Surface the upstream error code as 422 — the credentials/network are
+      // the contractor's responsibility, not a CRM bug.
+      res.status(422).json({ message: result.error, ...result });
+      return;
+    }
+    res.json(result);
   }));
 
   app.get("/api/terminology", asyncHandler(async (req, res) => {
