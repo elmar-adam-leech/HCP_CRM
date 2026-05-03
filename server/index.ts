@@ -26,6 +26,22 @@ import { and, eq, lt, or, isNotNull, sql } from "drizzle-orm";
 import { CredentialService } from "./credential-service";
 import { recordRequest, normalizePath } from "./services/latency-stats";
 
+// ─── Startup crash visibility ─────────────────────────────────────────────
+// The server is bundled as ESM (`esbuild --format=esm`). Without these
+// handlers, an unhandled rejection or uncaught exception during startup
+// causes Node to exit silently with code 13 ("Unfinished Top-Level Await")
+// and no stack trace — making production crash-loops impossible to debug.
+// Write directly to stderr (not the structured logger) so the message is
+// flushed even if the logger module hasn't fully initialised yet.
+function logFatalAndExit(label: string, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  const stack = err instanceof Error && err.stack ? err.stack : '(no stack)';
+  process.stderr.write(`[${label}] ${message}\n${stack}\n`);
+  process.exit(1);
+}
+process.on('unhandledRejection', (reason) => logFatalAndExit('unhandledRejection', reason));
+process.on('uncaughtException',  (err)    => logFatalAndExit('uncaughtException',  err));
+
 const app = express();
 const isProd = process.env.NODE_ENV === "production";
 
@@ -230,6 +246,7 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
 }
 
 (async () => {
+  try {
   // Ensure pg_trgm extension exists before serving any traffic (required for
   // GIN trigram indexes used by ILIKE search queries).
   await initDb();
@@ -495,4 +512,7 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
   process.on("SIGINT",  () => gracefulShutdown("SIGINT"));
   // ─────────────────────────────────────────────────────────────────────────
-})();
+  } catch (err) {
+    logFatalAndExit('startup fatal', err);
+  }
+})().catch((err) => logFatalAndExit('startup fatal (unhandled)', err));
