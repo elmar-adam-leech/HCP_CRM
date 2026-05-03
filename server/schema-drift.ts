@@ -1013,6 +1013,27 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `DROP INDEX IF EXISTS "webhook_incidents_open_idx"`,
       description: 'drop legacy non-unique webhook_incidents_open_idx (replaced by unique partial)',
     },
+    // ---- Task #710: Throttle webhook health alerts (24h cooldown) ----
+    // A sibling table to webhook_incidents that records the last successful
+    // page per (contractor, service, kind) so we can suppress repeat
+    // email + in-app notifications inside the cooldown window. We can't
+    // hang this off webhook_incidents because the cooldown must span
+    // multiple open/close cycles (a flapping outage opens and closes the
+    // incident on every tick).
+    {
+      sql: `CREATE TABLE IF NOT EXISTS "webhook_incident_alert_throttle" (
+              "contractor_id" varchar NOT NULL REFERENCES "contractors"("id"),
+              "service" varchar NOT NULL,
+              "kind" varchar NOT NULL,
+              "last_alerted_at" timestamp NOT NULL
+            )`,
+      description: 'webhook_incident_alert_throttle table (Task #710: per-(contractor, service, kind) cooldown)',
+    },
+    {
+      sql: `CREATE UNIQUE INDEX IF NOT EXISTS "webhook_incident_alert_throttle_pk"
+              ON "webhook_incident_alert_throttle"("contractor_id", "service", "kind")`,
+      description: 'webhook_incident_alert_throttle unique index on (contractor_id, service, kind)',
+    },
     // Task #682: Drop the stale single-column unique index that was created
     // back when each tenant could only have one cadence. Multi-cadence support
     // (Task #567) added trigger_type/target_status/entity_type/archived_at and

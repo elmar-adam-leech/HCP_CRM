@@ -9,6 +9,7 @@ import { logger } from "../utils/logger";
 import { formatDbError } from "../utils/db-error";
 import { runHcpWebhookBackfill, summarizeBackfill } from "../sync/hcp-backfill";
 import { sendHcpIncidentEmail } from "./hcp-incident-email";
+import { getLastAlertedAt, stampAlertThrottle } from "./webhook-alert-throttle";
 
 const log = logger('HcpWebhookHealth');
 
@@ -41,6 +42,14 @@ const KIND_STALENESS = 'staleness';
 const KIND_REJECTION = 'rejection';
 const KIND_HEALTH_CHECK_FAILURE = 'health-check-failure';
 const KIND_SUBSCRIPTION_MISSING = 'subscription-missing';
+
+// Task #710 — per-(contractor, service, kind) cooldown for incident paging.
+// At most one email + one in-app notification per kind per contractor every
+// 24 hours, even if the underlying incident keeps opening and closing
+// (the DB pool flap pattern that was paging contractors every 5 minutes).
+// Tunable in code only — no settings UI in v1.
+export const ALERT_THROTTLE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 
 /**
  * Runs `op` with a hard timeout. Used to defend against the DB connection
@@ -135,6 +144,15 @@ async function closeOpenIncident(contractorId: string, kind: string): Promise<vo
       eq(webhookIncidents.kind, kind),
       isNull(webhookIncidents.closedAt),
     ));
+  // Note: we deliberately do NOT clear the alert throttle here. The 24h
+  // cooldown enforces the "at most one alert every 24 hours" guarantee
+  // unconditionally — including across open/close cycles inside the
+  // window (the flap pattern). The next genuine outage AFTER the window
+  // expires pages immediately via natural cooldown expiry; we do not try
+  // to detect "clean resolution" inside the window because there is no
+  // reliable signal that distinguishes a quiet flap interval from a true
+  // recovery (the underlying outage source — DB pool flap, webhook
+  // disable — is exactly the kind of failure that recovers and re-trips).
 }
 
 async function markIncidentNotified(incidentId: string): Promise<void> {
@@ -387,7 +405,7 @@ function linkToIntegrations(): string {
  * Each side-effect is wrapped individually so a failure in one (e.g.
  * websocket bus down) does not block the others.
  */
-async function notifyIncidentOpened(params: {
+export async function notifyIncidentOpened(params: {
   contractorId: string;
   incidentId: string;
   kind: 'staleness' | 'rejection' | 'health-check-failure' | 'subscription-missing';
@@ -397,6 +415,36 @@ async function notifyIncidentOpened(params: {
   emailBody: string;
 }): Promise<void> {
   const { contractorId, incidentId, kind, title, message, emailSubject, emailBody } = params;
+
+  // Task #710 — cooldown gate. If we've successfully paged this
+  // (contractor, service, kind) within the throttle window, suppress BOTH
+  // channels (email + in-app + websocket). We still stamp `notifiedAt` on
+  // the incident so subsequent ticks don't keep retrying the notify path.
+  // The cooldown is intentionally checked BEFORE the email send so we don't
+  // spam SendGrid either.
+  try {
+    const lastAlertedAt = await getLastAlertedAt(contractorId, SERVICE_HCP, kind);
+    if (lastAlertedAt) {
+      const elapsedMs = Date.now() - lastAlertedAt.getTime();
+      if (elapsedMs < ALERT_THROTTLE_WINDOW_MS) {
+        const nextEligibleAt = new Date(lastAlertedAt.getTime() + ALERT_THROTTLE_WINDOW_MS);
+        log.warn(
+          `Suppressing ${kind} alert for contractor ${contractorId} (cooldown active) — ` +
+          `lastAlertedAt=${lastAlertedAt.toISOString()} nextEligibleAt=${nextEligibleAt.toISOString()} ` +
+          `suppressedChannels=[email,in-app]`
+        );
+        await markIncidentNotified(incidentId).catch(err =>
+          log.warn(`Failed to mark suppressed ${kind} incident ${incidentId} notified: ${formatDbError(err)}`)
+        );
+        return;
+      }
+    }
+  } catch (err) {
+    // A throttle lookup failure must NOT block the alert — fall through
+    // to the normal notify path. Worst case we send an extra alert; the
+    // cooldown self-heals on the next successful page.
+    log.warn(`Throttle lookup failed for ${contractorId}/${kind}; proceeding without cooldown: ${formatDbError(err)}`);
+  }
 
   // 1. Out-of-band SendGrid email FIRST — this is the channel that has
   //    to land for an incident to count as "notified" for dedup purposes.
@@ -430,6 +478,7 @@ async function notifyIncidentOpened(params: {
   //    in-app notifications, broadcast the websocket update, and stamp the
   //    dedup marker.
   let adminCount = 0;
+  let inAppInsertedCount = 0;
   try {
     const contractorUsers = await storage.getContractorUsers(contractorId);
     const adminUsers = contractorUsers.filter(uc =>
@@ -446,6 +495,7 @@ async function notifyIncidentOpened(params: {
           message,
           link: '/settings/integrations',
         });
+        inAppInsertedCount += 1;
       } catch (err) {
         log.warn(`Failed to insert in-app notification for admin ${admin.userId} (${kind}): ${formatDbError(err)}`);
       }
@@ -455,7 +505,7 @@ async function notifyIncidentOpened(params: {
   }
 
   try {
-    if (adminCount > 0) {
+    if (inAppInsertedCount > 0) {
       broadcastToContractor(contractorId, { type: 'notification_updated' });
     }
   } catch (err) {
@@ -466,11 +516,24 @@ async function notifyIncidentOpened(params: {
     log.warn(`Failed to mark ${kind} incident ${incidentId} notified: ${formatDbError(err)}`)
   );
 
+  // Task #710 — only stamp the throttle row when at least one channel
+  // actually delivered something the user will see. A SendGrid send to
+  // ≥1 recipient OR an in-app row inserted for ≥1 admin counts. If both
+  // failed (and email was attempted), the cooldown is NOT consumed so
+  // the next tick will retry; the email-only-failure case is already
+  // short-circuited above by the `attempted > 0 && sent === 0` branch.
+  if (emailResult.sent > 0 || inAppInsertedCount > 0) {
+    await stampAlertThrottle(contractorId, SERVICE_HCP, kind).catch(err =>
+      log.warn(`Failed to stamp alert throttle for ${contractorId}/${kind}: ${formatDbError(err)}`)
+    );
+  }
+
   log.info(
-    `Notified ${adminCount} admin(s) in-app + ${emailResult.sent}/${emailResult.attempted} via email ` +
+    `Notified ${inAppInsertedCount}/${adminCount} admin(s) in-app + ${emailResult.sent}/${emailResult.attempted} via email ` +
     `about ${kind} incident on contractor ${contractorId}`
   );
 }
+
 
 async function checkContractorHealth(contractorId: string): Promise<void> {
   // Hourly subscription probe — runs every tick but only actually calls HCP

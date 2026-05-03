@@ -183,6 +183,24 @@ export const webhookIncidents = pgTable("webhook_incidents", {
 
 export type WebhookIncident = typeof webhookIncidents.$inferSelect;
 
+// Per-(contractor, service, kind) cooldown row for incident alerting (Task #710).
+//
+// `webhook_incidents` opens/closes on every flap, so it can't be used to
+// throttle paging — a noisy outage that opens-and-closes once per tick would
+// re-page every 5 minutes. This sibling table records the last time we
+// successfully paged a given (contractor, service, kind) so the notifier can
+// suppress follow-up email + in-app rows within the cooldown window.
+export const webhookIncidentAlertThrottle = pgTable("webhook_incident_alert_throttle", {
+  contractorId: varchar("contractor_id").notNull().references(() => contractors.id),
+  service: varchar("service").notNull(),
+  kind: varchar("kind").notNull(),
+  lastAlertedAt: timestamp("last_alerted_at").notNull(),
+}, (table) => ({
+  pk: uniqueIndex("webhook_incident_alert_throttle_pk").on(table.contractorId, table.service, table.kind),
+}));
+
+export type WebhookIncidentAlertThrottle = typeof webhookIncidentAlertThrottle.$inferSelect;
+
 // Templates table for text and email templates
 export const templates = pgTable("templates", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
