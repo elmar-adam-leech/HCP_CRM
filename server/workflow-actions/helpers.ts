@@ -1,7 +1,6 @@
 import { updateEntityStatusById } from "../utils/workflow/entity-resolver";
 import type { ExecutionContext } from "./types";
 import { logger } from "../utils/logger";
-import { workflowEngine } from "../workflow-engine";
 import { storage } from "../storage";
 import { toWorkflowEvent } from "../utils/workflow/entity-adapter";
 
@@ -50,6 +49,7 @@ export async function applyPostSendStatusUpdate(
         const eventData = statusStr === 'aged'
           ? { ...toWorkflowEvent(contact), status: 'aged' }
           : toWorkflowEvent(contact);
+        const { workflowEngine } = await import("../workflow-engine");
         workflowEngine.triggerWorkflowsForEvent('contact_status_changed', eventData, context.contractorId).catch(err =>
           log.error('Error triggering workflows for post-send status change', err)
         );
