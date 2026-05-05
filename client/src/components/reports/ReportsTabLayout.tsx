@@ -51,7 +51,7 @@ export function ReportsTabLayout({
       </div>
 
       <nav
-        className="hidden md:flex md:w-48 md:flex-shrink-0 md:flex-col md:gap-1"
+        className="hidden md:flex md:w-64 md:flex-shrink-0 md:flex-col md:gap-1"
         aria-label="Reports navigation"
       >
         {items.map((item) => {
@@ -60,7 +60,7 @@ export function ReportsTabLayout({
             <Button
               key={item.slug}
               variant="ghost"
-              className="justify-start data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground"
+              className="justify-start text-left whitespace-normal h-auto data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground"
               data-active={isActive}
               data-testid={`button-${testIdPrefix}-${item.slug}`}
               onClick={() => onSelect(item.slug)}
