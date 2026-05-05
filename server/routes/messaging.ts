@@ -331,6 +331,9 @@ export function registerMessagingRoutes(app: Express): void {
         contactId: resolvedContactId || null,
         userId: req.user.userId,
         metadata: {
+          // Stamp direction so the Speed-to-Lead report (which filters on
+          // metadata.direction = 'outbound') counts manually-initiated calls.
+          direction: 'outbound',
           externalCallId: callResponse.callId,
           callUrl: callResponse.callUrl || null,
           autoRecord: autoRecord || false,
@@ -476,6 +479,9 @@ export function registerMessagingRoutes(app: Express): void {
       contactId: contactId || null,
       type: "call",
       content: `Outbound call to ${label} via personal phone`,
+      // Stamp direction so the Speed-to-Lead report (which filters on
+      // metadata.direction = 'outbound') counts personal-phone calls.
+      metadata: { direction: 'outbound' },
     }, req.user.contractorId);
     if (contactId) {
       await storage.markContactContacted(contactId, req.user.contractorId, req.user.userId);

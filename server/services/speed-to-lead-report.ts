@@ -49,7 +49,8 @@ export interface SalespersonRow {
 export type SpeedToLeadEmptyReason =
   | "no_calls_ever"
   | "no_calls_in_range"
-  | "no_lead_calls_in_range";
+  | "no_lead_calls_in_range"
+  | "no_salespeople_flagged";
 
 export interface SpeedToLeadReport {
   range: { start: string; end: string };
@@ -346,7 +347,7 @@ export async function getSpeedToLeadReport(
 
   let emptyReason: SpeedToLeadEmptyReason | null = null;
   if (salespeople.length === 0) {
-    // Two cheap scalar queries to classify why the report is empty.
+    // Cheap scalar queries to classify why the report is empty.
     const everResult = await db.execute<{ exists: boolean }>(sql`
       SELECT EXISTS(
         SELECT 1 FROM activities
@@ -367,9 +368,26 @@ export async function getSpeedToLeadReport(
             AND created_at < ${end.toISOString()}
         ) AS exists
       `);
-      emptyReason = inRangeResult.rows[0]?.exists === true
-        ? "no_lead_calls_in_range"
-        : "no_calls_in_range";
+      if (inRangeResult.rows[0]?.exists !== true) {
+        emptyReason = "no_calls_in_range";
+      } else {
+        // There ARE call activities in this range, but none produced a row in
+        // the report. The most common cause (and the one the contractor can
+        // actually fix) is that no users are flagged as salespeople — the
+        // outbound_calls → salesperson_calls join silently drops every call
+        // whose user isn't a salesperson. Detect that explicitly so the UI
+        // can point them at the Salespeople settings page.
+        const salespeopleResult = await db.execute<{ count: number }>(sql`
+          SELECT COUNT(*)::int AS count
+          FROM user_contractors
+          WHERE contractor_id = ${contractorId}
+            AND is_salesperson = true
+        `);
+        const salespeopleCount = Number(salespeopleResult.rows[0]?.count ?? 0);
+        emptyReason = salespeopleCount === 0
+          ? "no_salespeople_flagged"
+          : "no_lead_calls_in_range";
+      }
     }
   }
 

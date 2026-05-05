@@ -80,14 +80,26 @@ describe("getSpeedToLeadReport", () => {
     expect(executeMock).toHaveBeenCalledTimes(3);
   });
 
-  it("classifies emptyReason as no_lead_calls_in_range when calls exist in range but no per-user rows", async () => {
+  it("classifies emptyReason as no_lead_calls_in_range when calls exist in range, salespeople are flagged, but no per-user rows", async () => {
     executeMock.mockResolvedValueOnce({ rows: [{ per_user: null, totals: null }] });
     executeMock.mockResolvedValueOnce({ rows: [{ exists: true }] });
     executeMock.mockResolvedValueOnce({ rows: [{ exists: true }] });
+    executeMock.mockResolvedValueOnce({ rows: [{ count: 2 }] });
 
     const r = await getSpeedToLeadReport(TENANT, RANGE);
     expect(r.emptyReason).toBe("no_lead_calls_in_range");
-    expect(executeMock).toHaveBeenCalledTimes(3);
+    expect(executeMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("classifies emptyReason as no_salespeople_flagged when calls exist in range but no users are flagged as salespeople", async () => {
+    executeMock.mockResolvedValueOnce({ rows: [{ per_user: null, totals: null }] });
+    executeMock.mockResolvedValueOnce({ rows: [{ exists: true }] });
+    executeMock.mockResolvedValueOnce({ rows: [{ exists: true }] });
+    executeMock.mockResolvedValueOnce({ rows: [{ count: 0 }] });
+
+    const r = await getSpeedToLeadReport(TENANT, RANGE);
+    expect(r.emptyReason).toBe("no_salespeople_flagged");
+    expect(executeMock).toHaveBeenCalledTimes(4);
   });
 
   it("emptyReason is null when there are salespeople rows", async () => {

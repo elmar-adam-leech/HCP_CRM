@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { format } from "date-fns";
 import type { DateRange } from "react-day-picker";
-import { CalendarIcon, PhoneOff } from "lucide-react";
+import { CalendarIcon, PhoneOff, UserCog } from "lucide-react";
 import { Link } from "wouter";
 import {
   Card,
@@ -71,7 +71,8 @@ interface SalespersonRow {
 type SpeedToLeadEmptyReason =
   | "no_calls_ever"
   | "no_calls_in_range"
-  | "no_lead_calls_in_range";
+  | "no_lead_calls_in_range"
+  | "no_salespeople_flagged";
 
 interface SpeedToLeadReportData {
   range: { start: string; end: string };
@@ -372,6 +373,28 @@ export function SpeedToLeadReport() {
               No calls were logged in this range. Try a wider date range or
               confirm your salespeople were active.
             </p>
+          ) : data?.emptyReason === "no_salespeople_flagged" ? (
+            <div
+              className="flex flex-col items-start gap-3 rounded-md border p-6"
+              data-testid="empty-state-no-salespeople-flagged"
+            >
+              <div className="flex items-center gap-2">
+                <UserCog className="h-5 w-5 text-muted-foreground" />
+                <h3 className="text-base font-semibold">
+                  No team members are flagged as salespeople yet.
+                </h3>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Calls were logged in this range, but this report only counts
+                calls made by users marked as salespeople. Flag at least one
+                team member as a salesperson to start seeing data here.
+              </p>
+              <Link href="/settings?tab=salespeople">
+                <Button variant="default" data-testid="button-open-salespeople-settings">
+                  Open Salespeople settings
+                </Button>
+              </Link>
+            </div>
           ) : (
             <p
               className="text-sm text-muted-foreground"

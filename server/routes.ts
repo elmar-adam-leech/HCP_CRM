@@ -41,6 +41,7 @@ import { registerReportsRoutes } from './routes/reports';
 import { registerLeadCaptureRoutes } from './routes/lead-capture';
 import { registerSalesProcessRoutes } from './routes/sales-process';
 import { registerAdminPerfRoutes } from './routes/admin-perf';
+import { registerAdminBackfillRoutes } from './routes/admin-backfills';
 
 export async function registerRoutes(app: Express): Promise<Server> {
   app.use(cookieParser());
@@ -154,6 +155,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerDashboardRoutes(app);
   registerReportsRoutes(app);
   registerAdminPerfRoutes(app);
+  registerAdminBackfillRoutes(app);
 
   app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
     const isDevelopment = process.env.NODE_ENV === 'development';

@@ -68,8 +68,21 @@ export function registerActivityRoutes(app: Express): void {
   app.post("/api/activities", asyncHandler(async (req, res) => {
     const activityData = parseBody(insertActivitySchema.omit({ contractorId: true }), req, res);
     if (!activityData) return;
+    // For call activities logged via this endpoint, default metadata.direction
+    // to 'outbound' so the Speed-to-Lead report (which filters on
+    // metadata.direction = 'outbound') counts manually-logged calls. We only
+    // fill in a missing value — explicit caller-supplied directions win.
+    let finalMetadata = activityData.metadata;
+    if (activityData.type === 'call') {
+      const meta = (finalMetadata && typeof finalMetadata === 'object'
+        ? finalMetadata
+        : {}) as Record<string, unknown>;
+      if (typeof meta.direction !== 'string') {
+        finalMetadata = { ...meta, direction: 'outbound' };
+      }
+    }
     const activity = await storage.createActivity(
-      { ...activityData, userId: req.user.userId },
+      { ...activityData, metadata: finalMetadata, userId: req.user.userId },
       req.user.contractorId
     );
     const contactId = activity.contactId;
