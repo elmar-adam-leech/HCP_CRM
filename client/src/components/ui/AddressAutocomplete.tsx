@@ -65,6 +65,11 @@ export const AddressAutocomplete = forwardRef<AddressAutocompleteRef, AddressAut
     // Input string we've already resolved (via pick or auto-resolve). Used
     // so resolvePending() short-circuits when nothing has changed.
     const resolvedForValueRef = useRef<string | null>(null);
+    // True from the moment a suggestion is clicked until its place-details
+    // fetch completes. Prevents the blur-driven resolver (clicking a
+    // suggestion blurs the input) from racing handleSelect and overwriting
+    // the picked address with a re-lookup of the input text.
+    const pickInFlightRef = useRef(false);
     // Cached suggestions plus the exact input they were fetched against —
     // protects against stale results being attached to a later submission.
     const suggestionsRef = useRef<CachedSuggestion[]>([]);
@@ -207,26 +212,37 @@ export const AddressAutocomplete = forwardRef<AddressAutocompleteRef, AddressAut
     // ready by the time submit fires. Deferred via microtask so a real
     // suggestion-click (which sets resolvedForValueRef) wins the race.
     const handleBlur = () => {
+      // A suggestion pick is in flight — let handleSelect own the resolve.
+      if (pickInFlightRef.current) return;
       const current = inputValueRef.current?.trim() ?? '';
       if (!current || current.length < 3) return;
       if (resolvedForValueRef.current === current) return;
       Promise.resolve().then(() => {
+        if (pickInFlightRef.current) return;
         if (resolvedForValueRef.current === inputValueRef.current?.trim()) return;
         void resolvePendingInternal();
       });
     };
 
     const handleSelect = async (suggestion: { placeId: string; text: string }) => {
+      // Mark synchronously so the blur-driven resolver (the click blurs the
+      // input) short-circuits before its microtask runs.
+      pickInFlightRef.current = true;
+      resolvedForValueRef.current = suggestion.text;
       setShowDropdown(false);
       setSuggestions([]);
       onChange(suggestion.text);
       setInputValue(suggestion.text);
-      const result = await fetchPlaceDetails(suggestion.placeId, suggestion.text);
-      sessionTokenRef.current = null;
-      onChange(result.formatted);
-      setInputValue(result.formatted);
-      onAddressSelect(result.formatted, result.components);
-      resolvedForValueRef.current = result.formatted;
+      try {
+        const result = await fetchPlaceDetails(suggestion.placeId, suggestion.text);
+        sessionTokenRef.current = null;
+        onChange(result.formatted);
+        setInputValue(result.formatted);
+        onAddressSelect(result.formatted, result.components);
+        resolvedForValueRef.current = result.formatted;
+      } finally {
+        pickInFlightRef.current = false;
+      }
     };
 
     // Shared by the imperative ref (submit) and onBlur. Picks the top
