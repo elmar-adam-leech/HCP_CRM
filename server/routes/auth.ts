@@ -122,7 +122,10 @@ export function registerAuthRoutes(app: Express): void {
     // PWA users on iOS routinely lose the auth cookie via Safari's tracking
     // protection / memory eviction; the refresh cookie survives those drops
     // and lets the client silently re-mint a session via /api/auth/refresh.
-    await issueRefreshToken(req, res, {
+    // The raw token is also returned in the response body so the client can
+    // mirror it into IndexedDB as a durable fallback for when iOS evicts the
+    // refresh cookie itself (task #720).
+    const rawRefresh = await issueRefreshToken(req, res, {
       userId: user.id,
       contractorId: user.contractorId,
     });
@@ -148,6 +151,7 @@ export function registerAuthRoutes(app: Express): void {
         // via the login flow; a null contractorId would have failed the DB query above.
         contractorId: user.contractorId!
       },
+      refreshToken: rawRefresh,
       message: "Login successful"
     });
   }));
@@ -387,8 +391,17 @@ export function registerAuthRoutes(app: Express): void {
     // `req.user` is undefined; the `!` assertion is redundant but kept for explicitness.
     const user = req.user!;
     await AuthService.revokeToken(user);
-    // Best-effort: revoke the refresh token row backing this device's cookie.
-    const rawRefresh = req.cookies?.[REFRESH_COOKIE_NAME] as string | undefined;
+    // Best-effort: revoke the refresh token row backing this device's session.
+    // Prefer the cookie, but accept a body-supplied token as a fallback for
+    // PWA installs whose refresh cookie has been evicted by iOS Safari but
+    // who still have a copy in IndexedDB (task #720). Both paths revoke by
+    // hash so neither receives a weaker security treatment.
+    const cookieRefresh = req.cookies?.[REFRESH_COOKIE_NAME] as string | undefined;
+    const bodyRefresh =
+      typeof (req.body as { refreshToken?: unknown } | undefined)?.refreshToken === "string"
+        ? ((req.body as { refreshToken: string }).refreshToken)
+        : undefined;
+    const rawRefresh = cookieRefresh || bodyRefresh;
     if (rawRefresh) {
       await storage.revokeRefreshTokenByHash(hashRefreshToken(rawRefresh));
     }

@@ -1,5 +1,5 @@
 import { Switch, Route, useLocation } from "wouter";
-import { queryClient } from "./lib/queryClient";
+import { queryClient, persistRefreshTokenFromResponse } from "./lib/queryClient";
 import { useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { SyncStatusProvider } from "@/hooks/use-sync-status";
@@ -354,6 +354,7 @@ export default function AppInner() {
         if (data.status === 'mfa_required' && data.pendingToken) {
           setMfaPendingToken(data.pendingToken);
         } else {
+          await persistRefreshTokenFromResponse(data);
           queryClient.invalidateQueries({ queryKey: ['/api/auth/me'] });
         }
       } else {
@@ -401,6 +402,8 @@ export default function AppInner() {
         body: JSON.stringify({ sessionId, response: assertion }),
       });
       if (finishRes.ok) {
+        const data = await finishRes.json().catch(() => ({}));
+        await persistRefreshTokenFromResponse(data);
         queryClient.invalidateQueries({ queryKey: ['/api/auth/me'] });
         return;
       }

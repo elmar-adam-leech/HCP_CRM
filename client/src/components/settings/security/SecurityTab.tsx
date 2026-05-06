@@ -32,6 +32,12 @@ export function SecurityTab() {
     try {
       const result = await apiRequest("POST", "/api/auth/logout-company");
       const data = await result.json();
+      // Clear the IDB-stored refresh token (task #720) — this user's own session
+      // is also being terminated by logout-company.
+      try {
+        const { clearStoredRefreshToken } = await import("@/lib/refresh-token-storage");
+        await clearStoredRefreshToken();
+      } catch {}
       toast({
         title: "All company users signed out",
         description: data.message ?? "Every active session across your company has been ended.",

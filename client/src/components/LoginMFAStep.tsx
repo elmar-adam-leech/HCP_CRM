@@ -28,6 +28,9 @@ export function LoginMFAStep({ pendingToken, onVerified, onCancel }: LoginMFASte
         body: JSON.stringify({ pendingToken, code }),
       });
       if (response.ok) {
+        const data = await response.json().catch(() => ({}));
+        const { persistRefreshTokenFromResponse } = await import("@/lib/queryClient");
+        await persistRefreshTokenFromResponse(data);
         onVerified();
       } else {
         const data = await response.json();

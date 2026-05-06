@@ -356,6 +356,16 @@ export function registerWebAuthnRoutes(app: Express): void {
 
     AuthService.setLoginCookie(res, token);
 
+    // Issue the long-lived refresh cookie alongside the JWT so PWA users on
+    // iOS survive Safari's auth-cookie eviction (task #650). Mirror the raw
+    // token in the response body so the client can persist it to IndexedDB
+    // as a durable fallback (task #720).
+    const { issueRefreshToken } = await import("../auth-refresh");
+    const rawRefresh = await issueRefreshToken(req, res, {
+      userId: user.id,
+      contractorId: user.contractorId,
+    });
+
     await db.update(webauthnCredentials)
       .set({ counter: newCounter, lastUsedAt: new Date() })
       .where(eq(webauthnCredentials.id, stored.id));
@@ -379,6 +389,7 @@ export function registerWebAuthnRoutes(app: Express): void {
         role: userContractorEntry.role,
         contractorId: user.contractorId,
       },
+      refreshToken: rawRefresh,
       message: "Login successful",
     });
   }));

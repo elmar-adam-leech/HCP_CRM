@@ -313,9 +313,13 @@ async function issueFinalToken(
   AuthService.setLoginCookie(res, token);
 
   // Issue the long-lived refresh cookie alongside the JWT so PWA users on iOS
-  // survive Safari's auth-cookie eviction (task #650).
+  // survive Safari's auth-cookie eviction (task #650). The raw token is also
+  // returned in the response body so the client can mirror it into IndexedDB
+  // as a durable fallback for when iOS evicts the refresh cookie itself
+  // (task #720).
+  let rawRefresh: string | undefined;
   if (contractorId) {
-    await issueRefreshToken(req, res, { userId: user.id, contractorId });
+    rawRefresh = await issueRefreshToken(req, res, { userId: user.id, contractorId });
   }
 
   await auditLog(req, 'login', 'user', user.id);
@@ -329,6 +333,7 @@ async function issueFinalToken(
       role: userContractorEntry.role,
       contractorId,
     },
+    refreshToken: rawRefresh,
     message: "Login successful",
   });
 }

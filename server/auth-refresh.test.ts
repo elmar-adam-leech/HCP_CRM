@@ -307,7 +307,7 @@ describe('handleRefreshRequest endpoint state machine', () => {
     const res = makeRes();
     await handleRefreshRequest(makeReq(), res);
     expect(res.statusCode).toBe(401);
-    expect(res.body).toEqual({ message: 'No refresh token' });
+    expect(res.body).toEqual({ message: 'No refresh token', reason: 'missing' });
     // No row should be touched.
     expect(store.rows).toHaveLength(0);
   });
@@ -327,7 +327,10 @@ describe('handleRefreshRequest endpoint state machine', () => {
     await handleRefreshRequest(makeReq({ cookies: { [REFRESH_COOKIE_NAME]: raw } }), res);
 
     expect(res.statusCode).toBe(200);
-    expect(res.body).toEqual({ ok: true });
+    // The rotated raw token is mirrored in the response body so the SPA can
+    // update its IndexedDB fallback copy (task #720).
+    expect(res.body).toMatchObject({ ok: true });
+    expect(typeof (res.body as { refreshToken?: unknown }).refreshToken).toBe('string');
     // Both cookies set on the response.
     expect(res.cookies['auth_token']).toBeDefined();
     expect(res.cookies[REFRESH_COOKIE_NAME]).toBeDefined();
@@ -405,7 +408,7 @@ describe('handleRefreshRequest endpoint state machine', () => {
     );
 
     expect(res.statusCode).toBe(401);
-    expect(res.body).toEqual({ message: 'Refresh token reused after rotation' });
+    expect(res.body).toEqual({ message: 'Refresh token reused after rotation', reason: 'replayed-past-grace' });
     expect(res.cleared).toContain(REFRESH_COOKIE_NAME);
 
     // Hard-revoked so a follow-up arrival hits the revokedAt branch and never re-enters grace.
@@ -425,7 +428,7 @@ describe('handleRefreshRequest endpoint state machine', () => {
     );
 
     expect(res.statusCode).toBe(401);
-    expect(res.body).toEqual({ message: 'Invalid refresh token' });
+    expect(res.body).toEqual({ message: 'Invalid refresh token', reason: 'revoked' });
     expect(res.cleared).toContain(REFRESH_COOKIE_NAME);
     // Auth cookie must NOT be issued.
     expect(res.cookies['auth_token']).toBeUndefined();
@@ -455,7 +458,7 @@ describe('handleRefreshRequest endpoint state machine', () => {
     );
 
     expect(res.statusCode).toBe(401);
-    expect(res.body).toEqual({ message: 'Refresh token expired' });
+    expect(res.body).toEqual({ message: 'Refresh token expired', reason: 'expired' });
     expect(res.cleared).toContain(REFRESH_COOKIE_NAME);
   });
 
@@ -471,7 +474,7 @@ describe('handleRefreshRequest endpoint state machine', () => {
     );
 
     expect(res.statusCode).toBe(401);
-    expect(res.body).toEqual({ message: 'Access denied to this company' });
+    expect(res.body).toEqual({ message: 'Access denied to this company', reason: 'membership-missing' });
     const row = store.rows.find((r) => r.id === rowId)!;
     expect(row.revokedAt).not.toBeNull();
   });

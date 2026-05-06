@@ -35,7 +35,19 @@ export function Header({
 
   const handleLogout = async () => {
     try {
-      await apiRequest("POST", "/api/auth/logout");
+      // Pull the IDB-stored refresh token (task #720) so the server can revoke
+      // its row even if iOS Safari has already evicted the refresh cookie.
+      const { getStoredRefreshToken, clearStoredRefreshToken } = await import(
+        "@/lib/refresh-token-storage"
+      );
+      let refreshToken: string | null = null;
+      try { refreshToken = await getStoredRefreshToken(); } catch {}
+      await apiRequest(
+        "POST",
+        "/api/auth/logout",
+        refreshToken ? { refreshToken } : undefined,
+      );
+      try { await clearStoredRefreshToken(); } catch {}
       toast({
         title: "Logged out successfully",
         description: "You have been logged out of your account.",
