@@ -74,6 +74,15 @@ export async function handleEstimateEvent(
         updateData.scheduledEnd = fetchedEnd ? new Date(fetchedEnd) : null;
         updateData.scheduledEmployeeId = extractHcpScheduledEmployeeId(fetched);
       }
+      // Sticky document-sent stamp (task #721): if the source mapped to a sent-like
+      // state OR carries a `sent_at`, record the first time we saw it. Never clear.
+      if (!estimate.documentSentAt) {
+        const sourceMapped = mapHcpEstimateStatus(source);
+        const sourceSentAt = (source as { sent_at?: string }).sent_at;
+        if (sourceMapped === 'sent' || sourceSentAt) {
+          updateData.documentSentAt = sourceSentAt ? new Date(sourceSentAt) : (occurredAt ?? new Date());
+        }
+      }
       stampStatusChangeMeta(updateData, estimate.status, event_type, occurredAt, data);
       const updated = await storage.updateEstimate(estimate.id, updateData, contractorId);
       if (updated) {
@@ -175,6 +184,14 @@ export async function handleEstimateEvent(
           ? (fetched.schedule?.scheduled_end ? new Date(fetched.schedule.scheduled_end) : (fetched.scheduled_end ? new Date(fetched.scheduled_end) : undefined))
           : (source.scheduled_end ? new Date(source.scheduled_end) : undefined);
         const scheduledEmployeeId = fetched ? extractHcpScheduledEmployeeId(fetched) : extractHcpScheduledEmployeeId(data);
+        // Task #721: stamp documentSentAt on creation when the source already
+        // carries a sent-like state or `sent_at`. Mirrors the polling/webhook
+        // updates so an estimate that arrives already in 'sent' is correctly
+        // counted in the Sent tab from day one.
+        const createdSentAt = (source as { sent_at?: string }).sent_at;
+        const documentSentAt = (status === 'sent' || createdSentAt)
+          ? (createdSentAt ? new Date(createdSentAt) : (occurredAt ?? new Date()))
+          : undefined;
         const estimate = await storage.createEstimate({
           title,
           description,
@@ -190,6 +207,7 @@ export async function handleEstimateEvent(
           scheduledStart,
           scheduledEnd,
           scheduledEmployeeId,
+          documentSentAt,
           syncedAt: new Date(),
         }, contractorId);
         broadcastToContractor(contractorId, { type: 'estimate_created', estimateId: estimate.id });
@@ -265,6 +283,13 @@ export async function handleEstimateEvent(
         updateData.scheduledStart = sentFetchedStart ? new Date(sentFetchedStart) : null;
         updateData.scheduledEnd = sentFetchedEnd ? new Date(sentFetchedEnd) : null;
         updateData.scheduledEmployeeId = extractHcpScheduledEmployeeId(fetched);
+      }
+      // Task #721: estimate.sent is the canonical document-sent signal. Always
+      // stamp documentSentAt when not already set. Sticky once set.
+      if (!estimate.documentSentAt) {
+        const sentAtFromHcp = (fetched as { sent_at?: string } | null)?.sent_at
+          ?? (data as { sent_at?: string }).sent_at;
+        updateData.documentSentAt = sentAtFromHcp ? new Date(sentAtFromHcp) : (occurredAt ?? new Date());
       }
       stampStatusChangeMeta(updateData, estimate.status, event_type, occurredAt, data);
       const updated = await storage.updateEstimate(estimate.id, updateData, contractorId);

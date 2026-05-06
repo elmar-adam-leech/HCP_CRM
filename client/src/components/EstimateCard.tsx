@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { StatusBadge } from "./StatusBadge";
 import { CustomerBadge } from "./CustomerBadge";
-import { Calendar, FileText, MoreHorizontal, Edit, ExternalLink, Phone, Mail, CalendarClock, Trash2, Tag, ListChecks } from "lucide-react";
+import { Calendar, FileText, MoreHorizontal, Edit, ExternalLink, Phone, Mail, CalendarClock, Trash2, Tag, ListChecks, Send } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -102,6 +102,23 @@ export const EstimateCard = memo(function EstimateCard({ estimate, onViewDetails
           <CardTitle className="text-base font-medium line-clamp-2">{formatEntityTitle('estimate', estimate.title)}</CardTitle>
           <div className="flex items-center gap-2 flex-wrap">
             <StatusBadge status={estimate.status} entityType="estimate" />
+            {estimate.documentSentAt && estimate.status !== 'approved' && estimate.status !== 'rejected' && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge
+                    variant="secondary"
+                    className="text-xs flex items-center gap-1"
+                    data-testid={`badge-document-sent-${estimate.id}`}
+                  >
+                    <Send className="h-3 w-3" />
+                    Sent
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  Document sent {new Date(estimate.documentSentAt).toLocaleDateString()}
+                </TooltipContent>
+              </Tooltip>
+            )}
             <CustomerBadge hasJobs={estimate.contactHasJobs} />
             {isHousecallProEstimate && (() => {
               const opts = Array.isArray(estimate.hcpOptions) ? estimate.hcpOptions : [];

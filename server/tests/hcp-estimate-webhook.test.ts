@@ -4,6 +4,7 @@ interface FakeEstimate {
   id: string;
   status: 'sent' | 'scheduled' | 'in_progress' | 'approved' | 'rejected';
   statusManuallySet: boolean;
+  documentSentAt?: Date | null;
 }
 interface UpdatePayload {
   status?: FakeEstimate['status'];
@@ -232,6 +233,58 @@ describe('webhook merge with manual override', () => {
       undefined,
     );
     expect(updateEstimate).not.toHaveBeenCalled();
+  });
+
+  // ---- Task #721: documentSentAt (document-sent lifecycle) ----
+
+  it('estimate.sent: stamps documentSentAt when previously null', async () => {
+    getEstimateByHousecallProEstimateId.mockResolvedValue({
+      id: 'e1', status: 'in_progress', statusManuallySet: false, documentSentAt: null,
+    });
+    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp1', work_status: 'unscheduled' } });
+
+    const occurredAt = new Date('2025-06-01T12:00:00Z');
+    await handleEstimateEvent(CONTRACTOR, 'estimate.sent', { id: 'hcp1' }, occurredAt);
+
+    expect(updateEstimate.mock.calls[0][1].documentSentAt).toBeInstanceOf(Date);
+  });
+
+  it('estimate.sent: does NOT overwrite an existing documentSentAt (sticky)', async () => {
+    const original = new Date('2025-01-01T00:00:00Z');
+    getEstimateByHousecallProEstimateId.mockResolvedValue({
+      id: 'e1', status: 'in_progress', statusManuallySet: false, documentSentAt: original,
+    });
+    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp1', work_status: 'unscheduled' } });
+
+    await handleEstimateEvent(CONTRACTOR, 'estimate.sent', { id: 'hcp1' }, new Date('2025-06-01T12:00:00Z'));
+
+    expect(updateEstimate.mock.calls[0][1].documentSentAt).toBeUndefined();
+  });
+
+  it('estimate.updated: stamps documentSentAt when source carries sent_at and stamp was null', async () => {
+    getEstimateByHousecallProEstimateId.mockResolvedValue({
+      id: 'e1', status: 'sent', statusManuallySet: false, documentSentAt: null,
+    });
+    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp1', work_status: 'unscheduled', sent_at: '2025-05-15T08:00:00Z' } });
+
+    await handleEstimateEvent(CONTRACTOR, 'estimate.updated', { id: 'hcp1' }, undefined);
+
+    const stamped = updateEstimate.mock.calls[0][1].documentSentAt as Date;
+    expect(stamped).toBeInstanceOf(Date);
+    expect(stamped.toISOString()).toBe('2025-05-15T08:00:00.000Z');
+  });
+
+  it('estimate.updated: does NOT touch documentSentAt once set (sticky across later transitions)', async () => {
+    const original = new Date('2025-01-01T00:00:00Z');
+    getEstimateByHousecallProEstimateId.mockResolvedValue({
+      id: 'e1', status: 'sent', statusManuallySet: false, documentSentAt: original,
+    });
+    // Source no longer reports sent state — but stamp must remain.
+    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp1', work_status: 'in progress' } });
+
+    await handleEstimateEvent(CONTRACTOR, 'estimate.updated', { id: 'hcp1' }, undefined);
+
+    expect(updateEstimate.mock.calls[0][1].documentSentAt).toBeUndefined();
   });
 
   it('estimate.on_my_way: respects manual override (does not flip to in_progress)', async () => {

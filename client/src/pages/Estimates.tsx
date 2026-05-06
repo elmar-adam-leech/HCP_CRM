@@ -200,6 +200,7 @@ export default function Estimates({ externalSearch = "" }: { externalSearch?: st
       externalId: e.externalId ?? undefined,
       housecallProEstimateId: e.housecallProEstimateId ?? undefined,
       hcpOptions: e.hcpOptions ?? undefined,
+      documentSentAt: e.documentSentAt ?? null,
     })),
     [estimates]
   );
@@ -228,6 +229,7 @@ export default function Estimates({ externalSearch = "" }: { externalSearch?: st
         externalId: e.externalId ?? undefined,
         housecallProEstimateId: e.housecallProEstimateId ?? undefined,
         hcpOptions: e.hcpOptions ?? undefined,
+        documentSentAt: e.documentSentAt ?? null,
       } as EstimateListItem;
     },
     onOpen: (estimate) => setActiveModal({ type: "details", estimate }),

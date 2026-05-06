@@ -1258,6 +1258,11 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `CREATE UNIQUE INDEX IF NOT EXISTS "media_spend_unique_platform_campaign_month_idx" ON "media_spend"("contractor_id", "platform", "campaign", "month") NULLS NOT DISTINCT`,
       description: 'media_spend unique (contractor_id, platform, campaign, month) NULLS NOT DISTINCT',
     },
+    // ---- Task #721: estimates.document_sent_at (document-sent lifecycle independent of visit status) ----
+    {
+      sql: `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS document_sent_at timestamp`,
+      description: 'estimates.document_sent_at (task #721: document-sent timestamp, sticky, independent of visit status)',
+    },
   ];
 
 export async function applyColumnMigrations(

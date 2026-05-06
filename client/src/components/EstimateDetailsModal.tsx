@@ -29,6 +29,7 @@ export type EstimateListItem = {
   externalId?: string;
   housecallProEstimateId?: string;
   hcpOptions?: HcpOptionEntry[] | null;
+  documentSentAt?: string | Date | null;
 };
 
 type EstimateDetailsModalProps = {

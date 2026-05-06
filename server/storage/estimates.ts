@@ -10,6 +10,26 @@ import type { UpdateEstimate } from "../storage-types";
 import { maybeDeleteOrphanContactTx } from "./contacts";
 import { invalidateReportsCache } from "../services/report-cache";
 
+// Build the SQL filter for a given UI status tab. Sent uses the document-sent
+// predicate (independent of visit/work status), while scheduled/in_progress
+// additionally require documentSentAt IS NULL so estimates that have been sent
+// don't double-count in the visit-status tabs. Approved/rejected unchanged.
+function statusTabFilter(status: string) {
+  if (status === 'sent') {
+    return and(
+      sql`${estimates.documentSentAt} IS NOT NULL`,
+      sql`${estimates.status} NOT IN ('approved', 'rejected')`,
+    )!;
+  }
+  if (status === 'scheduled' || status === 'in_progress') {
+    return and(
+      eq(estimates.status, status as typeof estimateStatusEnum.enumValues[number]),
+      sql`${estimates.documentSentAt} IS NULL`,
+    )!;
+  }
+  return eq(estimates.status, status as typeof estimateStatusEnum.enumValues[number]);
+}
+
 type EstimateStatusCounts = {
   all: number;
   sent: number;
@@ -38,6 +58,7 @@ async function getEstimates(contractorId: string): Promise<Estimate[]> {
     externalId: estimates.externalId,
     externalSource: estimates.externalSource,
     syncedAt: estimates.syncedAt,
+    documentSentAt: estimates.documentSentAt,
     createdAt: estimates.createdAt,
     updatedAt: estimates.updatedAt,
     contact: {
@@ -79,7 +100,7 @@ async function getEstimatesPaginated(contractorId: string, options: {
     conditions.push(gt(estimates.createdAt, new Date(options.cursor)));
   }
   if (options.status) {
-    conditions.push(eq(estimates.status, options.status as typeof estimateStatusEnum.enumValues[number]));
+    conditions.push(statusTabFilter(options.status));
   }
   if (options.search) {
     // SAFE: `or()` with non-null ilike arguments always returns a non-null SQL
@@ -116,6 +137,7 @@ async function getEstimatesPaginated(contractorId: string, options: {
       externalId: estimates.externalId,
       housecallProEstimateId: estimates.housecallProEstimateId,
       hcpOptions: estimates.hcpOptions,
+      documentSentAt: estimates.documentSentAt,
       createdAt: estimates.createdAt,
       updatedAt: estimates.updatedAt,
     })
@@ -151,7 +173,7 @@ async function getEstimatesCount(contractorId: string, options: {
     const cutoffDate = new Date(Date.now() - options.archiveDays * 86_400_000);
     conditions.push(gte(estimates.createdAt, cutoffDate));
   }
-  if (options.status) conditions.push(eq(estimates.status, options.status as typeof estimateStatusEnum.enumValues[number]));
+  if (options.status) conditions.push(statusTabFilter(options.status));
   if (options.search) {
     // SAFE: `or()` with non-null ilike arguments always returns a non-null SQL
     // expression; `!` silences Drizzle's overly-conservative `undefined` return type.
@@ -204,9 +226,9 @@ async function getEstimatesStatusCounts(contractorId: string, options: {
   }
   const result = await db.select({
     all: count(),
-    sent: sql<number>`COUNT(CASE WHEN ${estimates.status} = 'sent' THEN 1 END)`,
-    scheduled: sql<number>`COUNT(CASE WHEN ${estimates.status} = 'scheduled' THEN 1 END)`,
-    in_progress: sql<number>`COUNT(CASE WHEN ${estimates.status} = 'in_progress' THEN 1 END)`,
+    sent: sql<number>`COUNT(CASE WHEN ${estimates.documentSentAt} IS NOT NULL AND ${estimates.status} NOT IN ('approved','rejected') THEN 1 END)`,
+    scheduled: sql<number>`COUNT(CASE WHEN ${estimates.status} = 'scheduled' AND ${estimates.documentSentAt} IS NULL THEN 1 END)`,
+    in_progress: sql<number>`COUNT(CASE WHEN ${estimates.status} = 'in_progress' AND ${estimates.documentSentAt} IS NULL THEN 1 END)`,
     approved: sql<number>`COUNT(CASE WHEN ${estimates.status} = 'approved' THEN 1 END)`,
     rejected: sql<number>`COUNT(CASE WHEN ${estimates.status} = 'rejected' THEN 1 END)`,
   })
@@ -381,6 +403,7 @@ async function getEstimatesWithFollowUp(contractorId: string, limit = 200): Prom
     scheduledEmployeeId: estimates.scheduledEmployeeId,
     hcpOptions: estimates.hcpOptions,
     syncedAt: estimates.syncedAt,
+    documentSentAt: estimates.documentSentAt,
     externalId: estimates.externalId,
     externalSource: estimates.externalSource,
     createdAt: estimates.createdAt,

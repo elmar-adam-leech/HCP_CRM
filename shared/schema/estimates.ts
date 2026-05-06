@@ -79,6 +79,11 @@ export const estimates = pgTable("estimates", {
   // row (notes, line items, etc.) do not shift the apparent close time.
   approvedAt: timestamp("approved_at"),
   rejectedAt: timestamp("rejected_at"),
+  // Timestamp the estimate document was first sent to the customer (HCP `estimate.sent`
+  // webhook, or polling sync detecting a sent-like state / `sent_at`). Independent of
+  // visit/work status (`scheduled`/`in_progress`) so a tech can be on-site for a
+  // redo while the original document remains "sent". Sticky once set — never cleared.
+  documentSentAt: timestamp("document_sent_at"),
   // True when the CRM user has manually set this estimate's status from the UI.
   // Polling sync and webhook handlers must respect this flag and never overwrite
   // the local status from HCP unless HCP reports a terminal rejected/cancelled state.
@@ -158,6 +163,7 @@ export const estimateSummarySchema = z.object({
   externalSource: z.string().nullable().optional(),
   externalId: z.string().nullable().optional(),
   housecallProEstimateId: z.string().nullable().optional(),
+  documentSentAt: z.date().nullable().optional(),
   hcpOptions: z.array(z.object({
     id: z.string(),
     name: z.string().optional(),

@@ -98,6 +98,10 @@ export interface HcpEstimate {
   schedule?: { scheduled_start?: string; scheduled_end?: string };
   customer?: HcpCustomer;
   created_at?: string;
+  // Top-level timestamp HCP stamps when the estimate document is first sent
+  // to the customer. Used (alongside `mapHcpEstimateStatus(...) === 'sent'`)
+  // to populate the local `documentSentAt` field — see task #721.
+  sent_at?: string;
   line_items?: HcpRawLineItem[];
 }
 

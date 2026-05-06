@@ -48,6 +48,9 @@ export interface HousecallProEstimate {
   number?: string;
   estimate_number?: string;
   name?: string;
+  // Top-level timestamp HCP stamps when the document is first sent to the
+  // customer. Drives the local sticky `documentSentAt` field — see task #721.
+  sent_at?: string;
   customer_id?: string;
   customer?: HousecallProCustomer;
   employee_id?: string;

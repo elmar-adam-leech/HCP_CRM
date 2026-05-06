@@ -161,6 +161,15 @@ export async function syncHousecallProEstimates(tenantId: string): Promise<void>
               updateData.approvalStatusChangedAt = new Date();
               updateData.mostRecentStatusChangeReason = `polling-sync: ${existingEstimate.status} → ${newStatus}`;
             }
+            // Task #721: sticky document-sent stamp. If HCP currently maps to
+            // a sent-like state OR carries a `sent_at`, populate documentSentAt
+            // (only when not already set). Never cleared.
+            if (!existingEstimate.documentSentAt) {
+              const hcpSentAt = hcpEstimate.sent_at;
+              if (mappedStatus === 'sent' || hcpSentAt) {
+                updateData.documentSentAt = hcpSentAt ? new Date(hcpSentAt) : new Date();
+              }
+            }
             if (!existingEstimate.housecallProEstimateId) updateData.housecallProEstimateId = hcpEstimate.id;
             const hcpCustId = hcpEstimate.customer?.id;
             if (!existingEstimate.housecallProCustomerId && hcpCustId) {
@@ -256,6 +265,9 @@ export async function syncHousecallProEstimates(tenantId: string): Promise<void>
                   hcpOptions: buildHcpOptions(hcpEstimate) ?? undefined,
                   lineItems: buildHcpLineItems(hcpEstimate) ?? undefined,
                   salespersonUserId: await resolveSalespersonForHcpEntity(tenantId, hcpEstimate),
+                  documentSentAt: (estimateStatus === 'sent' || hcpEstimate.sent_at)
+                    ? (hcpEstimate.sent_at ? new Date(hcpEstimate.sent_at) : new Date())
+                    : null,
                 });
               });
 
@@ -291,6 +303,9 @@ export async function syncHousecallProEstimates(tenantId: string): Promise<void>
               hcpOptions: buildHcpOptions(hcpEstimate) ?? undefined,
               lineItems: buildHcpLineItems(hcpEstimate) ?? undefined,
               salespersonUserId: await resolveSalespersonForHcpEntity(tenantId, hcpEstimate),
+              documentSentAt: (estimateStatus === 'sent' || hcpEstimate.sent_at)
+                ? (hcpEstimate.sent_at ? new Date(hcpEstimate.sent_at) : new Date())
+                : undefined,
             };
 
             await storage.createEstimate(estimateData, tenantId);
