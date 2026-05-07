@@ -121,14 +121,20 @@ function StepGroupHeader({ group }: { group: GroupedByStep }) {
 }
 
 interface SalesProcessFollowUpViewProps {
-  // Optional: lets the page hide the toggle / decide default itself.
-  process: SalesProcess | undefined;
+  // All active cadences for the contractor — every active cadence
+  // contributes tasks (and a name in the header). Empty array means there
+  // are no active cadences (the page should normally hide the toggle in
+  // that case, but we render a helpful empty-state regardless).
+  cadences: SalesProcess[];
+  // Steps from EVERY active cadence, flattened. Used to build a single
+  // stepsById map so tasks group correctly under their owning step
+  // regardless of which cadence they came from.
   steps: SalesProcessStep[];
   onOpenLead: (leadId: string) => void;
 }
 
 export function SalesProcessFollowUpView({
-  process,
+  cadences,
   steps,
   onOpenLead,
 }: SalesProcessFollowUpViewProps) {
@@ -265,6 +271,16 @@ export function SalesProcessFollowUpView({
 
   const totalOpen = pastDue.length + today.length;
 
+  // Upcoming tasks let us tell the user "your next step is on {date}" so an
+  // empty Today/Past Due view doesn't look broken when a cadence is just
+  // waiting out its Day-N delay.
+  const nextUpcoming = useMemo(() => {
+    if (upcoming.length === 0) return undefined;
+    return upcoming.reduce((earliest, t) =>
+      new Date(t.dueAt) < new Date(earliest.dueAt) ? t : earliest,
+    );
+  }, [upcoming]);
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -275,29 +291,89 @@ export function SalesProcessFollowUpView({
             data-testid="badge-sales-process-name"
           >
             <SettingsIcon className="h-3 w-3" />
-            Process: {process?.name || "Sales process"}
+            {cadences.length === 0
+              ? "No active cadences"
+              : cadences.length === 1
+                ? `Process: ${cadences[0].name}`
+                : `${cadences.length} active cadences`}
           </Badge>
+          {cadences.length > 1 && (
+            <span
+              className="text-xs text-muted-foreground truncate max-w-[24rem]"
+              data-testid="text-active-cadence-names"
+            >
+              {cadences.map(c => c.name).join(" · ")}
+            </span>
+          )}
           <Button
             size="sm"
             variant="ghost"
             onClick={() => setLocation("/settings?tab=sales-process")}
             data-testid="button-edit-process"
           >
-            Edit cadence
+            Edit cadences
           </Button>
         </div>
       </div>
 
       <SalesProcessNeedsAttentionBanner failed={failed} onOpenLead={onOpenLead} />
 
-      {totalOpen === 0 && pastDue.length === 0 && today.length === 0 ? (
+      {totalOpen === 0 && pastDue.length === 0 && today.length === 0 && estimateTasks.length === 0 ? (
         <Card>
-          <CardContent className="p-8 text-center">
-            <Calendar className="mx-auto h-10 w-10 text-muted-foreground mb-3" />
-            <h3 className="text-base font-semibold mb-1">All caught up</h3>
-            <p className="text-sm text-muted-foreground">
-              {completedTodayData?.count ?? 0} completed today.
-            </p>
+          <CardContent className="p-8 text-center space-y-3">
+            <Calendar className="mx-auto h-10 w-10 text-muted-foreground" />
+            <h3 className="text-base font-semibold">Nothing due right now</h3>
+            <div className="text-sm text-muted-foreground space-y-2 max-w-md mx-auto">
+              {cadences.length === 0 ? (
+                <p>
+                  You don't have any active cadences yet. Turn one on in
+                  Settings → Sales Process to start scheduling automatic
+                  follow-ups for new leads and estimates.
+                </p>
+              ) : nextUpcoming ? (
+                <p>
+                  Your next step is due on{" "}
+                  <span className="font-medium text-foreground">
+                    {new Date(nextUpcoming.dueAt).toLocaleDateString(undefined, {
+                      weekday: "long", month: "short", day: "numeric",
+                    })}
+                  </span>
+                  . Manual steps stay quiet until their Day-N delay arrives —
+                  for example a Day 1 Call won't show up until 24 hours after
+                  the lead is created.
+                </p>
+              ) : (
+                <>
+                  <p>
+                    No tasks are scheduled in the next 7 days. A few common
+                    reasons:
+                  </p>
+                  <ul className="list-disc list-inside text-left space-y-1">
+                    <li>No new leads or estimates have matched a cadence trigger yet.</li>
+                    <li>
+                      Existing leads were already past <em>Open</em> when the
+                      cadence was activated, so they were skipped.
+                    </li>
+                    <li>
+                      Manual steps are waiting out their Day-N delay (a Day 1
+                      step appears 24 hours after the trigger).
+                    </li>
+                  </ul>
+                </>
+              )}
+              <p>
+                {completedTodayData?.count ?? 0} completed today.{" "}
+                <button
+                  type="button"
+                  className="underline hover:text-foreground"
+                  onClick={() => setLocation("/settings?tab=sales-process")}
+                  data-testid="link-empty-state-settings"
+                >
+                  Manage cadences in Settings
+                </button>
+                .
+              </p>
+            </div>
           </CardContent>
         </Card>
       ) : null}

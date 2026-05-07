@@ -6,7 +6,7 @@
  * (by validUntil or scheduledStart). Filtering by status (overdue/today/thisweek)
  * is done client-side since it's a simple array filter over already-fetched data.
  */
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useQueries, useMutation } from "@tanstack/react-query";
 import { useContactMutations } from "@/hooks/useContactMutations";
 import { useEstimateMutations } from "@/hooks/useEstimateMutations";
 import { Calendar, Filter, LayoutGrid, Table, ListChecks } from "lucide-react";
@@ -87,15 +87,86 @@ export default function FollowUps() {
     contact?: Contact;
   }>({ isOpen: false });
 
-  // Fetch the sales-process metadata to (a) decide whether to show the
-  // Sales Process view toggle and (b) pass step rows down so the new view
-  // can group tasks by step.
-  const { data: salesProcessData } = useQuery<{ process: SalesProcess; steps: SalesProcessStep[] }>({
-    queryKey: ["/api/sales-process"],
+  // Fetch every cadence the contractor has configured. The Sales Process
+  // view shows tasks across ALL active cadences (lead_created, lead/estimate
+  // status-change), not just the canonical lead_created one — otherwise a
+  // tenant with only an "Estimate Approved" cadence would never see the
+  // toggle.
+  const { data: cadences = [] } = useQuery<SalesProcess[]>({
+    queryKey: ["/api/sales-process/cadences"],
   });
-  const salesProcess = salesProcessData?.process;
-  const salesProcessSteps = salesProcessData?.steps ?? [];
-  const hasActiveSalesProcess = !!salesProcess?.active && salesProcessSteps.length > 0;
+  const activeCadences = cadences.filter(c => c.active);
+  // Pull each active cadence's steps in parallel so we can build a single
+  // stepsById map covering every cadence — task rows from any cadence then
+  // group correctly under their owning step.
+  const cadenceStepQueries = useQueries({
+    queries: activeCadences.map(c => ({
+      queryKey: ["/api/sales-process/cadences", c.id],
+    })),
+  });
+  const allSteps = cadenceStepQueries.flatMap(q => {
+    const data = q.data as { steps: SalesProcessStep[] } | undefined;
+    return data?.steps ?? [];
+  });
+  // Toggle visibility keys off "any active cadence" rather than waiting for
+  // the per-cadence step queries to resolve — otherwise a slow network can
+  // briefly hide the Sales Process toggle on first paint even though the
+  // contractor clearly has cadences turned on.
+  const hasActiveSalesProcess = activeCadences.length > 0;
+
+  // Lightweight pending-task count powering the toggle badge. Same query
+  // key the SalesProcessFollowUpView uses, so React Query dedupes — no
+  // extra request.
+  const pendingTaskWindowFrom = useState(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - 30);
+    return d.toISOString();
+  })[0];
+  const pendingTaskWindowTo = useState(() => {
+    const d = new Date();
+    d.setHours(23, 59, 59, 999);
+    d.setDate(d.getDate() + 7);
+    return d.toISOString();
+  })[0];
+  // Badge counts only `pending` tasks — `failed` rows are already surfaced in
+  // the NeedsAttention banner inside the Sales Process view, so including
+  // them here would double-count and overstate "open work to do".
+  const { data: pendingLeadTasks = [] } = useQuery<unknown[]>({
+    queryKey: [
+      "/api/sales-process/tasks",
+      { withLead: 1, status: "pending", from: pendingTaskWindowFrom, to: pendingTaskWindowTo },
+    ],
+    queryFn: async () => {
+      const url = new URL("/api/sales-process/tasks", window.location.origin);
+      url.searchParams.set("withLead", "1");
+      url.searchParams.set("status", "pending");
+      url.searchParams.set("from", pendingTaskWindowFrom);
+      url.searchParams.set("to", pendingTaskWindowTo);
+      const res = await fetch(url.pathname + url.search, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch sales-process tasks");
+      return res.json();
+    },
+    enabled: hasActiveSalesProcess,
+  });
+  const { data: pendingEstimateTasks = [] } = useQuery<unknown[]>({
+    queryKey: [
+      "/api/sales-process/tasks",
+      { withEstimate: 1, status: "pending", from: pendingTaskWindowFrom, to: pendingTaskWindowTo },
+    ],
+    queryFn: async () => {
+      const url = new URL("/api/sales-process/tasks", window.location.origin);
+      url.searchParams.set("withEstimate", "1");
+      url.searchParams.set("status", "pending");
+      url.searchParams.set("from", pendingTaskWindowFrom);
+      url.searchParams.set("to", pendingTaskWindowTo);
+      const res = await fetch(url.pathname + url.search, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch sales-process tasks");
+      return res.json();
+    },
+    enabled: hasActiveSalesProcess,
+  });
+  const pendingTaskCount = pendingLeadTasks.length + pendingEstimateTasks.length;
 
   // One-shot: when the sales-process metadata loads and the contractor has
   // an active process, switch to the new view *unless* the user has
@@ -447,8 +518,19 @@ export default function FollowUps() {
                   onClick={() => setViewMode("sales-process")}
                   data-testid="view-sales-process"
                   title="Sales Process"
+                  className="gap-1.5"
                 >
                   <ListChecks className="h-4 w-4" />
+                  <span className="hidden sm:inline">Sales Process</span>
+                  {pendingTaskCount > 0 && (
+                    <Badge
+                      variant={activeViewMode === "sales-process" ? "secondary" : "default"}
+                      className="text-xs px-1.5 min-w-[1.25rem] h-5"
+                      data-testid="badge-sales-process-count"
+                    >
+                      {pendingTaskCount}
+                    </Badge>
+                  )}
                 </Button>
               )}
             </div>
@@ -476,8 +558,8 @@ export default function FollowUps() {
 
       {activeViewMode === "sales-process" ? (
         <SalesProcessFollowUpView
-          process={salesProcess}
-          steps={salesProcessSteps}
+          cadences={activeCadences}
+          steps={allSteps}
           onOpenLead={handleOpenLeadFromSalesProcess}
         />
       ) : activeViewMode === "spreadsheet" ? (
