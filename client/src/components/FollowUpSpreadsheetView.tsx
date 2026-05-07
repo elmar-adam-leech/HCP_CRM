@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { Fragment, memo, useState } from "react";
 import {
   Table,
   TableBody,
@@ -37,7 +37,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { CallButton } from "./CallButton";
 import { TextButton } from "./TextButton";
 import { EmailButton } from "./EmailButton";
-import { FollowUpItem, getFollowUpStatus } from "./FollowUpCard";
+import { FollowUpItem, getFollowUpStatus, buildFollowUpVars } from "./FollowUpCard";
+import { StepCoachingPopover, hasCoaching, renderTemplate } from "./StepCoachingPopover";
 import { formatDateSpreadsheet, formatCurrency } from "@/lib/utils";
 
 type FollowUpSpreadsheetViewProps = {
@@ -60,6 +61,16 @@ export const FollowUpSpreadsheetView = memo(function FollowUpSpreadsheetView({
   onRemoveFollowUp,
 }: FollowUpSpreadsheetViewProps) {
   const [sortDir, setSortDir] = useState<"asc" | "desc" | null>(null);
+  // Per-row toggle: when the rep clicks Call on a row whose linked sales-
+  // process step has a callScript, we expand a sub-row underneath with the
+  // talk track so it stays visible alongside the dialer. Task #729.
+  const [openCallTrack, setOpenCallTrack] = useState<Set<string>>(new Set());
+  const toggleCallTrack = (id: string) =>
+    setOpenCallTrack((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
 
   function handleFollowUpDateSort() {
     setSortDir((prev) => {
@@ -156,10 +167,22 @@ export const FollowUpSpreadsheetView = memo(function FollowUpSpreadsheetView({
           {sortedItems.map((item) => {
             const status = getFollowUpStatus(item.followUpDate);
             const StatusIcon = status.icon;
+            const coachingActionType = item.stepActionType ?? "call";
+            const coachingVars = buildFollowUpVars(item);
+            const renderedCallTrack = item.stepCallScript
+              ? renderTemplate(item.stepCallScript, coachingVars)
+              : "";
+            const renderedMessageTemplate = item.stepMessageTemplate
+              ? renderTemplate(item.stepMessageTemplate, coachingVars)
+              : "";
+            const showCallTrackRow =
+              coachingActionType === "call" &&
+              renderedCallTrack &&
+              openCallTrack.has(item.id);
 
             return (
+              <Fragment key={`${item.type}-${item.id}`}>
               <TableRow
-                key={`${item.type}-${item.id}`}
                 data-testid={`row-followup-${item.id}`}
               >
                 <TableCell className="font-medium">
@@ -202,6 +225,25 @@ export const FollowUpSpreadsheetView = memo(function FollowUpSpreadsheetView({
                 </TableCell>
                 <TableCell onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center gap-1">
+                    {(() => {
+                      const at = item.stepActionType ?? "call";
+                      if (!hasCoaching({
+                        actionType: at,
+                        guidance: item.stepGuidance,
+                        callScript: item.stepCallScript,
+                        messageTemplate: item.stepMessageTemplate,
+                      })) return null;
+                      return (
+                        <StepCoachingPopover
+                          actionType={at}
+                          guidance={item.stepGuidance}
+                          callScript={item.stepCallScript}
+                          messageTemplate={item.stepMessageTemplate}
+                          vars={buildFollowUpVars(item)}
+                          testId={`followup-script-${item.id}`}
+                        />
+                      );
+                    })()}
                     <CallButton
                       recipientName={item.name}
                       recipientPhone={item.phone || ""}
@@ -209,6 +251,11 @@ export const FollowUpSpreadsheetView = memo(function FollowUpSpreadsheetView({
                       estimateId={item.type === "estimate" ? item.id : undefined}
                       variant="ghost"
                       size="icon"
+                      onClickBeforeCall={() => {
+                        if (coachingActionType === "call" && renderedCallTrack) {
+                          toggleCallTrack(item.id);
+                        }
+                      }}
                     />
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -230,6 +277,12 @@ export const FollowUpSpreadsheetView = memo(function FollowUpSpreadsheetView({
                               source={item.source}
                               notes={item.notes}
                               followUpDate={item.followUpDate}
+                              guidance={item.stepGuidance}
+                              initialMessage={
+                                coachingActionType === "text" && renderedMessageTemplate
+                                  ? renderedMessageTemplate
+                                  : undefined
+                              }
                             />
                           ) : (
                             <Button
@@ -319,6 +372,19 @@ export const FollowUpSpreadsheetView = memo(function FollowUpSpreadsheetView({
                   </DropdownMenu>
                 </TableCell>
               </TableRow>
+              {showCallTrackRow && (
+                <TableRow data-testid={`row-followup-call-track-${item.id}`}>
+                  <TableCell colSpan={8} className="bg-muted/30">
+                    <div className="text-sm whitespace-pre-wrap">
+                      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-1">
+                        Call talk track
+                      </div>
+                      {renderedCallTrack}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )}
+              </Fragment>
             );
           })}
         </TableBody>

@@ -63,6 +63,12 @@ export const salesProcessSteps = pgTable("sales_process_steps", {
   actionType: salesProcessActionTypeEnum("action_type").notNull(),
   mode: salesProcessStepModeEnum("mode").notNull().default("manual"),
   messageTemplate: text("message_template"),
+  // Optional rep coaching surfaced on the Follow-Ups page. `callScript` is
+  // shown for `actionType === 'call'` (calls have no messageTemplate);
+  // `guidance` is shown for any action type. Both nullable; UI hides the
+  // affordance when empty. See task #729.
+  callScript: text("call_script"),
+  guidance: text("guidance"),
   displayOrder: integer("display_order").notNull().default(0),
   archivedAt: timestamp("archived_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),

@@ -160,6 +160,10 @@ export function registerContactRoutes(app: Express): void {
       source?: string;
       status?: string;
       contactId?: string;
+      stepActionType?: "call" | "text" | "email";
+      stepGuidance?: string | null;
+      stepCallScript?: string | null;
+      stepMessageTemplate?: string | null;
     };
 
     type UnionRow = {
@@ -176,6 +180,10 @@ export function registerContactRoutes(app: Express): void {
       source: string | null;
       status: string | null;
       contact_id: string | null;
+      step_action_type: "call" | "text" | "email" | null;
+      step_guidance: string | null;
+      step_call_script: string | null;
+      step_message_template: string | null;
     };
 
     // Server-side filter on follow_up_date so the UI can scope to a
@@ -190,11 +198,14 @@ export function registerContactRoutes(app: Express): void {
       : drizzleSql``;
 
     // Single UNION ALL query — each leg explicitly filters on contractor_id to
-    // maintain multi-tenant isolation even if a future refactor removes the outer
-    // guard. Results are sorted and limited in SQL to avoid in-process sorting.
-    // We run a parallel COUNT query (same UNION + filters) so an out-of-range
-    // offset still reports the true total instead of 0 — important for shared
-    // deep links where the page index outlives the data set.
+    // maintain multi-tenant isolation even if a future refactor removes the
+    // outer guard. The lead leg LATERAL-joins the next pending sales-process
+    // step task to attach optional rep coaching (call script / message
+    // template / guidance, task #729). Results are sorted and limited in SQL
+    // to avoid in-process sorting. We run a parallel COUNT query (same UNION
+    // + filters) so an out-of-range offset still reports the true total
+    // instead of 0 — important for shared deep links where the page index
+    // outlives the data set.
     const allFollowupsCte = drizzleSql`
       all_followups AS (
         SELECT
@@ -210,8 +221,22 @@ export function registerContactRoutes(app: Express): void {
           c.notes              AS notes,
           c.source             AS source,
           c.status::text       AS status,
-          NULL::text           AS contact_id
+          NULL::text           AS contact_id,
+          coaching.action_type::text AS step_action_type,
+          coaching.guidance          AS step_guidance,
+          coaching.call_script       AS step_call_script,
+          coaching.message_template  AS step_message_template
         FROM contacts c
+        LEFT JOIN LATERAL (
+          SELECT s.action_type, s.guidance, s.call_script, s.message_template
+          FROM sales_process_task_instances ti
+          JOIN sales_process_steps s ON s.id = ti.step_id
+          WHERE ti.contractor_id = ${contractorId}
+            AND ti.lead_id = c.id
+            AND ti.status = 'pending'
+          ORDER BY ti.due_at ASC
+          LIMIT 1
+        ) coaching ON true
         WHERE c.contractor_id = ${contractorId}
           AND c.follow_up_date IS NOT NULL
 
@@ -230,9 +255,23 @@ export function registerContactRoutes(app: Express): void {
           e.description                                               AS notes,
           NULL::text                                                  AS source,
           e.status::text                                              AS status,
-          e.contact_id                                                AS contact_id
+          e.contact_id                                                AS contact_id,
+          coaching.action_type::text                                  AS step_action_type,
+          coaching.guidance                                           AS step_guidance,
+          coaching.call_script                                        AS step_call_script,
+          coaching.message_template                                   AS step_message_template
         FROM estimates e
         LEFT JOIN contacts ct ON ct.id = e.contact_id
+        LEFT JOIN LATERAL (
+          SELECT s.action_type, s.guidance, s.call_script, s.message_template
+          FROM sales_process_task_instances ti
+          JOIN sales_process_steps s ON s.id = ti.step_id
+          WHERE ti.contractor_id = ${contractorId}
+            AND ti.estimate_id = e.id
+            AND ti.status = 'pending'
+          ORDER BY ti.due_at ASC
+          LIMIT 1
+        ) coaching ON true
         WHERE e.contractor_id = ${contractorId}
           AND e.follow_up_date IS NOT NULL
 
@@ -251,7 +290,11 @@ export function registerContactRoutes(app: Express): void {
           j.notes                                                      AS notes,
           NULL::text                                                   AS source,
           j.status::text                                               AS status,
-          j.contact_id                                                 AS contact_id
+          j.contact_id                                                 AS contact_id,
+          NULL::text                                                   AS step_action_type,
+          NULL::text                                                   AS step_guidance,
+          NULL::text                                                   AS step_call_script,
+          NULL::text                                                   AS step_message_template
         FROM jobs j
         LEFT JOIN contacts ct ON ct.id = j.contact_id
         WHERE j.contractor_id = ${contractorId}
@@ -303,6 +346,10 @@ export function registerContactRoutes(app: Express): void {
       source: row.source ?? undefined,
       status: row.status ?? undefined,
       contactId: row.contact_id ?? undefined,
+      stepActionType: row.step_action_type ?? undefined,
+      stepGuidance: row.step_guidance,
+      stepCallScript: row.step_call_script,
+      stepMessageTemplate: row.step_message_template,
     }));
 
     const total = countResult.rows[0]?.total_count ?? 0;

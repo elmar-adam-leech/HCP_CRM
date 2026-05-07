@@ -848,6 +848,15 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `CREATE UNIQUE INDEX IF NOT EXISTS "sales_process_steps_unique_per_process" ON "sales_process_steps"("sales_process_id", "day_offset", "action_type") WHERE "archived_at" IS NULL`,
       description: 'sales_process_steps unique (process, day_offset, action_type) WHERE archived_at IS NULL',
     },
+    // Task #729: per-step rep coaching surfaced on the Follow-Ups page.
+    {
+      sql: `ALTER TABLE "sales_process_steps" ADD COLUMN IF NOT EXISTS "call_script" text`,
+      description: 'sales_process_steps.call_script (rep call talk track, task #729)',
+    },
+    {
+      sql: `ALTER TABLE "sales_process_steps" ADD COLUMN IF NOT EXISTS "guidance" text`,
+      description: 'sales_process_steps.guidance (rep coaching/why-this-step text, task #729)',
+    },
     // Task #567: multiple cadences per tenant with triggers/targets. The
     // schema added these columns but the previous PR forgot to register the
     // runtime drift migrations — without them the boot-time drift check

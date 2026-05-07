@@ -22,6 +22,13 @@ interface CallButtonProps {
   leadId?: string;
   estimateId?: string;
   onCallCompleted?: () => void;
+  /**
+   * Hook fired the moment the user clicks the Call button, before any dialing
+   * side effects (modal open, Dialpad initiate, tel: handoff). Used by the
+   * Follow-Ups task row to reveal an inline call talk-track panel as soon as
+   * the rep starts the call. Task #729.
+   */
+  onClickBeforeCall?: () => void;
 }
 
 export function CallButton({ 
@@ -35,7 +42,8 @@ export function CallButton({
   customerId,
   leadId,
   estimateId: _estimateId,
-  onCallCompleted
+  onCallCompleted,
+  onClickBeforeCall,
 }: CallButtonProps) {
   const { toast } = useToast();
   const { calling } = useProviderStatus();
@@ -108,6 +116,7 @@ export function CallButton({
   });
 
   const handleCall = async () => {
+    onClickBeforeCall?.();
     if (!recipientPhone) {
       toast({
         title: "No phone number",

@@ -36,6 +36,8 @@ interface StepDraft {
   actionType: ActionType;
   mode: StepMode;
   messageTemplate: string;
+  callScript: string;
+  guidance: string;
 }
 
 interface CadenceListItem extends SalesProcess {
@@ -59,6 +61,8 @@ function toDraft(step: SalesProcessStep): StepDraft {
     actionType: step.actionType as ActionType,
     mode: step.mode as StepMode,
     messageTemplate: step.messageTemplate ?? '',
+    callScript: step.callScript ?? '',
+    guidance: step.guidance ?? '',
   };
 }
 
@@ -421,6 +425,8 @@ function CadenceEditor({ cadenceId, onDelete, isDeleting }: CadenceEditorProps) 
           actionType: s.actionType,
           mode: s.mode,
           messageTemplate: s.actionType === 'call' ? null : (s.messageTemplate || null),
+          callScript: s.actionType === 'call' ? (s.callScript || null) : null,
+          guidance: s.guidance || null,
           displayOrder: i,
         })),
       });
@@ -459,6 +465,7 @@ function CadenceEditor({ cadenceId, onDelete, isDeleting }: CadenceEditorProps) 
         key: newKey(),
         dayOffset: prev.length === 0 ? 1 : (prev[prev.length - 1].dayOffset + 3),
         actionType: 'call', mode: 'manual', messageTemplate: '',
+        callScript: '', guidance: '',
       },
     ]);
   };
@@ -648,6 +655,42 @@ function CadenceEditor({ cadenceId, onDelete, isDeleting }: CadenceEditorProps) 
                   </p>
                 </div>
               )}
+              {step.actionType === 'call' && (
+                <div className="space-y-1">
+                  <Label htmlFor={`script-${step.key}`} className="text-sm">
+                    Call script <span className="text-muted-foreground">(optional)</span>
+                  </Label>
+                  <Textarea
+                    id={`script-${step.key}`}
+                    rows={4}
+                    placeholder="Hi {first_name}, this is [Your Name] calling about your HVAC quote request. Got a minute to walk through what you're looking for?"
+                    value={step.callScript}
+                    onChange={(e) => updateStep(step.key, { callScript: e.target.value })}
+                    className="resize-y border text-sm"
+                    data-testid={`textarea-call-script-${step.key}`}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Talk track shown to the rep on the Follow-Ups page when they click Call.
+                  </p>
+                </div>
+              )}
+              <div className="space-y-1">
+                <Label htmlFor={`guidance-${step.key}`} className="text-sm">
+                  Why this step <span className="text-muted-foreground">(optional)</span>
+                </Label>
+                <Textarea
+                  id={`guidance-${step.key}`}
+                  rows={2}
+                  placeholder="Goal: confirm interest and lock in a site visit. Lead is still warm at this point."
+                  value={step.guidance}
+                  onChange={(e) => updateStep(step.key, { guidance: e.target.value })}
+                  className="resize-y border text-sm"
+                  data-testid={`textarea-guidance-${step.key}`}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Coaching note shown to the rep alongside the script on the Follow-Ups page.
+                </p>
+              </div>
               {err && (
                 <p className="text-sm text-destructive" data-testid={`error-${step.key}`}>{err}</p>
               )}

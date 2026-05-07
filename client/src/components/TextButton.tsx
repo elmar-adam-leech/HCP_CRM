@@ -38,6 +38,10 @@ interface TextButtonProps {
    * step's templated message.
    */
   initialMessage?: string;
+  /**
+   * Optional step guidance shown as a banner in the compose modal. Task #729.
+   */
+  guidance?: string | null;
 }
 
 export function TextButton({
@@ -60,6 +64,7 @@ export function TextButton({
   hasUnread,
   onSent,
   initialMessage,
+  guidance,
 }: TextButtonProps) {
   const { data: currentUser } = useCurrentUser();
   const { sms } = useProviderStatus();
@@ -216,6 +221,15 @@ export function TextButton({
           <p id="personal-sms-description" className="text-sm text-muted-foreground">
             Choose a template to pre-fill your message, then open your SMS app.
           </p>
+          {guidance && guidance.trim() && (
+            <div
+              className="rounded-md border bg-muted/40 p-2 text-xs text-muted-foreground whitespace-pre-wrap"
+              data-testid="text-button-personal-guidance"
+            >
+              <div className="font-medium uppercase tracking-wide mb-1">Why this step</div>
+              {guidance}
+            </div>
+          )}
           <div className="grid gap-4">
             {templates.length > 0 && (
               <div className="grid gap-2">
@@ -292,6 +306,7 @@ export function TextButton({
         estimateId={estimateId}
         onSent={onSent}
         initialMessage={initialMessage}
+        guidance={guidance}
       />
     </>
   );

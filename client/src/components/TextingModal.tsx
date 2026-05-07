@@ -37,6 +37,12 @@ interface TextingModalProps {
    * SMS for provider-backed sending.
    */
   initialMessage?: string;
+  /**
+   * Optional rep-facing guidance ("why this step") shown as a banner above
+   * the textarea. Sourced from the linked sales-process step. Hidden when
+   * empty. Task #729.
+   */
+  guidance?: string | null;
 }
 
 export function TextingModal({
@@ -52,6 +58,7 @@ export function TextingModal({
   estimateId,
   onSent,
   initialMessage,
+  guidance,
 }: TextingModalProps) {
   const [, navigate] = useLocation();
   const [message, setMessage] = useState(initialMessage ?? "");
@@ -269,6 +276,16 @@ export function TextingModal({
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+          )}
+          {/* Step guidance banner (task #729) */}
+          {guidance && guidance.trim() && (
+            <div
+              className="rounded-md border bg-muted/40 p-2 text-xs text-muted-foreground whitespace-pre-wrap"
+              data-testid="texting-modal-guidance"
+            >
+              <div className="font-medium uppercase tracking-wide mb-1">Why this step</div>
+              {guidance}
             </div>
           )}
           {/* New Message */}

@@ -12,6 +12,8 @@ import {
 import { ActivityList } from "@/components/ActivityList";
 import { TextButton } from "@/components/TextButton";
 import { CallButton } from "@/components/CallButton";
+import { StepCoachingPopover, hasCoaching, renderTemplate } from "@/components/StepCoachingPopover";
+import { useState } from "react";
 import { isPast, isToday, isThisWeek } from "date-fns";
 
 export interface FollowUpItem {
@@ -31,6 +33,24 @@ export interface FollowUpItem {
   status?: string;
   customerId?: string;
   contactId?: string;
+  // Optional coaching pulled from the next pending sales-process step task
+  // for this lead/estimate. Hidden when empty. Task #729.
+  stepActionType?: 'call' | 'text' | 'email';
+  stepGuidance?: string | null;
+  stepCallScript?: string | null;
+  stepMessageTemplate?: string | null;
+}
+
+export function buildFollowUpVars(item: FollowUpItem): Record<string, string> {
+  const [first, ...rest] = (item.name || "").split(/\s+/);
+  return {
+    first_name: first ?? "",
+    last_name: rest.join(" "),
+    full_name: item.name ?? "",
+    email: item.email ?? "",
+    phone: item.phone ?? "",
+    lead_source: item.source ?? "",
+  };
 }
 
 export function getFollowUpStatus(followUpDate: string) {
@@ -65,6 +85,24 @@ export function FollowUpCard({
   const status = getFollowUpStatus(item.followUpDate);
   const StatusIcon = status.icon;
   const TypeIcon = item.type === 'lead' ? User : item.type === 'estimate' ? FileText : Briefcase;
+  const coachingActionType = item.stepActionType ?? 'call';
+  const showCoachingPopover = hasCoaching({
+    actionType: coachingActionType,
+    guidance: item.stepGuidance,
+    callScript: item.stepCallScript,
+    messageTemplate: item.stepMessageTemplate,
+  });
+  const coachingVars = buildFollowUpVars(item);
+  // When the rep clicks Call on a follow-up that has a sales-process call
+  // script, reveal an inline talk-track panel so the script stays visible
+  // beside the dialer. Hidden until call is initiated. Task #729.
+  const [showCallTrack, setShowCallTrack] = useState(false);
+  const renderedCallTrack = item.stepCallScript
+    ? renderTemplate(item.stepCallScript, coachingVars)
+    : "";
+  const renderedMessageTemplate = item.stepMessageTemplate
+    ? renderTemplate(item.stepMessageTemplate, coachingVars)
+    : "";
 
   const typeLabel = item.type === 'lead' ? 'Lead' : item.type === 'estimate' ? 'Estimate' : 'Job';
   const editLabel = item.type === 'lead' ? 'Edit Lead' : item.type === 'estimate' ? 'Edit Estimate' : 'Edit Job';
@@ -159,7 +197,17 @@ export function FollowUpCard({
           )}
         </div>
 
-        <div className="flex items-center gap-2 pt-2">
+        <div className="flex items-center gap-2 pt-2 flex-wrap">
+          {showCoachingPopover && (
+            <StepCoachingPopover
+              actionType={coachingActionType}
+              guidance={item.stepGuidance}
+              callScript={item.stepCallScript}
+              messageTemplate={item.stepMessageTemplate}
+              vars={coachingVars}
+              testId={`followup-script-${item.id}`}
+            />
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -177,6 +225,9 @@ export function FollowUpCard({
               estimateId={item.type === 'estimate' ? item.id : undefined}
               variant="outline"
               size="sm"
+              onClickBeforeCall={() => {
+                if (coachingActionType === 'call' && renderedCallTrack) setShowCallTrack(true);
+              }}
             />
           )}
           {item.email && (
@@ -205,9 +256,27 @@ export function FollowUpCard({
               source={item.source}
               notes={item.notes}
               followUpDate={item.followUpDate}
+              guidance={item.stepGuidance}
+              initialMessage={
+                coachingActionType === 'text' && renderedMessageTemplate
+                  ? renderedMessageTemplate
+                  : undefined
+              }
             />
           )}
         </div>
+
+        {coachingActionType === 'call' && showCallTrack && renderedCallTrack && (
+          <div
+            className="text-sm rounded-md border bg-muted/40 p-2 whitespace-pre-wrap"
+            data-testid={`followup-call-track-${item.id}`}
+          >
+            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-1">
+              Call talk track
+            </div>
+            {renderedCallTrack}
+          </div>
+        )}
 
         <div className="mt-4">
           <ActivityList

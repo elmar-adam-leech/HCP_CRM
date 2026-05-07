@@ -7,6 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { CallButton } from "@/components/CallButton";
 import { TextButton } from "@/components/TextButton";
 import { EmailButton } from "@/components/EmailButton";
+import { StepCoachingPopover, hasCoaching, renderTemplate as renderCoaching } from "@/components/StepCoachingPopover";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -24,7 +25,7 @@ interface SalesProcessTaskRowProps {
   task: TaskInstanceWithLead;
   step: SalesProcessStep | undefined;
   onOpenLead: (leadId: string) => void;
-  onComposeEmail: (task: TaskInstanceWithLead, prefilledContent?: string) => void;
+  onComposeEmail: (task: TaskInstanceWithLead, prefilledContent?: string, guidance?: string | null) => void;
 }
 
 export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
@@ -80,6 +81,10 @@ export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
 
   const [reschedOpen, setReschedOpen] = useState(false);
   const [pickedDate, setPickedDate] = useState<Date | undefined>();
+  // Inline talk-track panel — toggled on the moment the rep clicks Call so
+  // they have the script visible while the dialer is launching. Hidden until
+  // a call is initiated and only available when the step has a callScript.
+  const [showCallTrack, setShowCallTrack] = useState(false);
 
   const rescheduleMutation = useMutation<unknown, Error, Date, RemoveContext>({
     mutationFn: async (nextDueAt: Date) => {
@@ -201,6 +206,15 @@ export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
   const renderedTemplate = step?.messageTemplate
     ? renderTemplate(step.messageTemplate, vars)
     : "";
+  const renderedCallTrack = step?.callScript
+    ? renderCoaching(step.callScript, vars)
+    : "";
+  const showCoachingPopover = step ? hasCoaching({
+    actionType: step.actionType as "call" | "text" | "email",
+    guidance: step.guidance,
+    callScript: step.callScript,
+    messageTemplate: step.messageTemplate,
+  }) : false;
 
   return (
     <div
@@ -254,9 +268,30 @@ export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
             {renderedTemplate}
           </div>
         )}
+        {!isAuto && action === "call" && showCallTrack && renderedCallTrack && (
+          <div
+            className="text-sm rounded-md border bg-muted/40 p-2 whitespace-pre-wrap"
+            data-testid={`task-row-call-track-${task.id}`}
+          >
+            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-1">
+              Call talk track
+            </div>
+            {renderedCallTrack}
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-2 flex-wrap shrink-0">
+        {showCoachingPopover && step && (
+          <StepCoachingPopover
+            actionType={step.actionType as "call" | "text" | "email"}
+            guidance={step.guidance}
+            callScript={step.callScript}
+            messageTemplate={step.messageTemplate}
+            vars={vars}
+            testId={`task-row-script-${task.id}`}
+          />
+        )}
         {/* For manual steps we render every channel that the lead has
             contact info for (so users can pick whatever feels right) and
             highlight the prescribed channel as the default-variant button.
@@ -268,6 +303,9 @@ export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
             leadId={lead.id}
             variant={action === "call" ? "default" : "outline"}
             size="sm"
+            onClickBeforeCall={() => {
+              if (action === "call" && renderedCallTrack) setShowCallTrack(true);
+            }}
             onCallCompleted={() => {
               queryClient.invalidateQueries({ queryKey: ["/api/sales-process/tasks"] });
             }}
@@ -285,6 +323,7 @@ export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
             variant={action === "text" ? "default" : "outline"}
             size="sm"
             initialMessage={action === "text" ? renderedTemplate : undefined}
+            guidance={step?.guidance ?? undefined}
             onSent={() => {
               queryClient.invalidateQueries({ queryKey: ["/api/sales-process/tasks"] });
             }}
@@ -296,7 +335,7 @@ export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
             recipientEmail={lead.email}
             leadId={lead.id}
             onSendEmail={() =>
-              onComposeEmail(task, action === "email" ? renderedTemplate : undefined)
+              onComposeEmail(task, action === "email" ? renderedTemplate : undefined, step?.guidance)
             }
             variant={action === "email" ? "default" : "outline"}
             size="sm"

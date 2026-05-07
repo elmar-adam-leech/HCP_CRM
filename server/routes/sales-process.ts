@@ -17,6 +17,9 @@ const stepInputSchema = z.object({
   actionType: z.enum(['call', 'text', 'email']),
   mode: z.enum(['manual', 'auto']),
   messageTemplate: z.string().nullable().optional(),
+  // Task #729 — optional rep coaching surfaced on the Follow-Ups page.
+  callScript: z.string().max(5000).nullable().optional(),
+  guidance: z.string().max(5000).nullable().optional(),
   displayOrder: z.number().int().min(0).default(0),
 });
 

@@ -187,6 +187,7 @@ export function SalesProcessFollowUpView({
     isOpen: boolean;
     task?: TaskInstanceWithLead;
     initialContent?: string;
+    guidance?: string;
   }>({ isOpen: false });
   const [upcomingOpen, setUpcomingOpen] = useState(false);
 
@@ -326,8 +327,12 @@ export function SalesProcessFollowUpView({
       }));
   }, [upcoming, stepsById]);
 
-  const handleComposeEmail = (task: TaskInstanceWithLead, prefilledContent?: string) => {
-    setEmailModal({ isOpen: true, task, initialContent: prefilledContent });
+  const handleComposeEmail = (
+    task: TaskInstanceWithLead,
+    prefilledContent?: string,
+    guidance?: string | null,
+  ) => {
+    setEmailModal({ isOpen: true, task, initialContent: prefilledContent, guidance: guidance ?? undefined });
   };
 
   const isLoading = pastDueQ.isLoading || todayQ.isLoading || tomorrowQ.isLoading || upcomingQ.isLoading;
@@ -711,6 +716,7 @@ export function SalesProcessFollowUpView({
           contactId={emailModal.task.lead.contactId}
           leadId={emailModal.task.lead.id}
           initialContent={emailModal.initialContent}
+          guidance={emailModal.guidance}
           onSent={() => {
             queryClient.invalidateQueries({ queryKey: ["/api/sales-process/tasks"] });
           }}

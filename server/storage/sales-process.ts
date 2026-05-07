@@ -168,6 +168,8 @@ interface UpsertStepInput {
   actionType: 'call' | 'text' | 'email';
   mode: 'manual' | 'auto';
   messageTemplate?: string | null;
+  callScript?: string | null;
+  guidance?: string | null;
   displayOrder: number;
 }
 
@@ -234,14 +236,18 @@ async function upsertCadence(
       if (ex) {
         const modeChanged = ex.mode !== s.mode;
         const tplChanged = (ex.messageTemplate ?? null) !== (s.messageTemplate ?? null);
+        const scriptChanged = (ex.callScript ?? null) !== (s.callScript ?? null);
+        const guidanceChanged = (ex.guidance ?? null) !== (s.guidance ?? null);
         const updatedRow = await tx.update(salesProcessSteps).set({
           mode: s.mode,
           messageTemplate: s.messageTemplate ?? null,
+          callScript: s.callScript ?? null,
+          guidance: s.guidance ?? null,
           displayOrder: s.displayOrder,
           updatedAt: new Date(),
         }).where(eq(salesProcessSteps.id, ex.id)).returning();
         finalSteps.push(updatedRow[0]);
-        if (modeChanged || tplChanged) changedStepIds.push(ex.id);
+        if (modeChanged || tplChanged || scriptChanged || guidanceChanged) changedStepIds.push(ex.id);
         if (modeChanged) {
           await tx.update(salesProcessTaskInstances).set({ mode: s.mode })
             .where(and(
@@ -256,6 +262,8 @@ async function upsertCadence(
           actionType: s.actionType,
           mode: s.mode,
           messageTemplate: s.messageTemplate ?? null,
+          callScript: s.callScript ?? null,
+          guidance: s.guidance ?? null,
           displayOrder: s.displayOrder,
         }).returning();
         finalSteps.push(created[0]);

@@ -28,7 +28,8 @@ import {
 import { EmailComposerModal } from "@/components/EmailComposerModal";
 import { HousecallProSchedulingModal } from "@/components/HousecallProSchedulingModal";
 import { FollowUpDateModal } from "@/components/FollowUpDateModal";
-import { FollowUpCard, FollowUpItem } from "@/components/FollowUpCard";
+import { FollowUpCard, FollowUpItem, buildFollowUpVars } from "@/components/FollowUpCard";
+import { renderTemplate } from "@/components/StepCoachingPopover";
 import { FollowUpSpreadsheetView } from "@/components/FollowUpSpreadsheetView";
 import { SalesProcessFollowUpView } from "@/components/SalesProcessFollowUpView";
 import type { SalesProcess, SalesProcessStep } from "@shared/schema";
@@ -797,18 +798,29 @@ export default function FollowUps() {
       )}
 
       {/* Email Composer Modal */}
-      {emailModal.item && (
-        <EmailComposerModal
-          isOpen={emailModal.isOpen}
-          onClose={() => setEmailModal({ isOpen: false })}
-          recipientName={emailModal.item.name}
-          recipientEmail={emailModal.item.email || ''}
-          recipientPhone={emailModal.item.phone || ''}
-          companyName={contractorName}
-          contactId={emailModal.item.type === 'lead' ? emailModal.item.id : (emailModal.item.contactId ?? undefined)}
-          estimateId={emailModal.item.type === 'estimate' ? emailModal.item.id : undefined}
-        />
-      )}
+      {emailModal.item && (() => {
+        const item = emailModal.item;
+        const vars = buildFollowUpVars(item);
+        const guidance = item.stepGuidance ?? undefined;
+        const initialContent =
+          item.stepActionType === 'email' && item.stepMessageTemplate
+            ? renderTemplate(item.stepMessageTemplate, vars)
+            : undefined;
+        return (
+          <EmailComposerModal
+            isOpen={emailModal.isOpen}
+            onClose={() => setEmailModal({ isOpen: false })}
+            recipientName={item.name}
+            recipientEmail={item.email || ''}
+            recipientPhone={item.phone || ''}
+            companyName={contractorName}
+            contactId={item.type === 'lead' ? item.id : (item.contactId ?? undefined)}
+            estimateId={item.type === 'estimate' ? item.id : undefined}
+            guidance={guidance}
+            initialContent={initialContent}
+          />
+        );
+      })()}
 
       {/* Housecall Pro Scheduling Modal */}
       {schedulingModal.item && (

@@ -45,6 +45,12 @@ interface EmailComposerModalProps {
    * Optional pre-filled body content. Seeds the message textarea on open.
    */
   initialContent?: string;
+  /**
+   * Optional rep-facing guidance ("why this step") shown as a banner above
+   * the message field. Sourced from the linked sales-process step. Hidden
+   * when empty. Task #729.
+   */
+  guidance?: string | null;
 }
 
 export function EmailComposerModal({
@@ -62,6 +68,7 @@ export function EmailComposerModal({
   onSent,
   initialSubject,
   initialContent,
+  guidance,
 }: EmailComposerModalProps) {
   const [, navigate] = useLocation();
   const [subject, setSubject] = useState(initialSubject ?? "");
@@ -350,6 +357,17 @@ export function EmailComposerModal({
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+          )}
+
+          {/* Step guidance banner (task #729) */}
+          {guidance && guidance.trim() && (
+            <div
+              className="rounded-md border bg-muted/40 p-2 text-xs text-muted-foreground whitespace-pre-wrap"
+              data-testid="email-composer-guidance"
+            >
+              <div className="font-medium uppercase tracking-wide mb-1">Why this step</div>
+              {guidance}
             </div>
           )}
 
