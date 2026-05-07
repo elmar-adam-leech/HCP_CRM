@@ -30,6 +30,27 @@ export function isTerminalEstimateStatus(status: string | null | undefined): boo
   return !!status && TERMINAL_ESTIMATE_STATUSES.includes(status);
 }
 
+/**
+ * Effective stop set for a cadence: implicit terminals (always-on for the
+ * cadence's entity type) merged with the user-configured `stopStatuses`.
+ * Used by every "should this cadence keep running for this entity?" check.
+ */
+export function getCadenceStopSet(cadence: Pick<SalesProcess, 'entityType' | 'stopStatuses'>): Set<string> {
+  const implicit = cadence.entityType === 'estimate'
+    ? TERMINAL_ESTIMATE_STATUSES
+    : TERMINAL_LEAD_STATUSES;
+  const configured = cadence.stopStatuses ?? [];
+  return new Set([...implicit, ...configured]);
+}
+
+export function shouldStopCadenceForStatus(
+  cadence: Pick<SalesProcess, 'entityType' | 'stopStatuses'>,
+  status: string | null | undefined,
+): boolean {
+  if (!status) return false;
+  return getCadenceStopSet(cadence).has(status);
+}
+
 /** Activity types that can satisfy a sales-process step. */
 function activityTypeToStepActionType(activityType: string): 'call' | 'text' | 'email' | null {
   switch (activityType) {
@@ -120,7 +141,7 @@ export async function materializeForLead(lead: Lead, tx?: DbTx): Promise<number>
       entityId: lead.id,
       contractorId: lead.contractorId,
       anchorAt: lead.createdAt ?? new Date(),
-      terminal: isTerminalLeadStatus(lead.status),
+      terminal: shouldStopCadenceForStatus(cad, lead.status),
     }, 'lead_created', tx);
   }
   return total;
@@ -163,7 +184,7 @@ export async function enrollLead(
       entityId: lead.id,
       contractorId,
       anchorAt,
-      terminal: false,
+      terminal: shouldStopCadenceForStatus(cad, lead.status),
     }, opts.reason === 'created' ? 'lead_created' : 'lead_status_changed');
   }
   return total;
@@ -199,7 +220,7 @@ export async function enrollEstimate(
       entityId: estimate.id,
       contractorId,
       anchorAt: new Date(),
-      terminal: false,
+      terminal: shouldStopCadenceForStatus(cad, estimate.status),
     }, 'estimate_status_changed');
   }
   return total;
@@ -221,10 +242,14 @@ async function runLeadCadenceBackfill(
   status?: string,
 ): Promise<{ leadsTouched: number; tasksCreated: number }> {
   if (!process.active || steps.length === 0) return { leadsTouched: 0, tasksCreated: 0 };
-  const openLeads = await storage.getOpenLeadsForBackfill(contractorId, status);
+  const stopSet = Array.from(getCadenceStopSet(process));
+  const openLeads = await storage.getOpenLeadsForBackfill(contractorId, status, stopSet);
   let leadsTouched = 0;
   let tasksCreated = 0;
   for (const lead of openLeads) {
+    // Belt-and-suspenders: storage query already filters the stop set out
+    // in SQL, but in-memory recheck guards against direct/legacy callers.
+    if (shouldStopCadenceForStatus(process, lead.status)) continue;
     const inserted = await materializeForEntity(process, steps, {
       entityType: 'lead',
       entityId: lead.id,
@@ -247,10 +272,12 @@ async function runEstimateCadenceBackfill(
   targetStatus: string,
 ): Promise<{ leadsTouched: number; tasksCreated: number }> {
   if (!process.active || steps.length === 0) return { leadsTouched: 0, tasksCreated: 0 };
-  const openEstimates = await storage.getOpenEstimatesForBackfill(contractorId, targetStatus);
+  const stopSet = Array.from(getCadenceStopSet(process));
+  const openEstimates = await storage.getOpenEstimatesForBackfill(contractorId, targetStatus, stopSet);
   let entitiesTouched = 0;
   let tasksCreated = 0;
   for (const est of openEstimates) {
+    if (shouldStopCadenceForStatus(process, est.status)) continue;
     const inserted = await materializeForEntity(process, steps, {
       entityType: 'estimate',
       entityId: est.id,
@@ -300,10 +327,21 @@ export async function onLeadStatusChanged(
 ): Promise<void> {
   if (newStatus === oldStatus) return;
   if (isTerminalLeadStatus(newStatus)) {
+    // Implicit terminal: stop ALL pending tasks for this lead across every
+    // cadence — no need to walk per-cadence stop sets.
     await storage.skipPendingTasksForLead(leadId, contractorId, 'lead_status_changed');
     return;
   }
-  // Non-terminal change: route to any matching `lead_status_changed` cadences.
+  // Non-terminal change: per-cadence early stop. Walk every active lead
+  // cadence and skip pending instances for any whose configured
+  // `stopStatuses` includes the new status. Then route to enrollment.
+  const cadences = await storage.listCadences(contractorId);
+  for (const cad of cadences) {
+    if (!cad.active || cad.entityType !== 'lead') continue;
+    if (shouldStopCadenceForStatus(cad, newStatus)) {
+      await storage.skipPendingTasksForLead(leadId, contractorId, 'lead_status_changed', cad.id);
+    }
+  }
   await enrollLead(leadId, contractorId, {
     reason: 'status_changed',
     newStatus: newStatus ?? null,
@@ -318,6 +356,19 @@ export async function onEstimateStatusChanged(
   oldStatus: string | null | undefined,
 ): Promise<void> {
   if (!newStatus || newStatus === oldStatus) return;
+  if (isTerminalEstimateStatus(newStatus)) {
+    // Implicit terminal: stop ALL pending tasks for this estimate.
+    await storage.skipPendingTasksForEstimate(estimateId, contractorId, 'lead_status_changed');
+    return;
+  }
+  // Per-cadence early stop, mirroring onLeadStatusChanged.
+  const cadences = await storage.listCadences(contractorId);
+  for (const cad of cadences) {
+    if (!cad.active || cad.entityType !== 'estimate') continue;
+    if (shouldStopCadenceForStatus(cad, newStatus)) {
+      await storage.skipPendingTasksForEstimate(estimateId, contractorId, 'lead_status_changed', cad.id);
+    }
+  }
   await enrollEstimate(estimateId, contractorId, { reason: 'status_changed', newStatus });
 }
 

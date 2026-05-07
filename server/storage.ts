@@ -611,6 +611,7 @@ export interface IStorage {
   rescheduleTask: typeof salesProcessMethods.rescheduleTask;
   incrementAttemptCount: typeof salesProcessMethods.incrementAttemptCount;
   skipPendingTasksForLead: typeof salesProcessMethods.skipPendingTasksForLead;
+  skipPendingTasksForEstimate: typeof salesProcessMethods.skipPendingTasksForEstimate;
   claimDueAutoTasks: typeof salesProcessMethods.claimDueAutoTasks;
 
   // Media spend (task #696 — manual ad-spend for ROI by Source report)

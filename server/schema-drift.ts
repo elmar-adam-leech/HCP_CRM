@@ -39,6 +39,10 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       description: 'user_contractors.allowed_integrations (per-user integration permissions)',
     },
     {
+      sql: `ALTER TABLE sales_processes ADD COLUMN IF NOT EXISTS stop_statuses text[]`,
+      description: 'sales_processes.stop_statuses (per-cadence early-stop statuses, task #725)',
+    },
+    {
       sql: `CREATE TABLE IF NOT EXISTS "assignment_rules" (
         "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
         "contractor_id" varchar NOT NULL REFERENCES "contractors"("id") ON DELETE CASCADE,

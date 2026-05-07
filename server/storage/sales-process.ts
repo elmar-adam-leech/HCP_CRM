@@ -97,6 +97,9 @@ async function createCadence(input: {
   targetStatus: string | null;
   entityType: string;
   active?: boolean;
+  // Per-cadence early-stop list (task #725). Optional; null/[] → no
+  // configured stops (implicit terminals still apply at runtime).
+  stopStatuses?: string[] | null;
 }): Promise<SalesProcess> {
   const created = await db.insert(salesProcesses).values({
     contractorId: input.contractorId,
@@ -105,6 +108,7 @@ async function createCadence(input: {
     targetStatus: input.targetStatus,
     entityType: input.entityType,
     active: input.active ?? false,
+    stopStatuses: input.stopStatuses ?? null,
   }).returning();
   return created[0];
 }
@@ -183,7 +187,7 @@ interface UpsertProcessResult {
 async function upsertCadence(
   cadenceId: string,
   contractorId: string,
-  input: { name?: string; active: boolean; steps: UpsertStepInput[] },
+  input: { name?: string; active: boolean; steps: UpsertStepInput[]; stopStatuses?: string[] | null },
 ): Promise<UpsertProcessResult | undefined> {
   return db.transaction(async (tx) => {
     const existingRow = await tx.select().from(salesProcesses)
@@ -196,6 +200,8 @@ async function upsertCadence(
       .set({
         name: input.name ?? existing.name,
         active: input.active,
+        // `undefined` → keep existing; `null` or `[]` → clear configured stops.
+        ...(input.stopStatuses === undefined ? {} : { stopStatuses: input.stopStatuses ?? [] }),
         updatedAt: new Date(),
       })
       .where(eq(salesProcesses.id, existing.id))
@@ -292,7 +298,7 @@ async function upsertCadence(
  */
 async function upsertSalesProcess(
   contractorId: string,
-  input: { name?: string; active: boolean; steps: UpsertStepInput[] },
+  input: { name?: string; active: boolean; steps: UpsertStepInput[]; stopStatuses?: string[] | null },
 ): Promise<UpsertProcessResult> {
   const process = await getOrCreateSalesProcess(contractorId);
   const result = await upsertCadence(process.id, contractorId, input);
@@ -477,16 +483,28 @@ async function bulkInsertTaskInstances(
 
 type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-async function getOpenLeadsForBackfill(contractorId: string, status?: string): Promise<Lead[]> {
+async function getOpenLeadsForBackfill(
+  contractorId: string,
+  status?: string,
+  excludeStatuses?: readonly string[],
+): Promise<Lead[]> {
+  // Always exclude the implicit lead terminals; layer per-cadence
+  // configured stop statuses on top so we never materialize tasks for
+  // a lead that's already in the cadence's stop set.
+  const exclude = new Set<string>(DEFAULT_LEAD_TERMINAL_STATUSES);
+  for (const s of excludeStatuses ?? []) {
+    if ((leadStatusEnum.enumValues as readonly string[]).includes(s)) exclude.add(s);
+  }
   const conds = [
     eq(leads.contractorId, contractorId),
     eq(leads.archived, false),
-    notInArray(leads.status, DEFAULT_LEAD_TERMINAL_STATUSES),
+    notInArray(leads.status, Array.from(exclude) as LeadStatus[]),
   ];
   if (status) {
     if (!(leadStatusEnum.enumValues as readonly string[]).includes(status)) {
       return [];
     }
+    if (exclude.has(status)) return [];
     conds.push(eq(leads.status, status as LeadStatus));
   }
   return db.select().from(leads).where(and(...conds));
@@ -507,13 +525,24 @@ async function getEstimatesByContact(contactId: string, contractorId: string): P
   ));
 }
 
-async function getOpenEstimatesForBackfill(contractorId: string, status: string): Promise<Estimate[]> {
+async function getOpenEstimatesForBackfill(
+  contractorId: string,
+  status: string,
+  excludeStatuses?: readonly string[],
+): Promise<Estimate[]> {
   if (!(estimateStatusEnum.enumValues as readonly string[]).includes(status)) return [];
   const typed = status as EstimateStatus;
   // Defensive: if the cadence's target status is itself terminal, never
   // backfill (the service layer also short-circuits, but this keeps the
   // query honest for direct callers).
   if (ESTIMATE_TERMINAL_STATUSES.includes(typed)) return [];
+  // Per-cadence configured stops: if the target status itself is in the
+  // stop set, no estimate could ever survive the filter — return empty.
+  const exclude = new Set<string>(ESTIMATE_TERMINAL_STATUSES);
+  for (const s of excludeStatuses ?? []) {
+    if ((estimateStatusEnum.enumValues as readonly string[]).includes(s)) exclude.add(s);
+  }
+  if (exclude.has(typed)) return [];
   return db.select().from(estimates).where(and(
     eq(estimates.contractorId, contractorId),
     eq(estimates.status, typed),
@@ -704,18 +733,59 @@ async function skipPendingTasksForLead(
   leadId: string,
   contractorId: string,
   reason: 'lead_status_changed' | 'step_deleted',
+  cadenceId?: string,
 ): Promise<number> {
+  const conds = [
+    eq(salesProcessTaskInstances.leadId, leadId),
+    eq(salesProcessTaskInstances.contractorId, contractorId),
+    eq(salesProcessTaskInstances.status, 'pending'),
+  ];
+  if (cadenceId) {
+    // Scope to instances whose stepId belongs to the supplied cadence.
+    // Used by per-cadence early-stop (task #725) so other active cadences
+    // for the same lead keep running.
+    const stepRows = await db.select({ id: salesProcessSteps.id })
+      .from(salesProcessSteps)
+      .where(eq(salesProcessSteps.salesProcessId, cadenceId));
+    if (stepRows.length === 0) return 0;
+    conds.push(inArray(salesProcessTaskInstances.stepId, stepRows.map(s => s.id)));
+  }
   const r = await db.update(salesProcessTaskInstances).set({
     status: 'skipped',
     completionReason: reason,
     completedAt: new Date(),
-  }).where(and(
-    eq(salesProcessTaskInstances.leadId, leadId),
+  }).where(and(...conds)).returning();
+  for (const inst of r) {
+    console.log(`[SalesProcess] sales_process instance_skipped tenantId=${inst.contractorId} leadId=${inst.leadId} stepId=${inst.stepId} instanceId=${inst.id} reason=${reason} completedBy=system${cadenceId ? ` cadenceId=${cadenceId}` : ''}`);
+  }
+  return r.length;
+}
+
+async function skipPendingTasksForEstimate(
+  estimateId: string,
+  contractorId: string,
+  reason: 'lead_status_changed' | 'step_deleted',
+  cadenceId?: string,
+): Promise<number> {
+  const conds = [
+    eq(salesProcessTaskInstances.estimateId, estimateId),
     eq(salesProcessTaskInstances.contractorId, contractorId),
     eq(salesProcessTaskInstances.status, 'pending'),
-  )).returning();
+  ];
+  if (cadenceId) {
+    const stepRows = await db.select({ id: salesProcessSteps.id })
+      .from(salesProcessSteps)
+      .where(eq(salesProcessSteps.salesProcessId, cadenceId));
+    if (stepRows.length === 0) return 0;
+    conds.push(inArray(salesProcessTaskInstances.stepId, stepRows.map(s => s.id)));
+  }
+  const r = await db.update(salesProcessTaskInstances).set({
+    status: 'skipped',
+    completionReason: reason,
+    completedAt: new Date(),
+  }).where(and(...conds)).returning();
   for (const inst of r) {
-    console.log(`[SalesProcess] sales_process instance_skipped tenantId=${inst.contractorId} leadId=${inst.leadId} stepId=${inst.stepId} instanceId=${inst.id} reason=${reason} completedBy=system`);
+    console.log(`[SalesProcess] sales_process instance_skipped tenantId=${inst.contractorId} estimateId=${inst.estimateId} stepId=${inst.stepId} instanceId=${inst.id} reason=${reason} completedBy=system${cadenceId ? ` cadenceId=${cadenceId}` : ''}`);
   }
   return r.length;
 }
@@ -780,5 +850,6 @@ export const salesProcessMethods = {
   rescheduleTask,
   incrementAttemptCount,
   skipPendingTasksForLead,
+  skipPendingTasksForEstimate,
   claimDueAutoTasks,
 };

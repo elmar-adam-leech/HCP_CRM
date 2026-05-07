@@ -6,6 +6,7 @@ import { asyncHandler } from "../utils/async-handler";
 import { backfillOpenLeads, backfillForCadence } from "../services/sales-process";
 import { runDueAutoTasksOnce } from "../services/sales-process-cron";
 import { createCadenceSchema, entityTypeForTrigger, type SalesProcessTriggerType } from "@shared/schema";
+import { leadStatusEnum, estimateStatusEnum } from "@shared/schema/enums";
 
 const stepInputSchema = z.object({
   // dayOffset is "days since lead created"; per spec it must be a positive
@@ -18,10 +19,20 @@ const stepInputSchema = z.object({
   displayOrder: z.number().int().min(0).default(0),
 });
 
+// Per-cadence "early stop" status whitelists. The UI hides implicit
+// terminals from the picker, but we accept them here as a no-op (they
+// always stop the cadence regardless of this column). Sourced from the
+// shared pgEnum so the route can never drift from the DB column type.
+const LEAD_STOP_STATUSES = leadStatusEnum.enumValues;
+const ESTIMATE_STOP_STATUSES = estimateStatusEnum.enumValues;
+
 const upsertProcessSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   active: z.boolean(),
   steps: z.array(stepInputSchema).max(50),
+  // Optional. Validated against the cadence's entityType after we look the
+  // cadence up (per-entity-type enum). Accept array of strings here.
+  stopStatuses: z.array(z.string()).max(20).optional(),
 }).superRefine((data, ctx) => {
   // Auto steps for call/text/email need a template only for text/email; calls
   // can't be auto-dialed by us, so reject them up front.
@@ -89,6 +100,18 @@ export function registerSalesProcessRoutes(app: Express): void {
       : trigger === 'lead_status_changed'
         ? `Lead status → ${targetStatus}`
         : `Estimate status → ${targetStatus}`;
+    // Validate optional stopStatuses against the entity-type enum derived
+    // from the trigger (task #725). Same rules as the upsert route.
+    let createStopStatuses: string[] | null = null;
+    if (parsed.data.stopStatuses && parsed.data.stopStatuses.length > 0) {
+      const allowed = entityType === 'estimate' ? ESTIMATE_STOP_STATUSES : LEAD_STOP_STATUSES;
+      const invalid = parsed.data.stopStatuses.filter(s => !allowed.includes(s as never));
+      if (invalid.length > 0) {
+        res.status(400).json({ error: `Invalid stop statuses for ${entityType} cadence: ${invalid.join(', ')}` });
+        return;
+      }
+      createStopStatuses = Array.from(new Set(parsed.data.stopStatuses));
+    }
     try {
       const cadence = await storage.createCadence({
         contractorId: req.user.contractorId,
@@ -97,6 +120,7 @@ export function registerSalesProcessRoutes(app: Express): void {
         targetStatus,
         entityType,
         active: parsed.data.active ?? false,
+        stopStatuses: createStopStatuses,
       });
       res.status(201).json(cadence);
     } catch (err: unknown) {
@@ -126,10 +150,30 @@ export function registerSalesProcessRoutes(app: Express): void {
       return;
     }
     const normalizedSteps = parsed.data.steps.map((s, i) => ({ ...s, displayOrder: i }));
+    // Validate `stopStatuses` against this cadence's entityType. We must
+    // look the cadence up first because the schema doesn't know whether
+    // we're editing a lead or estimate cadence.
+    let stopStatuses: string[] | undefined;
+    if (parsed.data.stopStatuses !== undefined) {
+      const cadence = await storage.getCadenceById(req.params.id, req.user.contractorId);
+      if (!cadence) {
+        res.status(404).json({ error: 'Cadence not found' });
+        return;
+      }
+      const allowed = cadence.entityType === 'estimate' ? ESTIMATE_STOP_STATUSES : LEAD_STOP_STATUSES;
+      const invalid = parsed.data.stopStatuses.filter(s => !allowed.includes(s as never));
+      if (invalid.length > 0) {
+        res.status(400).json({ error: `Invalid stop statuses for ${cadence.entityType} cadence: ${invalid.join(', ')}` });
+        return;
+      }
+      // Dedupe while preserving order.
+      stopStatuses = Array.from(new Set(parsed.data.stopStatuses));
+    }
     const result = await storage.upsertCadence(req.params.id, req.user.contractorId, {
       name: parsed.data.name,
       active: parsed.data.active,
       steps: normalizedSteps,
+      stopStatuses,
     });
     if (!result) {
       res.status(404).json({ error: 'Cadence not found' });
@@ -193,10 +237,23 @@ export function registerSalesProcessRoutes(app: Express): void {
     // Normalize displayOrder to mirror array order, ignoring whatever the
     // client sent — the canonical order is "as listed in the request body".
     const normalizedSteps = parsed.data.steps.map((s, i) => ({ ...s, displayOrder: i }));
+    // Legacy default cadence is always entityType=lead. Validate
+    // stopStatuses against the lead enum so the field is no longer
+    // silently dropped (task #725 review fix).
+    let legacyStopStatuses: string[] | undefined;
+    if (parsed.data.stopStatuses !== undefined) {
+      const invalid = parsed.data.stopStatuses.filter(s => !LEAD_STOP_STATUSES.includes(s as never));
+      if (invalid.length > 0) {
+        res.status(400).json({ error: `Invalid stop statuses for lead cadence: ${invalid.join(', ')}` });
+        return;
+      }
+      legacyStopStatuses = Array.from(new Set(parsed.data.stopStatuses));
+    }
     const result = await storage.upsertSalesProcess(req.user.contractorId, {
       name: parsed.data.name,
       active: parsed.data.active,
       steps: normalizedSteps,
+      stopStatuses: legacyStopStatuses,
     });
 
     // Backfill triggers per spec:

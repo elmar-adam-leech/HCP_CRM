@@ -10,6 +10,7 @@ vi.mock('../storage', () => {
     bulkInsertTaskInstances: vi.fn(),
     getOpenLeadsForBackfill: vi.fn(),
     skipPendingTasksForLead: vi.fn(),
+    skipPendingTasksForEstimate: vi.fn(),
     getLead: vi.fn(),
     getEstimate: vi.fn(),
     getLeadsByContact: vi.fn(),
@@ -29,6 +30,9 @@ import {
   onLeadStatusChanged,
   onEstimateStatusChanged,
   onActivityCreated,
+  shouldStopCadenceForStatus,
+  getCadenceStopSet,
+  backfillForCadence,
 } from './sales-process';
 import { backoffMinutesAfterAttempt } from './sales-process-cron';
 
@@ -453,5 +457,124 @@ describe('backoffMinutesAfterAttempt', () => {
   });
   it('caps at 60 minutes for very large attempt counts', () => {
     expect(backoffMinutesAfterAttempt(20)).toBe(60);
+  });
+});
+
+// ── Task #725: per-cadence stop statuses ─────────────────────────────────
+describe('shouldStopCadenceForStatus / getCadenceStopSet', () => {
+  it('merges implicit lead terminals with configured stop statuses', () => {
+    const cad = { entityType: 'lead', stopStatuses: ['qualified'] } as any;
+    const set = getCadenceStopSet(cad);
+    expect(Array.from(set).sort()).toEqual(['converted', 'disqualified', 'lost', 'qualified'].sort());
+    expect(shouldStopCadenceForStatus(cad, 'qualified')).toBe(true);
+    expect(shouldStopCadenceForStatus(cad, 'converted')).toBe(true);
+    expect(shouldStopCadenceForStatus(cad, 'contacted')).toBe(false);
+  });
+  it('falls back to implicit-only when stopStatuses is null/undefined', () => {
+    const cad = { entityType: 'lead', stopStatuses: null } as any;
+    expect(shouldStopCadenceForStatus(cad, 'lost')).toBe(true);
+    expect(shouldStopCadenceForStatus(cad, 'new')).toBe(false);
+  });
+  it('uses estimate implicit terminal (rejected) for estimate cadences', () => {
+    const cad = { entityType: 'estimate', stopStatuses: ['scheduled'] } as any;
+    expect(shouldStopCadenceForStatus(cad, 'rejected')).toBe(true);
+    expect(shouldStopCadenceForStatus(cad, 'scheduled')).toBe(true);
+    expect(shouldStopCadenceForStatus(cad, 'approved')).toBe(false);
+  });
+});
+
+describe('onLeadStatusChanged — configured stop statuses (task #725)', () => {
+  beforeEach(() => {
+    (storage.getLead as any).mockResolvedValue({
+      id: 'lead-1', contractorId: tenantId, status: 'qualified',
+      createdAt: new Date('2026-04-01T00:00:00Z'),
+    });
+    (storage.countTaskInstancesForEntity as any).mockResolvedValue(0);
+  });
+  it('skips pending tasks per-cadence when newStatus is in cadence stopStatuses', async () => {
+    (storage.listCadences as any).mockResolvedValue([
+      { id: 'p-stop', contractorId: tenantId, active: true, entityType: 'lead',
+        triggerType: 'lead_created', targetStatus: null, stopStatuses: ['qualified'] },
+      { id: 'p-keep', contractorId: tenantId, active: true, entityType: 'lead',
+        triggerType: 'lead_created', targetStatus: null, stopStatuses: [] },
+    ]);
+    await onLeadStatusChanged('lead-1', tenantId, 'qualified', 'contacted');
+    // Only the cadence whose stopStatuses includes 'qualified' should be skipped.
+    expect(storage.skipPendingTasksForLead).toHaveBeenCalledTimes(1);
+    expect(storage.skipPendingTasksForLead).toHaveBeenCalledWith(
+      'lead-1', tenantId, 'lead_status_changed', 'p-stop',
+    );
+  });
+  it('does not per-cadence skip when newStatus is not in any cadence stopStatuses', async () => {
+    (storage.listCadences as any).mockResolvedValue([
+      { id: 'p-other', contractorId: tenantId, active: true, entityType: 'lead',
+        triggerType: 'lead_created', targetStatus: null, stopStatuses: ['contacted'] },
+    ]);
+    await onLeadStatusChanged('lead-1', tenantId, 'qualified', 'contacted');
+    expect(storage.skipPendingTasksForLead).not.toHaveBeenCalled();
+  });
+  it('implicit terminal still skips ALL pending tasks (no cadenceId scope)', async () => {
+    (storage.listCadences as any).mockResolvedValue([
+      { id: 'p1', contractorId: tenantId, active: true, entityType: 'lead',
+        triggerType: 'lead_created', targetStatus: null, stopStatuses: ['qualified'] },
+    ]);
+    await onLeadStatusChanged('lead-1', tenantId, 'converted', 'qualified');
+    expect(storage.skipPendingTasksForLead).toHaveBeenCalledTimes(1);
+    expect(storage.skipPendingTasksForLead).toHaveBeenCalledWith(
+      'lead-1', tenantId, 'lead_status_changed',
+    );
+  });
+});
+
+describe('onEstimateStatusChanged — configured stops + implicit rejected (task #725)', () => {
+  beforeEach(() => {
+    (storage.getEstimate as any).mockResolvedValue({
+      id: 'est-1', contractorId: tenantId, status: 'in_progress', contactId: 'c1',
+    });
+    (storage.countTaskInstancesForEntity as any).mockResolvedValue(0);
+  });
+  it('skips pending tasks per-cadence when newStatus is in cadence stopStatuses', async () => {
+    (storage.listCadences as any).mockResolvedValue([
+      { id: 'p-est-stop', contractorId: tenantId, active: true, entityType: 'estimate',
+        triggerType: 'estimate_status_changed', targetStatus: 'sent', stopStatuses: ['in_progress'] },
+    ]);
+    await onEstimateStatusChanged('est-1', tenantId, 'in_progress', 'sent');
+    expect(storage.skipPendingTasksForEstimate).toHaveBeenCalledWith(
+      'est-1', tenantId, 'lead_status_changed', 'p-est-stop',
+    );
+  });
+  it('implicit terminal (rejected) skips ALL pending estimate tasks', async () => {
+    (storage.listCadences as any).mockResolvedValue([]);
+    await onEstimateStatusChanged('est-1', tenantId, 'rejected', 'in_progress');
+    expect(storage.skipPendingTasksForEstimate).toHaveBeenCalledTimes(1);
+    expect(storage.skipPendingTasksForEstimate).toHaveBeenCalledWith(
+      'est-1', tenantId, 'lead_status_changed',
+    );
+  });
+});
+
+describe('backfill — excludes entities currently in stop statuses (task #725)', () => {
+  it('skips leads whose status is in the cadence stopStatuses during backfill', async () => {
+    const stopCadence = {
+      id: 'p-bf', contractorId: tenantId, name: 'BF', active: true,
+      triggerType: 'lead_created', targetStatus: null, entityType: 'lead',
+      stopStatuses: ['qualified'],
+    } as any;
+    (storage.getCadenceWithSteps as any).mockResolvedValue({ process: stopCadence, steps });
+    (storage.getOpenLeadsForBackfill as any).mockResolvedValue([
+      makeLead({ id: 'A', status: 'new' }),
+      makeLead({ id: 'B', status: 'qualified' }),
+    ]);
+    (storage.countTaskInstancesForEntity as any).mockResolvedValue(0);
+    (storage.bulkInsertTaskInstances as any).mockImplementation((rows: any[]) =>
+      Promise.resolve(rows.map((r, i) => ({ id: `i${i}`, ...r }))),
+    );
+    const r = await backfillForCadence(stopCadence.id, tenantId);
+    // Only lead A (status=new) is materialized — lead B (qualified) is excluded.
+    expect(r.leadsTouched).toBe(1);
+    expect(storage.bulkInsertTaskInstances).toHaveBeenCalledTimes(1);
+    const calledLeadIds = (storage.bulkInsertTaskInstances as any).mock.calls
+      .flatMap((c: any[]) => c[0].map((row: any) => row.leadId));
+    expect(new Set(calledLeadIds)).toEqual(new Set(['A']));
   });
 });

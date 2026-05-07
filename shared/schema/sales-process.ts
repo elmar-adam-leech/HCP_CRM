@@ -32,6 +32,15 @@ export const salesProcesses = pgTable("sales_processes", {
   triggerType: text("trigger_type").notNull().default("lead_created"),
   targetStatus: text("target_status"),
   entityType: text("entity_type").notNull().default("lead"),
+  // Per-cadence "stop" statuses. When the bound entity (lead or estimate)
+  // transitions into any status in this list, all pending instances for
+  // (this cadence, that entity) are skipped with reason `lead_status_changed`,
+  // and no new instances are materialized. Implicit terminals
+  // (converted/disqualified/lost for leads; rejected for estimates) always
+  // stop the process and are merged with this list at runtime — the column
+  // only needs to carry the *additional* user-configured stop statuses.
+  // Nullable: legacy rows behave as `[]` (implicit terminals only).
+  stopStatuses: text("stop_statuses").array(),
   // Soft-delete column. We never hard-delete cadences because task_instances
   // reference steps with ON DELETE RESTRICT and we want historical tasks to
   // remain navigable after an admin "deletes" a cadence in the UI.
@@ -147,18 +156,23 @@ export const createCadenceSchema = z.discriminatedUnion("triggerType", [
     triggerType: z.literal("lead_created"),
     name: z.string().trim().min(1).max(200).optional(),
     active: z.boolean().optional(),
+    // Per-cadence early-stop statuses (task #725). Optional at create time;
+    // server validates each value against the cadence's entityType enum.
+    stopStatuses: z.array(z.string()).max(20).optional(),
   }),
   z.object({
     triggerType: z.literal("lead_status_changed"),
     targetStatus: z.enum(leadStatusEnum.enumValues),
     name: z.string().trim().min(1).max(200).optional(),
     active: z.boolean().optional(),
+    stopStatuses: z.array(z.string()).max(20).optional(),
   }),
   z.object({
     triggerType: z.literal("estimate_status_changed"),
     targetStatus: z.enum(estimateStatusEnum.enumValues),
     name: z.string().trim().min(1).max(200).optional(),
     active: z.boolean().optional(),
+    stopStatuses: z.array(z.string()).max(20).optional(),
   }),
 ]);
 export type CreateCadenceInput = z.infer<typeof createCadenceSchema>;

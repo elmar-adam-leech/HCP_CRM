@@ -18,6 +18,10 @@ import { useToast } from "@/hooks/use-toast";
 import { useContact } from "@/hooks/useContact";
 import { cn } from "@/lib/utils";
 import type { Contact, SalesProcess, SalesProcessStep } from "@shared/schema";
+import { leadStatusEnum, estimateStatusEnum } from "@shared/schema/enums";
+
+const LEAD_STATUS_VALUES = leadStatusEnum.enumValues;
+const ESTIMATE_STATUS_VALUES = estimateStatusEnum.enumValues;
 
 type ActionType = 'call' | 'text' | 'email';
 type StepMode = 'manual' | 'auto';
@@ -309,6 +313,7 @@ function CadenceEditor({ cadenceId, onDelete, isDeleting }: CadenceEditorProps) 
   const [name, setName] = useState('');
   const [active, setActive] = useState(false);
   const [steps, setSteps] = useState<StepDraft[]>([]);
+  const [stopStatuses, setStopStatuses] = useState<string[]>([]);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
@@ -316,6 +321,7 @@ function CadenceEditor({ cadenceId, onDelete, isDeleting }: CadenceEditorProps) 
       setName(data.process.name);
       setActive(data.process.active);
       setSteps(data.steps.map(toDraft));
+      setStopStatuses(data.process.stopStatuses ?? []);
       setHydrated(true);
     }
   }, [data, hydrated]);
@@ -409,6 +415,7 @@ function CadenceEditor({ cadenceId, onDelete, isDeleting }: CadenceEditorProps) 
       const res = await apiRequest('PUT', `/api/sales-process/cadences/${cadenceId}`, {
         name,
         active,
+        stopStatuses,
         steps: steps.map((s, i) => ({
           dayOffset: s.dayOffset,
           actionType: s.actionType,
@@ -538,6 +545,15 @@ function CadenceEditor({ cadenceId, onDelete, isDeleting }: CadenceEditorProps) 
             data-testid="switch-cadence-active"
           />
         </div>
+        {/* Per-cadence early-stop multi-select (task #725). Implicit terminals
+            (converted/disqualified/lost for leads; rejected for estimates)
+            always stop the cadence — they're hidden from this picker and
+            called out in the helper text below. */}
+        <StopStatusesPicker
+          entityType={isLeadCadence ? 'lead' : 'estimate'}
+          value={stopStatuses}
+          onChange={setStopStatuses}
+        />
       </div>
 
       <div className="space-y-3">
@@ -822,5 +838,60 @@ function LeadPicker({ selectedLeadId, selectedLeadLabel, isLoading, onSelect }: 
         </Command>
       </PopoverContent>
     </Popover>
+  );
+}
+
+// ── Per-cadence early-stop multi-select (task #725) ─────────────────────────
+// Implicit terminals always stop the cadence and are intentionally hidden
+// from the picker (lead: converted/disqualified/lost, estimate: rejected).
+// Status lists derive from the shared pgEnum so the UI can not drift.
+const LEAD_IMPLICIT_TERMINALS = new Set(['converted', 'disqualified', 'lost']);
+const ESTIMATE_IMPLICIT_TERMINALS = new Set(['rejected']);
+const LEAD_STOP_OPTIONS = LEAD_STATUS_VALUES.filter((s) => !LEAD_IMPLICIT_TERMINALS.has(s));
+const ESTIMATE_STOP_OPTIONS = ESTIMATE_STATUS_VALUES.filter((s) => !ESTIMATE_IMPLICIT_TERMINALS.has(s));
+
+interface StopStatusesPickerProps {
+  entityType: 'lead' | 'estimate';
+  value: string[];
+  onChange: (next: string[]) => void;
+}
+
+function StopStatusesPicker({ entityType, value, onChange }: StopStatusesPickerProps) {
+  const options = entityType === 'lead' ? LEAD_STOP_OPTIONS : ESTIMATE_STOP_OPTIONS;
+  const helper = entityType === 'lead'
+    ? 'We always stop on Converted, Disqualified, and Lost — you can stop earlier here.'
+    : 'We always stop on Rejected — you can stop earlier here.';
+  const toggle = (status: string) => {
+    if (value.includes(status)) onChange(value.filter(s => s !== status));
+    else onChange([...value, status]);
+  };
+  return (
+    <div className="rounded-md border p-3 space-y-2" data-testid="stop-statuses-picker">
+      <div>
+        <Label className="text-base">Stop process when status becomes…</Label>
+        <p className="text-sm text-muted-foreground">{helper}</p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {options.map((status) => {
+          const selected = value.includes(status);
+          return (
+            <Badge
+              key={status}
+              variant={selected ? 'default' : 'outline'}
+              className={cn(
+                'cursor-pointer toggle-elevate',
+                selected && 'toggle-elevated',
+              )}
+              onClick={() => toggle(status)}
+              data-testid={`stop-status-chip-${status}`}
+              data-selected={selected}
+            >
+              {selected && <Check className="h-3 w-3 mr-1" />}
+              {status}
+            </Badge>
+          );
+        })}
+      </div>
+    </div>
   );
 }
