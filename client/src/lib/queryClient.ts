@@ -2,7 +2,7 @@ import { QueryClient, QueryFunction, QueryCache, MutationCache } from "@tanstack
 import {
   clearStoredRefreshToken,
   getStoredRefreshToken,
-  setStoredRefreshToken,
+  setStoredRefreshTokenStrict,
 } from "./refresh-token-storage";
 
 class RateLimitError extends Error {
@@ -65,6 +65,7 @@ const NO_REFRESH_PATHS = new Set([
   "/api/auth/refresh",
   "/api/auth/forgot-password",
   "/api/auth/reset-password",
+  "/api/auth/persist-failed",
   "/api/mfa/verify",
 ]);
 
@@ -86,6 +87,38 @@ function isAuthEndpoint(url: string): boolean {
  * finish, or a successful /api/auth/refresh rotation) into IndexedDB so the
  * IDB fallback path stays in sync with the latest rotation.
  */
+function reportPersistFailure(stage: "persist", error: unknown): void {
+  // Stage exists so future call sites (e.g. a "clear on logout" path that also
+  // wants to surface failures) can reuse the same telemetry pipe with a
+  // different label without us having to invent a second event type.
+  const errorName =
+    error && typeof error === "object" && "name" in error && typeof (error as { name?: unknown }).name === "string"
+      ? (error as { name: string }).name
+      : "UnknownError";
+  // eslint-disable-next-line no-console
+  console.warn(`[auth] refresh-token persist failed (${stage}): ${errorName}`);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("auth-persist-failed", { detail: { stage, errorName } }),
+    );
+  }
+  // Fire-and-forget telemetry ping so production can detect IDB-write failures
+  // without the user having to send screenshots. Sends NO token, NO PII — just
+  // the stage and the error class. The endpoint itself is rate-limited and
+  // requires no auth (the typical caller has just been bounced to /login).
+  try {
+    void fetch("/api/auth/persist-failed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stage, errorName }),
+      credentials: "include",
+      keepalive: true,
+    }).catch(() => {});
+  } catch {
+    // ignore — telemetry is best-effort
+  }
+}
+
 export async function persistRefreshTokenFromResponse(body: unknown): Promise<void> {
   if (
     body &&
@@ -94,9 +127,13 @@ export async function persistRefreshTokenFromResponse(body: unknown): Promise<vo
     typeof (body as { refreshToken: unknown }).refreshToken === "string"
   ) {
     try {
-      await setStoredRefreshToken((body as { refreshToken: string }).refreshToken);
-    } catch {
-      // IDB unavailable (private mode etc.) — cookie path still works.
+      await setStoredRefreshTokenStrict((body as { refreshToken: string }).refreshToken);
+    } catch (err) {
+      // IDB write failed (private mode, quota exceeded, opaque origin, etc.).
+      // The cookie path is still serving the session so the user is not signed
+      // out right now — but the next browser/PWA reopen that loses the cookie
+      // will bounce them to /login. Surface this so we can detect it in prod.
+      reportPersistFailure("persist", err);
     }
   }
 }

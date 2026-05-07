@@ -206,6 +206,10 @@ vi.mock('../storage', () => ({
       canManageIntegrations: true,
       allowedIntegrations: null,
     })),
+    // issueRefreshToken (called from the WebAuthn login finish path) writes a
+    // row through storage.createRefreshToken — without this stub the test would
+    // throw a TypeError and never reach the response-contract assertions.
+    createRefreshToken: vi.fn(async () => ({ id: 'refresh-row' })),
   },
 }));
 vi.mock('../auth-service', () => ({
@@ -392,6 +396,14 @@ describe('WebAuthn login (unauth)', () => {
     expect(r.status).toBe(200);
     expect(r.body.message).toBe('Login successful');
     expect(r.headers.auth_token).toBe('fake-jwt-token');
+    // #734 response contract: every endpoint that mints an auth_token cookie
+    // MUST also include a non-empty `refreshToken` in the JSON body whose value
+    // matches the raw value placed in the refresh_token cookie. Otherwise an
+    // IDB-only client (cookie evicted by Safari) would seed its fallback with
+    // a token that doesn't match what the server later rotates against.
+    expect(typeof r.body.refreshToken).toBe('string');
+    expect(r.body.refreshToken.length).toBeGreaterThan(0);
+    expect(r.headers.refresh_token).toBe(r.body.refreshToken);
     // Counter advanced + lastUsedAt stamped
     expect(fakeDb.credentials[0].counter).toBe(1);
     expect(fakeDb.credentials[0].lastUsedAt).toBeInstanceOf(Date);

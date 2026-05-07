@@ -79,6 +79,45 @@ export async function setStoredRefreshToken(token: string): Promise<void> {
   });
 }
 
+/**
+ * Like `setStoredRefreshToken`, but surfaces the underlying IDB error so callers
+ * can report a structured "persist failed" telemetry event. The `withStore`
+ * helper above intentionally swallows transaction errors (so it can return
+ * `undefined` rather than throw on private-mode browsers); this thin wrapper
+ * goes one level deeper and rejects when `indexedDB.open` itself fails or when
+ * the store is missing — the two conditions that would silently strand a
+ * freshly-issued refresh token outside IDB. See task #734.
+ */
+export async function setStoredRefreshTokenStrict(token: string): Promise<void> {
+  if (typeof indexedDB === "undefined") {
+    throw new Error("IndexedDB unavailable");
+  }
+  const db: IDBDatabase = await new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const opening = req.result;
+      if (!opening.objectStoreNames.contains(STORE)) {
+        opening.createObjectStore(STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error ?? new Error("indexedDB.open error"));
+    req.onblocked = () => reject(new Error("indexedDB.open blocked"));
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const store = tx.objectStore(STORE);
+      store.put(token, KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error("idb tx error"));
+      tx.onabort = () => reject(tx.error ?? new Error("idb tx abort"));
+    });
+  } finally {
+    db.close();
+  }
+}
+
 export async function clearStoredRefreshToken(): Promise<void> {
   await withStore("readwrite", (s) => {
     s.delete(KEY);

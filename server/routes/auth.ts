@@ -473,6 +473,34 @@ export function registerAuthRoutes(app: Express): void {
     asyncHandler(handleRefreshRequest),
   );
 
+  // Tiny telemetry sink for IDB-write failures from the SPA. The client posts
+  // `{ stage, errorName }` here whenever `persistRefreshTokenFromResponse` can
+  // not write the freshly-issued refresh token into IndexedDB — the silent
+  // failure mode that task #734 exists to detect. Strictly NO token, NO PII.
+  // Rate-limited to 5/min/IP so a noisy device can't flood the logs.
+  const persistFailedRateLimiter = createRateLimiter({
+    windowMs: 60 * 1000,
+    maxRequests: 5,
+    keyPrefix: 'auth-persist-failed',
+  });
+  const persistFailedLog = logger('AuthPersist');
+  app.post(
+    "/api/auth/persist-failed",
+    persistFailedRateLimiter,
+    asyncHandler(async (req: Request, res: Response) => {
+      const body = (req.body ?? {}) as { stage?: unknown; errorName?: unknown };
+      const stage = typeof body.stage === "string" ? body.stage.slice(0, 32) : "unknown";
+      const errorName = typeof body.errorName === "string" ? body.errorName.slice(0, 64) : "unknown";
+      persistFailedLog.warn("idb_persist_failed", {
+        stage,
+        errorName,
+        ip: req.ip ?? req.socket?.remoteAddress ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
+      res.status(204).end();
+    }),
+  );
+
   app.get("/api/auth/me", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user) {
       res.status(401).json({ message: "Not authenticated" });

@@ -89,12 +89,19 @@ export function refreshTokenRateLimiter(req: Request, res: Response, next: NextF
     // other refresh failure reasons. The response also includes
     // `reason: "rate-limited"` so the SPA can distinguish a throttle from a
     // dead-token reason and avoid wiping its IndexedDB copy on a 429.
+    const cookiePresent = !!req.cookies?.[REFRESH_COOKIE_NAME];
+    const bodyTokenPresent = !!(req.body as { token?: unknown } | undefined)?.token;
     log.info("refresh_attempt", {
       reason: "rate-limited" as const,
-      source: req.cookies?.[REFRESH_COOKIE_NAME] ? "cookie" : "body",
-      cookiePresent: !!req.cookies?.[REFRESH_COOKIE_NAME],
+      source: cookiePresent ? "cookie" : "body",
+      cookiePresent,
       authCookiePresent: !!req.cookies?.auth_token,
-      bodyTokenPresent: !!(req.body as { token?: unknown } | undefined)?.token,
+      bodyTokenPresent,
+      bodyTokenPresentSource: cookiePresent
+        ? "cookie"
+        : bodyTokenPresent
+          ? "idb-fallback"
+          : "none",
       retryAfterSec,
       ip: req.ip ?? req.socket?.remoteAddress ?? null,
       userAgent: req.headers["user-agent"] ?? null,
@@ -213,12 +220,24 @@ function logRefreshOutcome(
   reason: RefreshOutcomeReason,
   extra: { userId?: string | null; contractorId?: string | null; source?: "cookie" | "body" } = {},
 ): void {
+  const cookiePresent = !!req.cookies?.[REFRESH_COOKIE_NAME];
+  const bodyTokenPresent = !!(req.body as { token?: unknown } | undefined)?.token;
+  // bodyTokenPresentSource discriminates the three failure modes that previously
+  // collapsed into `bodyTokenPresent: false`: cookie-only request, IDB-fallback
+  // request, and "client sent nothing" (= IDB was empty / write failed and the
+  // cookie was already gone — the exact case we're trying to detect for #734).
+  const bodyTokenPresentSource: "cookie" | "idb-fallback" | "none" = cookiePresent
+    ? "cookie"
+    : bodyTokenPresent
+      ? "idb-fallback"
+      : "none";
   log.info("refresh_attempt", {
     reason,
     source: extra.source ?? null,
-    cookiePresent: !!req.cookies?.[REFRESH_COOKIE_NAME],
+    cookiePresent,
     authCookiePresent: !!req.cookies?.auth_token,
-    bodyTokenPresent: !!(req.body as { token?: unknown } | undefined)?.token,
+    bodyTokenPresent,
+    bodyTokenPresentSource,
     userId: extra.userId ?? null,
     contractorId: extra.contractorId ?? null,
     ip: req.ip ?? req.socket?.remoteAddress ?? null,

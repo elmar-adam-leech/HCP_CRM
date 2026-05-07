@@ -376,6 +376,12 @@ describe('handleRefreshRequest endpoint state machine', () => {
 
     expect(res2.statusCode).toBe(200);
     expect(res2.body).toEqual({ ok: true, grace: true });
+    // #734 response contract: the grace branch DELIBERATELY omits `refreshToken`
+    // from the body. No rotation occurred, so the IDB copy on the client is
+    // still authoritative — re-emitting it would risk a stale-vs-rotated mix-up
+    // with another in-flight refresh. The shape difference vs the rotated
+    // branch is load-bearing for the SPA's "should I update IDB?" decision.
+    expect((res2.body as { refreshToken?: unknown }).refreshToken).toBeUndefined();
     // Auth cookie is re-minted...
     expect(res2.cookies['auth_token']).toBeDefined();
     // ...but no NEW refresh cookie is set (client already has the rotated one).
@@ -460,6 +466,38 @@ describe('handleRefreshRequest endpoint state machine', () => {
     expect(res.statusCode).toBe(401);
     expect(res.body).toEqual({ message: 'Refresh token expired', reason: 'expired' });
     expect(res.cleared).toContain(REFRESH_COOKIE_NAME);
+  });
+
+  it('accepts a body-only refresh (cookie evicted, IDB fallback) and rotates normally', async () => {
+    // Simulates the iOS PWA case task #720/#734 exists for: the refresh cookie
+    // is gone but the SPA still has a copy of the raw token in IndexedDB and
+    // POSTs it via `body.token`. Server must mint a fresh auth_token cookie
+    // AND a fresh refresh cookie + body token, exactly like the cookie path.
+    const { raw, rowId } = await freshlyIssued();
+
+    const res = makeRes();
+    await handleRefreshRequest(
+      makeReq({ cookies: {}, body: { token: raw } } as Partial<Request>),
+      res,
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({ ok: true });
+    expect(typeof (res.body as { refreshToken?: unknown }).refreshToken).toBe('string');
+    expect((res.body as { refreshToken: string }).refreshToken.length).toBeGreaterThan(0);
+    expect(res.cookies['auth_token']).toBeDefined();
+    expect(res.cookies[REFRESH_COOKIE_NAME]).toBeDefined();
+    expect(res.cookies[REFRESH_COOKIE_NAME].value).not.toBe(raw);
+    // Body token matches the cookie value so an IDB-only client sees the same
+    // rotated token a cookie-only client would (otherwise IDB would drift).
+    expect((res.body as { refreshToken: string }).refreshToken).toBe(
+      res.cookies[REFRESH_COOKIE_NAME].value,
+    );
+
+    // The original row was rotated, not revoked — same semantics as cookie path.
+    const oldRow = store.rows.find((r) => r.id === rowId)!;
+    expect(oldRow.rotatedAt).not.toBeNull();
+    expect(oldRow.revokedAt).toBeNull();
   });
 
   it('membership removed: revokes the token chain and 401s', async () => {
