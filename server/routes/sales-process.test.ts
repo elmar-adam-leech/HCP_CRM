@@ -166,14 +166,17 @@ describe('Settings → Sales Process tab API smoke', () => {
   });
 
   it('GET /api/sales-process/tasks?contactId=...&withLead=1 forwards contactId filter to storage', async () => {
-    (storage.listTaskInstancesWithLeadSummary as any).mockResolvedValue([
-      {
-        id: 't1', contractorId: 'tenant-1', leadId: 'lead-A', stepId: 's1',
-        actionType: 'call', mode: 'manual', status: 'pending',
-        dueAt: new Date().toISOString(),
-        lead: { id: 'lead-A', contactId: 'c-1', status: 'new', source: null, createdAt: null, name: 'Jane', email: null, phone: null },
-      },
-    ]);
+    (storage.listTaskInstancesWithLeadSummary as any).mockResolvedValue({
+      items: [
+        {
+          id: 't1', contractorId: 'tenant-1', leadId: 'lead-A', stepId: 's1',
+          actionType: 'call', mode: 'manual', status: 'pending',
+          dueAt: new Date().toISOString(),
+          lead: { id: 'lead-A', contactId: 'c-1', status: 'new', source: null, createdAt: null, name: 'Jane', email: null, phone: null },
+        },
+      ],
+      total: 1,
+    });
     const app = makeApp();
     const r = await call(app, 'GET', '/api/sales-process/tasks?withLead=1&contactId=c-1&status=pending,failed');
     expect(r.status).toBe(200);
@@ -184,6 +187,99 @@ describe('Settings → Sales Process tab API smoke', () => {
     expect(callArgs[1].statuses).toEqual(['pending', 'failed']);
     // leadId must NOT be set when only contactId was passed.
     expect(callArgs[1].leadId).toBeUndefined();
+  });
+
+  it('GET /api/sales-process/tasks?paged=1 returns the {items,total,hasMore} envelope and forwards limit/offset', async () => {
+    (storage.listTaskInstancesWithLeadSummary as any).mockResolvedValue({
+      items: [
+        {
+          id: 't1', contractorId: 'tenant-1', leadId: 'lead-A', stepId: 's1',
+          actionType: 'call', mode: 'manual', status: 'pending',
+          dueAt: new Date().toISOString(),
+          lead: { id: 'lead-A', contactId: 'c-1', status: 'new', source: null, createdAt: null, name: 'Jane', email: null, phone: null },
+        },
+      ],
+      total: 137,
+    });
+    const app = makeApp();
+    const r = await call(app, 'GET', '/api/sales-process/tasks?withLead=1&paged=1&limit=50&offset=100');
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body)).toBe(false);
+    expect(r.body.total).toBe(137);
+    expect(r.body.items).toHaveLength(1);
+    // 100 (offset) + 1 (returned) < 137 (total) ⇒ more pages remain.
+    expect(r.body.hasMore).toBe(true);
+    const callArgs = (storage.listTaskInstancesWithLeadSummary as any).mock.calls[0];
+    expect(callArgs[1].limit).toBe(50);
+    expect(callArgs[1].offset).toBe(100);
+  });
+
+  it('GET /api/sales-process/tasks?paged=1 sets hasMore=false on the last page', async () => {
+    (storage.listTaskInstancesWithLeadSummary as any).mockResolvedValue({
+      items: [
+        {
+          id: 't2', contractorId: 'tenant-1', leadId: 'lead-B', stepId: 's1',
+          actionType: 'text', mode: 'auto', status: 'pending',
+          dueAt: new Date().toISOString(),
+          lead: { id: 'lead-B', contactId: 'c-2', status: 'new', source: null, createdAt: null, name: 'Bob', email: null, phone: null },
+        },
+      ],
+      total: 51,
+    });
+    const app = makeApp();
+    const r = await call(app, 'GET', '/api/sales-process/tasks?withLead=1&paged=1&limit=50&offset=50');
+    expect(r.status).toBe(200);
+    expect(r.body.total).toBe(51);
+    // 50 (offset) + 1 (returned) === 51 (total) ⇒ no more pages.
+    expect(r.body.hasMore).toBe(false);
+  });
+
+  it('GET /api/sales-process/tasks (no paged flag) preserves the legacy raw-array response', async () => {
+    (storage.listTaskInstancesWithLeadSummary as any).mockResolvedValue({
+      items: [
+        {
+          id: 't3', contractorId: 'tenant-1', leadId: 'lead-C', stepId: 's1',
+          actionType: 'email', mode: 'manual', status: 'pending',
+          dueAt: new Date().toISOString(),
+          lead: { id: 'lead-C', contactId: 'c-3', status: 'new', source: null, createdAt: null, name: 'Carol', email: null, phone: null },
+        },
+      ],
+      total: 1,
+    });
+    const app = makeApp();
+    const r = await call(app, 'GET', '/api/sales-process/tasks?withLead=1');
+    expect(r.status).toBe(200);
+    // Back-compat: clients that haven't migrated to the envelope still
+    // receive a plain array of task rows.
+    expect(Array.isArray(r.body)).toBe(true);
+    expect(r.body).toHaveLength(1);
+  });
+
+  it('GET /api/sales-process/tasks?paged=1 forwards status, from, and to scope to storage', async () => {
+    (storage.listTaskInstancesWithLeadSummary as any).mockResolvedValue({
+      items: [], total: 0,
+    });
+    const app = makeApp();
+    const from = '2026-05-01T00:00:00.000Z';
+    const to = '2026-05-02T00:00:00.000Z';
+    const r = await call(
+      app,
+      'GET',
+      `/api/sales-process/tasks?withLead=1&paged=1&limit=50&offset=0&status=pending&from=${from}&to=${to}`,
+    );
+    expect(r.status).toBe(200);
+    const callArgs = (storage.listTaskInstancesWithLeadSummary as any).mock.calls[0];
+    // Tenant scope is always asserted on arg 0.
+    expect(callArgs[0]).toBe('tenant-1');
+    // The route must hand the bucket window straight through — paging
+    // never widens or drops the from/to/status filters.
+    expect(callArgs[1].statuses).toEqual(['pending']);
+    expect(callArgs[1].limit).toBe(50);
+    expect(callArgs[1].offset).toBe(0);
+    expect(callArgs[1].from instanceof Date).toBe(true);
+    expect(callArgs[1].to instanceof Date).toBe(true);
+    expect((callArgs[1].from as Date).toISOString()).toBe(from);
+    expect((callArgs[1].to as Date).toISOString()).toBe(to);
   });
 
   it('PUT /api/sales-process rejects auto+call with a 400 validation error', async () => {

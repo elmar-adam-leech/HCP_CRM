@@ -6,7 +6,7 @@
  * (by validUntil or scheduledStart). Filtering by status (overdue/today/thisweek)
  * is done client-side since it's a simple array filter over already-fetched data.
  */
-import { useQuery, useQueries, useMutation } from "@tanstack/react-query";
+import { useQuery, useQueries, useMutation, keepPreviousData } from "@tanstack/react-query";
 import { useContactMutations } from "@/hooks/useContactMutations";
 import { useEstimateMutations } from "@/hooks/useEstimateMutations";
 import { Calendar, Filter, LayoutGrid, Table, ListChecks } from "lucide-react";
@@ -28,18 +28,73 @@ import {
 import { EmailComposerModal } from "@/components/EmailComposerModal";
 import { HousecallProSchedulingModal } from "@/components/HousecallProSchedulingModal";
 import { FollowUpDateModal } from "@/components/FollowUpDateModal";
-import { FollowUpCard, FollowUpItem, getFollowUpStatus } from "@/components/FollowUpCard";
+import { FollowUpCard, FollowUpItem } from "@/components/FollowUpCard";
 import { FollowUpSpreadsheetView } from "@/components/FollowUpSpreadsheetView";
 import { SalesProcessFollowUpView } from "@/components/SalesProcessFollowUpView";
 import type { SalesProcess, SalesProcessStep } from "@shared/schema";
-import { useState, useCallback } from "react";
-import { useLocation } from "wouter";
+import { useState, useCallback, useEffect, useMemo } from "react";
+import { useLocation, useSearch } from "wouter";
 import type { Contact, EstimateSummary } from "@shared/schema";
 import { PageHeader } from "@/components/ui/page-header-v2";
 import { PageLayout } from "@/components/ui/page-layout";
 import { dialPhone } from "@/lib/dialPhone";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
-import { usePagePreferences } from "@/hooks/use-page-preferences";
+import { usePagePreferences, type ViewMode } from "@/hooks/use-page-preferences";
+
+/**
+ * Compact Prev/Next pager rendered under the cards and spreadsheet views.
+ * Shows the current window (e.g. "1–50 of 1,432") plus disabled/enabled
+ * Prev and Next buttons. Hidden entirely when the result fits on a single
+ * page so empty/small tenants don't see pager chrome.
+ */
+function FollowUpsPager({
+  page, totalPages, totalCount, hasMore, isLoading, pageSize, onPageChange,
+}: {
+  page: number;
+  totalPages: number;
+  totalCount: number;
+  hasMore: boolean;
+  isLoading: boolean;
+  pageSize: number;
+  onPageChange: (next: number) => void;
+}) {
+  if (totalCount <= pageSize) return null;
+  const start = totalCount === 0 ? 0 : (page - 1) * pageSize + 1;
+  const end = Math.min(page * pageSize, totalCount);
+  return (
+    <div
+      className="flex items-center justify-between gap-2 mt-4 flex-wrap"
+      data-testid="followups-pager"
+    >
+      <div className="text-xs text-muted-foreground" data-testid="text-pager-range">
+        Showing {start}–{end} of {totalCount}
+      </div>
+      <div className="flex items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={page <= 1 || isLoading}
+          onClick={() => onPageChange(Math.max(1, page - 1))}
+          data-testid="button-pager-prev"
+        >
+          Previous
+        </Button>
+        <span className="text-xs text-muted-foreground" data-testid="text-pager-page">
+          Page {page} of {totalPages}
+        </span>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!hasMore || isLoading}
+          onClick={() => onPageChange(page + 1)}
+          data-testid="button-pager-next"
+        >
+          Next
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 export default function FollowUps() {
   const { toast } = useToast();
@@ -56,7 +111,14 @@ export default function FollowUps() {
     defaultViewMode: "cards",
   });
 
-  const [filterView, setFilterView] = useState<string>("all");
+  // Filter starts from URL (or "all") so deep links like
+  // /follow-ups?filter=overdue land on the right tab.
+  const initialUrlFilter = (() => {
+    if (typeof window === "undefined") return "all";
+    const p = new URLSearchParams(window.location.search).get("filter");
+    return p && ["all","overdue","today","thisweek","upcoming"].includes(p) ? p : "all";
+  })();
+  const [filterView, setFilterView] = useState<string>(initialUrlFilter);
   const [emailModal, setEmailModal] = useState<{
     isOpen: boolean;
     item?: FollowUpItem;
@@ -131,42 +193,38 @@ export default function FollowUps() {
   })[0];
   // Badge counts only `pending` tasks — `failed` rows are already surfaced in
   // the NeedsAttention banner inside the Sales Process view, so including
-  // them here would double-count and overstate "open work to do".
-  const { data: pendingLeadTasks = [] } = useQuery<unknown[]>({
+  // them here would double-count and overstate "open work to do". We use
+  // `paged=1&limit=1` so the server returns just the count instead of
+  // shipping every task across the wire merely to populate a badge.
+  const fetchPendingCount = async (kind: "withLead" | "withEstimate") => {
+    const url = new URL("/api/sales-process/tasks", window.location.origin);
+    url.searchParams.set(kind, "1");
+    url.searchParams.set("status", "pending");
+    url.searchParams.set("from", pendingTaskWindowFrom);
+    url.searchParams.set("to", pendingTaskWindowTo);
+    url.searchParams.set("paged", "1");
+    url.searchParams.set("limit", "1");
+    const res = await fetch(url.pathname + url.search, { credentials: "include" });
+    if (!res.ok) throw new Error("Failed to fetch sales-process tasks");
+    return res.json() as Promise<{ total: number }>;
+  };
+  const { data: leadCountData } = useQuery<{ total: number }>({
     queryKey: [
       "/api/sales-process/tasks",
-      { withLead: 1, status: "pending", from: pendingTaskWindowFrom, to: pendingTaskWindowTo },
+      { withLead: 1, status: "pending", from: pendingTaskWindowFrom, to: pendingTaskWindowTo, paged: 1, limit: 1 },
     ],
-    queryFn: async () => {
-      const url = new URL("/api/sales-process/tasks", window.location.origin);
-      url.searchParams.set("withLead", "1");
-      url.searchParams.set("status", "pending");
-      url.searchParams.set("from", pendingTaskWindowFrom);
-      url.searchParams.set("to", pendingTaskWindowTo);
-      const res = await fetch(url.pathname + url.search, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch sales-process tasks");
-      return res.json();
-    },
+    queryFn: () => fetchPendingCount("withLead"),
     enabled: hasActiveSalesProcess,
   });
-  const { data: pendingEstimateTasks = [] } = useQuery<unknown[]>({
+  const { data: estimateCountData } = useQuery<{ total: number }>({
     queryKey: [
       "/api/sales-process/tasks",
-      { withEstimate: 1, status: "pending", from: pendingTaskWindowFrom, to: pendingTaskWindowTo },
+      { withEstimate: 1, status: "pending", from: pendingTaskWindowFrom, to: pendingTaskWindowTo, paged: 1, limit: 1 },
     ],
-    queryFn: async () => {
-      const url = new URL("/api/sales-process/tasks", window.location.origin);
-      url.searchParams.set("withEstimate", "1");
-      url.searchParams.set("status", "pending");
-      url.searchParams.set("from", pendingTaskWindowFrom);
-      url.searchParams.set("to", pendingTaskWindowTo);
-      const res = await fetch(url.pathname + url.search, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch sales-process tasks");
-      return res.json();
-    },
+    queryFn: () => fetchPendingCount("withEstimate"),
     enabled: hasActiveSalesProcess,
   });
-  const pendingTaskCount = pendingLeadTasks.length + pendingEstimateTasks.length;
+  const pendingTaskCount = (leadCountData?.total ?? 0) + (estimateCountData?.total ?? 0);
 
   // One-shot: when the sales-process metadata loads and the contractor has
   // an active process, switch to the new view *unless* the user has
@@ -191,26 +249,130 @@ export default function FollowUps() {
     }
   }
 
-  const { data: allFollowUps = [], isLoading } = useQuery<FollowUpItem[]>({
-    queryKey: ["/api/follow-ups/unified"],
+  // -------- URL-synced filter / view / page state --------
+  // We sync the filter dropdown, the view toggle, and the current page
+  // number to the URL search string so the page survives reloads, deep
+  // links, and back/forward navigation. wouter's `useSearch` gives us a
+  // raw query string we re-parse cheaply on each render.
+  const urlSearch = useSearch();
+  // Reflect popstate / back-forward navigation back into local state so
+  // the cards/spreadsheet show the URL's intended page, filter, and view
+  // after the user hits Back. wouter's `useSearch` re-runs on every URL
+  // change (including history.back), so this effect keeps state in sync
+  // without a full reload.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(urlSearch);
+    const f = params.get("filter");
+    if (f && f !== filterView) setFilterView(f);
+    const p = parseInt(params.get("page") || "1", 10);
+    const nextPage = Number.isFinite(p) && p > 0 ? p : 1;
+    if (nextPage !== page) setPage(nextPage);
+    const v = params.get("view");
+    const allowed = ["cards","spreadsheet","sales-process"] as const;
+    if (v && v !== viewMode && (allowed as readonly string[]).includes(v)) {
+      setViewMode(v as ViewMode);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlSearch]);
+
+  const setQueryParams = useCallback((updates: Record<string, string | null>) => {
+    const next = new URLSearchParams(window.location.search);
+    for (const [k, v] of Object.entries(updates)) {
+      if (v == null || v === "") next.delete(k);
+      else next.set(k, v);
+    }
+    const qs = next.toString();
+    const target = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
+    window.history.replaceState({}, "", target);
+  }, []);
+
+  // ~50 rows per page on first paint keeps the DOM bounded even for the
+  // biggest tenants. Cards/spreadsheet views show a Prev/Next pager.
+  const PAGE_SIZE = 50;
+  const [page, setPage] = useState<number>(() => {
+    if (typeof window === "undefined") return 1;
+    const p = parseInt(new URLSearchParams(window.location.search).get("page") || "1", 10);
+    return Number.isFinite(p) && p > 0 ? p : 1;
+  });
+
+  // Date range derived from the active filter — sent to the server so we
+  // only fetch the bucket the user is looking at instead of pulling all
+  // follow-ups and slicing client-side.
+  const dateRange = useMemo(() => {
+    const now = new Date();
+    const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(todayStart); tomorrow.setDate(tomorrow.getDate() + 1);
+    const daysUntilSatEnd = 6 - now.getDay();
+    const endOfWeekExclusive = new Date(todayStart);
+    endOfWeekExclusive.setDate(endOfWeekExclusive.getDate() + daysUntilSatEnd + 1);
+
+    switch (filterView) {
+      case "overdue": return { to: todayStart };
+      case "today": return { from: todayStart, to: tomorrow };
+      case "thisweek": return { from: tomorrow, to: endOfWeekExclusive };
+      case "upcoming": return { from: endOfWeekExclusive };
+      case "all":
+      default: return {};
+    }
+  }, [filterView]);
+
+  const offset = (page - 1) * PAGE_SIZE;
+  const { data: pagedData, isLoading } = useQuery<{
+    items: FollowUpItem[]; total: number; hasMore: boolean;
+  }>({
+    queryKey: [
+      "/api/follow-ups/unified",
+      {
+        from: dateRange.from?.toISOString() ?? null,
+        to: dateRange.to?.toISOString() ?? null,
+        limit: PAGE_SIZE,
+        offset,
+      },
+    ],
     queryFn: async () => {
-      const res = await fetch("/api/follow-ups/unified");
+      const url = new URL("/api/follow-ups/unified", window.location.origin);
+      url.searchParams.set("limit", String(PAGE_SIZE));
+      url.searchParams.set("offset", String(offset));
+      if (dateRange.from) url.searchParams.set("from", dateRange.from.toISOString());
+      if (dateRange.to) url.searchParams.set("to", dateRange.to.toISOString());
+      const res = await fetch(url.pathname + url.search, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch follow-ups");
       return res.json();
     },
+    placeholderData: keepPreviousData,
   });
+  const followUpItems = pagedData?.items ?? [];
+  const totalCount = pagedData?.total ?? 0;
+  const hasMore = pagedData?.hasMore ?? false;
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
-  const followUpItems = allFollowUps.filter(item => {
-    const status = getFollowUpStatus(item.followUpDate);
-    switch (filterView) {
-      case "overdue": return status.label === "Overdue";
-      case "today": return status.label === "Today";
-      case "thisweek": return status.label === "This Week";
-      case "upcoming": return status.label === "Upcoming";
-      case "all":
-      default: return true;
+  // If the current page index sits past the end of the data set (common
+  // when a shared deep link points beyond the now-truncated total, or
+  // when items get archived), snap back to the last valid page instead
+  // of showing an empty state.
+  useEffect(() => {
+    if (totalCount > 0 && page > totalPages) {
+      setPage(totalPages);
+      setQueryParams({ page: totalPages === 1 ? null : String(totalPages) });
     }
-  });
+  }, [page, totalPages, totalCount, setQueryParams]);
+
+  // Filter or view changes always reset paging back to page 1.
+  const handleFilterChange = useCallback((next: string) => {
+    setFilterView(next);
+    setPage(1);
+    setQueryParams({ filter: next === "all" ? null : next, page: null });
+  }, [setQueryParams]);
+  const handleViewChange = useCallback((next: string) => {
+    setViewMode(next as ViewMode);
+    setPage(1);
+    setQueryParams({ view: next, page: null });
+  }, [setQueryParams, setViewMode]);
+  const handlePageChange = useCallback((next: number) => {
+    setPage(next);
+    setQueryParams({ page: next === 1 ? null : String(next) });
+  }, [setQueryParams]);
 
   const resolveContactId = (item: FollowUpItem): string | undefined => {
     if (item.type === 'lead') return item.id;
@@ -498,7 +660,7 @@ export default function FollowUps() {
               <Button
                 variant={activeViewMode === "cards" ? "default" : "ghost"}
                 size="sm"
-                onClick={() => setViewMode("cards")}
+                onClick={() => handleViewChange("cards")}
                 data-testid="view-cards"
               >
                 <LayoutGrid className="h-4 w-4" />
@@ -506,7 +668,7 @@ export default function FollowUps() {
               <Button
                 variant={activeViewMode === "spreadsheet" ? "default" : "ghost"}
                 size="sm"
-                onClick={() => setViewMode("spreadsheet")}
+                onClick={() => handleViewChange("spreadsheet")}
                 data-testid="view-spreadsheet"
               >
                 <Table className="h-4 w-4" />
@@ -515,7 +677,7 @@ export default function FollowUps() {
                 <Button
                   variant={activeViewMode === "sales-process" ? "default" : "ghost"}
                   size="sm"
-                  onClick={() => setViewMode("sales-process")}
+                  onClick={() => handleViewChange("sales-process")}
                   data-testid="view-sales-process"
                   title="Sales Process"
                   className="gap-1.5"
@@ -534,7 +696,7 @@ export default function FollowUps() {
                 </Button>
               )}
             </div>
-            <Select value={filterView} onValueChange={setFilterView} data-testid="select-filter-view">
+            <Select value={filterView} onValueChange={handleFilterChange} data-testid="select-filter-view">
               <SelectTrigger className="w-full sm:w-[180px]">
                 <div className="flex items-center gap-2">
                   <Filter className="h-4 w-4" />
@@ -550,7 +712,7 @@ export default function FollowUps() {
               </SelectContent>
             </Select>
             <Badge variant="outline" data-testid="badge-total-followups">
-              {followUpItems.length} follow-ups
+              {totalCount} follow-ups
             </Badge>
           </div>
         }
@@ -563,16 +725,27 @@ export default function FollowUps() {
           onOpenLead={handleOpenLeadFromSalesProcess}
         />
       ) : activeViewMode === "spreadsheet" ? (
-        <FollowUpSpreadsheetView
-          items={followUpItems}
-          isLoading={isLoading}
-          onSetFollowUp={handleSetFollowUp}
-          onContact={handleContact}
-          onEdit={handleEdit}
-          onOpenDetail={handleOpenDetail}
-          onRemoveFollowUp={handleRemoveFollowUp}
-        />
-      ) : isLoading ? (
+        <>
+          <FollowUpSpreadsheetView
+            items={followUpItems}
+            isLoading={isLoading}
+            onSetFollowUp={handleSetFollowUp}
+            onContact={handleContact}
+            onEdit={handleEdit}
+            onOpenDetail={handleOpenDetail}
+            onRemoveFollowUp={handleRemoveFollowUp}
+          />
+          <FollowUpsPager
+            page={page}
+            totalPages={totalPages}
+            totalCount={totalCount}
+            hasMore={hasMore}
+            isLoading={isLoading}
+            pageSize={PAGE_SIZE}
+            onPageChange={handlePageChange}
+          />
+        </>
+      ) : isLoading && followUpItems.length === 0 ? (
         <div className="grid gap-4">
           {[...Array(3)].map((_, i) => (
             <Card key={i} className="animate-pulse">
@@ -597,19 +770,30 @@ export default function FollowUps() {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid gap-4">
-          {followUpItems.map((item) => (
-            <FollowUpCard
-              key={`${item.type}-${item.id}`}
-              item={item}
-              onSetFollowUp={handleSetFollowUp}
-              onContact={handleContact}
-              onSchedule={handleSchedule}
-              onEdit={handleEdit}
-              onRemoveFollowUp={handleRemoveFollowUp}
-            />
-          ))}
-        </div>
+        <>
+          <div className="grid gap-4">
+            {followUpItems.map((item) => (
+              <FollowUpCard
+                key={`${item.type}-${item.id}`}
+                item={item}
+                onSetFollowUp={handleSetFollowUp}
+                onContact={handleContact}
+                onSchedule={handleSchedule}
+                onEdit={handleEdit}
+                onRemoveFollowUp={handleRemoveFollowUp}
+              />
+            ))}
+          </div>
+          <FollowUpsPager
+            page={page}
+            totalPages={totalPages}
+            totalCount={totalCount}
+            hasMore={hasMore}
+            isLoading={isLoading}
+            pageSize={PAGE_SIZE}
+            onPageChange={handlePageChange}
+          />
+        </>
       )}
 
       {/* Email Composer Modal */}

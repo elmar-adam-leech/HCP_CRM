@@ -28,7 +28,10 @@ const getFollowUpStatus = (followUpDate: string) => {
 };
 
 export function FollowUpsWidget() {
-  const { data: followUpItems = [], isLoading } = useQuery<FollowUpItem[]>({
+  // The unified endpoint now always returns `{ items, total, hasMore }`
+  // (paging envelope). Widget mode caps the page size to 5 server-side, so
+  // we just unwrap `items` and ignore the pager fields here.
+  const { data, isLoading } = useQuery<{ items: FollowUpItem[]; total: number; hasMore: boolean }>({
     queryKey: ["/api/follow-ups/unified", { widget: true }],
     queryFn: async () => {
       const res = await fetch("/api/follow-ups/unified?widget=true");
@@ -36,6 +39,7 @@ export function FollowUpsWidget() {
       return res.json();
     },
   });
+  const followUpItems: FollowUpItem[] = data?.items ?? [];
 
   return (
     <Card data-testid="card-followups-widget">

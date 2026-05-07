@@ -14,7 +14,7 @@ import {
 } from "@shared/schema";
 import { leadStatusEnum, estimateStatusEnum } from "@shared/schema/enums";
 import { db } from "../db";
-import { and, asc, eq, gte, inArray, isNull, isNotNull, lte, notInArray, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, isNotNull, lt, notInArray, sql } from "drizzle-orm";
 
 export interface TaskInstanceWithLead extends SalesProcessTaskInstance {
   lead: {
@@ -321,7 +321,7 @@ async function listTaskInstances(
   if (options.estimateId) conds.push(eq(salesProcessTaskInstances.estimateId, options.estimateId));
   if (options.status) conds.push(eq(salesProcessTaskInstances.status, options.status));
   if (options.from) conds.push(gte(salesProcessTaskInstances.dueAt, options.from));
-  if (options.to) conds.push(lte(salesProcessTaskInstances.dueAt, options.to));
+  if (options.to) conds.push(lt(salesProcessTaskInstances.dueAt, options.to));
   return db.select().from(salesProcessTaskInstances)
     .where(and(...conds))
     .orderBy(asc(salesProcessTaskInstances.dueAt));
@@ -335,8 +335,10 @@ async function listTaskInstancesWithLeadSummary(
     leadId?: string;
     contactId?: string;
     statuses?: Array<'pending' | 'completed' | 'skipped' | 'failed'>;
+    limit?: number;
+    offset?: number;
   } = {},
-): Promise<TaskInstanceWithLead[]> {
+): Promise<{ items: TaskInstanceWithLead[]; total: number }> {
   // This back-compat join is lead-only by construction (innerJoin on
   // leads). Estimate-based tasks are filtered out — the legacy Follow-ups
   // page consumes this and only renders lead rows. New surfaces should
@@ -351,8 +353,19 @@ async function listTaskInstancesWithLeadSummary(
     conds.push(inArray(salesProcessTaskInstances.status, options.statuses));
   }
   if (options.from) conds.push(gte(salesProcessTaskInstances.dueAt, options.from));
-  if (options.to) conds.push(lte(salesProcessTaskInstances.dueAt, options.to));
-  const rows = await db
+  if (options.to) conds.push(lt(salesProcessTaskInstances.dueAt, options.to));
+
+  // Run COUNT separately so the page UI can show "Past Due · 1,457" even
+  // when only the first page is rendered. Two queries is simpler than a
+  // window function when the row set might be empty (offset past end).
+  const countRow = await db
+    .select({ c: sql<number>`count(*)::int` })
+    .from(salesProcessTaskInstances)
+    .innerJoin(leads, eq(leads.id, salesProcessTaskInstances.leadId))
+    .where(and(...conds));
+  const total = countRow[0]?.c ?? 0;
+
+  const baseQuery = db
     .select({
       task: salesProcessTaskInstances,
       lead: leads,
@@ -363,7 +376,10 @@ async function listTaskInstancesWithLeadSummary(
     .leftJoin(contacts, eq(contacts.id, leads.contactId))
     .where(and(...conds))
     .orderBy(asc(salesProcessTaskInstances.dueAt));
-  return rows.map((r) => ({
+  const rows = options.limit !== undefined
+    ? await baseQuery.limit(options.limit).offset(options.offset ?? 0)
+    : await baseQuery;
+  const items = rows.map((r) => ({
     ...r.task,
     lead: {
       id: r.lead.id,
@@ -376,6 +392,7 @@ async function listTaskInstancesWithLeadSummary(
       phone: r.contact?.phones?.[0] ?? null,
     },
   }));
+  return { items, total };
 }
 
 async function listEstimateTaskInstancesWithSummary(
@@ -386,8 +403,10 @@ async function listEstimateTaskInstancesWithSummary(
     estimateId?: string;
     contactId?: string;
     statuses?: Array<'pending' | 'completed' | 'skipped' | 'failed'>;
+    limit?: number;
+    offset?: number;
   } = {},
-): Promise<TaskInstanceWithEstimate[]> {
+): Promise<{ items: TaskInstanceWithEstimate[]; total: number }> {
   // Symmetrical to listTaskInstancesWithLeadSummary, but joining estimates +
   // contacts so the Follow-ups view can render estimate-anchored manual
   // tasks (e.g. "follow up after Approved estimate") with the same
@@ -402,8 +421,16 @@ async function listEstimateTaskInstancesWithSummary(
     conds.push(inArray(salesProcessTaskInstances.status, options.statuses));
   }
   if (options.from) conds.push(gte(salesProcessTaskInstances.dueAt, options.from));
-  if (options.to) conds.push(lte(salesProcessTaskInstances.dueAt, options.to));
-  const rows = await db
+  if (options.to) conds.push(lt(salesProcessTaskInstances.dueAt, options.to));
+
+  const countRow = await db
+    .select({ c: sql<number>`count(*)::int` })
+    .from(salesProcessTaskInstances)
+    .innerJoin(estimates, eq(estimates.id, salesProcessTaskInstances.estimateId))
+    .where(and(...conds));
+  const total = countRow[0]?.c ?? 0;
+
+  const baseQuery = db
     .select({
       task: salesProcessTaskInstances,
       estimate: estimates,
@@ -414,7 +441,10 @@ async function listEstimateTaskInstancesWithSummary(
     .leftJoin(contacts, eq(contacts.id, estimates.contactId))
     .where(and(...conds))
     .orderBy(asc(salesProcessTaskInstances.dueAt));
-  return rows.map((r) => ({
+  const rows = options.limit !== undefined
+    ? await baseQuery.limit(options.limit).offset(options.offset ?? 0)
+    : await baseQuery;
+  const items = rows.map((r) => ({
     ...r.task,
     estimate: {
       id: r.estimate.id,
@@ -427,6 +457,7 @@ async function listEstimateTaskInstancesWithSummary(
       phone: r.contact?.phones?.[0] ?? null,
     },
   }));
+  return { items, total };
 }
 
 async function countCompletedTasksSince(contractorId: string, since: Date): Promise<number> {

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { ChevronDown, ChevronRight, Calendar, Settings as SettingsIcon, Phone, MessageSquare, Mail } from "lucide-react";
 import { useLocation } from "wouter";
@@ -38,6 +38,8 @@ export interface TaskInstanceWithEstimate extends SalesProcessTaskInstance {
     phone: string | null;
   };
 }
+
+const BUCKET_PAGE_SIZE = 50;
 
 function startOfToday(): Date {
   const d = new Date();
@@ -85,7 +87,6 @@ function groupTasksByStep(
     }
     groups.get(key)!.tasks.push(t);
   }
-  // Order: by step's dayOffset, then actionType (call < text < email).
   const actionOrder = { call: 0, text: 1, email: 2 } as const;
   return Array.from(groups.values()).sort((a, b) => {
     if (!a.step && !b.step) return 0;
@@ -121,16 +122,57 @@ function StepGroupHeader({ group }: { group: GroupedByStep }) {
 }
 
 interface SalesProcessFollowUpViewProps {
-  // All active cadences for the contractor — every active cadence
-  // contributes tasks (and a name in the header). Empty array means there
-  // are no active cadences (the page should normally hide the toggle in
-  // that case, but we render a helpful empty-state regardless).
   cadences: SalesProcess[];
-  // Steps from EVERY active cadence, flattened. Used to build a single
-  // stepsById map so tasks group correctly under their owning step
-  // regardless of which cadence they came from.
   steps: SalesProcessStep[];
   onOpenLead: (leadId: string) => void;
+}
+
+/**
+ * Hook helper: paged fetch for one bucket of pending lead-anchored tasks
+ * within `from`/`to`. We always request from offset 0; the user grows
+ * `shown` via "Show more" rather than flipping pages, so each bucket
+ * keeps a single accumulating list rendered in the DOM at one time.
+ *
+ * `paged=1` opts into the `{ items, total, hasMore }` envelope server-side.
+ */
+function useBucketQuery(opts: {
+  bucket: string;
+  from?: Date;
+  to?: Date;
+  shown: number;
+  enabled?: boolean;
+}) {
+  const { bucket, from, to, shown, enabled = true } = opts;
+  return useQuery<{ items: TaskInstanceWithLead[]; total: number; hasMore: boolean }>({
+    queryKey: [
+      "/api/sales-process/tasks",
+      {
+        withLead: 1,
+        status: "pending",
+        from: from?.toISOString() ?? null,
+        to: to?.toISOString() ?? null,
+        paged: 1,
+        limit: shown,
+        offset: 0,
+        bucket,
+      },
+    ],
+    queryFn: async () => {
+      const url = new URL("/api/sales-process/tasks", window.location.origin);
+      url.searchParams.set("withLead", "1");
+      url.searchParams.set("status", "pending");
+      url.searchParams.set("paged", "1");
+      url.searchParams.set("limit", String(shown));
+      url.searchParams.set("offset", "0");
+      if (from) url.searchParams.set("from", from.toISOString());
+      if (to) url.searchParams.set("to", to.toISOString());
+      const res = await fetch(url.pathname + url.search, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch sales-process tasks");
+      return res.json();
+    },
+    enabled,
+    placeholderData: keepPreviousData,
+  });
 }
 
 export function SalesProcessFollowUpView({
@@ -148,50 +190,92 @@ export function SalesProcessFollowUpView({
   }>({ isOpen: false });
   const [upcomingOpen, setUpcomingOpen] = useState(false);
 
-  // Pull pending+failed tasks in a 30-day-back / 7-day-ahead window.
-  // 30 days back ensures very-overdue items still show in Past Due.
-  const fromDate = useMemo(() => {
-    const d = startOfToday();
-    d.setDate(d.getDate() - 30);
-    return d;
+  // Bucket date windows. Past Due reaches 30 days back to surface very-old
+  // overdue items; Today is the standard 0:00–24:00 window; Upcoming is
+  // the next-7-days lookahead so users can see what's queued.
+  const pastDueRange = useMemo(() => {
+    const from = new Date(); from.setHours(0, 0, 0, 0); from.setDate(from.getDate() - 30);
+    return { from, to: startOfToday() };
   }, []);
-  const toDate = useMemo(() => endOfDate(7), []);
+  const todayRange = useMemo(() => ({ from: startOfToday(), to: startOfTomorrow() }), []);
+  // Tomorrow gets its own bucket so the user can see "what's queued for
+  // tomorrow" independently of the wider lookahead. Upcoming covers
+  // day-after-tomorrow through +7 days and stays grouped-by-day inside.
+  const tomorrowRange = useMemo(() => {
+    const from = startOfTomorrow();
+    const to = new Date(from); to.setDate(to.getDate() + 1);
+    return { from, to };
+  }, []);
+  const upcomingRange = useMemo(() => {
+    const from = new Date(startOfTomorrow()); from.setDate(from.getDate() + 1);
+    const to = new Date(); to.setHours(0, 0, 0, 0); to.setDate(to.getDate() + 8);
+    return { from, to };
+  }, []);
+  // Window for the failed banner + estimate-anchored tasks: 30 back / 7 ahead.
+  const wideFrom = useMemo(() => {
+    const d = startOfToday(); d.setDate(d.getDate() - 30); return d;
+  }, []);
+  const wideTo = useMemo(() => endOfDate(7), []);
 
-  const { data: tasks = [], isLoading } = useQuery<TaskInstanceWithLead[]>({
+  // Per-bucket "shown" state — the user grows it via Show More. Every
+  // bucket also holds onto its own `total` so the count badge stays
+  // accurate even when only a slice has been fetched.
+  const [pastDueShown, setPastDueShown] = useState(BUCKET_PAGE_SIZE);
+  const [todayShown, setTodayShown] = useState(BUCKET_PAGE_SIZE);
+  const [tomorrowShown, setTomorrowShown] = useState(BUCKET_PAGE_SIZE);
+  const [upcomingShown, setUpcomingShown] = useState(BUCKET_PAGE_SIZE);
+
+  const pastDueQ = useBucketQuery({ bucket: "pastDue", from: pastDueRange.from, to: pastDueRange.to, shown: pastDueShown });
+  const todayQ = useBucketQuery({ bucket: "today", from: todayRange.from, to: todayRange.to, shown: todayShown });
+  const tomorrowQ = useBucketQuery({ bucket: "tomorrow", from: tomorrowRange.from, to: tomorrowRange.to, shown: tomorrowShown });
+  const upcomingQ = useBucketQuery({ bucket: "upcoming", from: upcomingRange.from, to: upcomingRange.to, shown: upcomingShown });
+
+  // Failed tasks power the NeedsAttention banner. They're typically rare
+  // (each represents a permanent send failure that needs human action),
+  // so we cap the page at 200 — well above what any tenant should
+  // realistically have outstanding at once.
+  const { data: failedData } = useQuery<{ items: TaskInstanceWithLead[]; total: number; hasMore: boolean }>({
     queryKey: [
       "/api/sales-process/tasks",
-      { withLead: 1, status: "pending,failed", from: fromDate.toISOString(), to: toDate.toISOString() },
+      { withLead: 1, status: "failed", from: wideFrom.toISOString(), to: wideTo.toISOString(), paged: 1, limit: 200 },
     ],
     queryFn: async () => {
       const url = new URL("/api/sales-process/tasks", window.location.origin);
       url.searchParams.set("withLead", "1");
-      url.searchParams.set("status", "pending,failed");
-      url.searchParams.set("from", fromDate.toISOString());
-      url.searchParams.set("to", toDate.toISOString());
+      url.searchParams.set("status", "failed");
+      url.searchParams.set("paged", "1");
+      url.searchParams.set("limit", "200");
+      url.searchParams.set("from", wideFrom.toISOString());
+      url.searchParams.set("to", wideTo.toISOString());
       const res = await fetch(url.pathname + url.search, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch sales-process tasks");
+      if (!res.ok) throw new Error("Failed to fetch failed tasks");
       return res.json();
     },
   });
 
-  // Estimate-anchored manual tasks (e.g. "follow up after Approved
-  // estimate"). Fetched in parallel with the lead-anchored query so the
-  // page renders both lists in one round-trip without re-running.
-  const { data: estimateTasks = [] } = useQuery<TaskInstanceWithEstimate[]>({
+  // Estimate-anchored tasks. Same wide window; capped at 50 with a
+  // Show More on the bucket header. Estimate cadences are usually
+  // shorter than lead cadences so the cap rarely binds.
+  const [estimateShown, setEstimateShown] = useState(BUCKET_PAGE_SIZE);
+  const { data: estimateData } = useQuery<{ items: TaskInstanceWithEstimate[]; total: number; hasMore: boolean }>({
     queryKey: [
       "/api/sales-process/tasks",
-      { withEstimate: 1, status: "pending,failed", from: fromDate.toISOString(), to: toDate.toISOString() },
+      { withEstimate: 1, status: "pending,failed", from: wideFrom.toISOString(), to: wideTo.toISOString(), paged: 1, limit: estimateShown },
     ],
     queryFn: async () => {
       const url = new URL("/api/sales-process/tasks", window.location.origin);
       url.searchParams.set("withEstimate", "1");
       url.searchParams.set("status", "pending,failed");
-      url.searchParams.set("from", fromDate.toISOString());
-      url.searchParams.set("to", toDate.toISOString());
+      url.searchParams.set("paged", "1");
+      url.searchParams.set("limit", String(estimateShown));
+      url.searchParams.set("offset", "0");
+      url.searchParams.set("from", wideFrom.toISOString());
+      url.searchParams.set("to", wideTo.toISOString());
       const res = await fetch(url.pathname + url.search, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch sales-process estimate tasks");
       return res.json();
     },
+    placeholderData: keepPreviousData,
   });
 
   const { data: completedTodayData } = useQuery<{ count: number }>({
@@ -211,31 +295,21 @@ export function SalesProcessFollowUpView({
     return m;
   }, [steps]);
 
-  const todayStart = startOfToday();
-  const tomorrowStart = startOfTomorrow();
-
-  const failed = useMemo(() => tasks.filter((t) => t.status === "failed"), [tasks]);
-  const pending = useMemo(() => tasks.filter((t) => t.status === "pending"), [tasks]);
-
-  const pastDue = useMemo(
-    () => pending.filter((t) => new Date(t.dueAt) < todayStart),
-    [pending, todayStart],
-  );
-  const today = useMemo(
-    () =>
-      pending.filter((t) => {
-        const d = new Date(t.dueAt);
-        return d >= todayStart && d < tomorrowStart;
-      }),
-    [pending, todayStart, tomorrowStart],
-  );
-  const upcoming = useMemo(
-    () => pending.filter((t) => new Date(t.dueAt) >= tomorrowStart),
-    [pending, tomorrowStart],
-  );
+  const failed = failedData?.items ?? [];
+  const pastDue = pastDueQ.data?.items ?? [];
+  const today = todayQ.data?.items ?? [];
+  const tomorrow = tomorrowQ.data?.items ?? [];
+  const upcoming = upcomingQ.data?.items ?? [];
+  const estimateTasks = estimateData?.items ?? [];
+  const pastDueTotal = pastDueQ.data?.total ?? 0;
+  const todayTotal = todayQ.data?.total ?? 0;
+  const tomorrowTotal = tomorrowQ.data?.total ?? 0;
+  const upcomingTotal = upcomingQ.data?.total ?? 0;
+  const estimateTotal = estimateData?.total ?? 0;
 
   const pastDueGroups = useMemo(() => groupTasksByStep(pastDue, stepsById), [pastDue, stepsById]);
   const todayGroups = useMemo(() => groupTasksByStep(today, stepsById), [today, stepsById]);
+  const tomorrowGroups = useMemo(() => groupTasksByStep(tomorrow, stepsById), [tomorrow, stepsById]);
   const upcomingByDay = useMemo(() => {
     const byDay = new Map<string, TaskInstanceWithLead[]>();
     for (const t of upcoming) {
@@ -256,7 +330,8 @@ export function SalesProcessFollowUpView({
     setEmailModal({ isOpen: true, task, initialContent: prefilledContent });
   };
 
-  if (isLoading) {
+  const isLoading = pastDueQ.isLoading || todayQ.isLoading || tomorrowQ.isLoading || upcomingQ.isLoading;
+  if (isLoading && pastDue.length === 0 && today.length === 0 && tomorrow.length === 0 && upcoming.length === 0) {
     return (
       <div className="space-y-3">
         {[...Array(3)].map((_, i) => (
@@ -269,11 +344,11 @@ export function SalesProcessFollowUpView({
     );
   }
 
-  const totalOpen = pastDue.length + today.length;
+  const totalOpen = pastDueTotal + todayTotal + tomorrowTotal + upcomingTotal + estimateTotal;
 
-  // Upcoming tasks let us tell the user "your next step is on {date}" so an
-  // empty Today/Past Due view doesn't look broken when a cadence is just
-  // waiting out its Day-N delay.
+  // For the empty-state hint we still want "what is your next thing?".
+  // We only know the next item among rows we've already fetched; that's
+  // the earliest row in the upcoming bucket.
   const nextUpcoming = useMemo(() => {
     if (upcoming.length === 0) return undefined;
     return upcoming.reduce((earliest, t) =>
@@ -318,7 +393,7 @@ export function SalesProcessFollowUpView({
 
       <SalesProcessNeedsAttentionBanner failed={failed} onOpenLead={onOpenLead} />
 
-      {totalOpen === 0 && pastDue.length === 0 && today.length === 0 && estimateTasks.length === 0 ? (
+      {totalOpen === 0 ? (
         <Card>
           <CardContent className="p-8 text-center space-y-3">
             <Calendar className="mx-auto h-10 w-10 text-muted-foreground" />
@@ -378,13 +453,15 @@ export function SalesProcessFollowUpView({
         </Card>
       ) : null}
 
-      {pastDue.length > 0 && (
+      {pastDueTotal > 0 && (
         <section className="space-y-2" data-testid="section-past-due">
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-destructive">
               Past Due
             </h2>
-            <Badge variant="destructive" className="text-xs">{pastDue.length}</Badge>
+            <Badge variant="destructive" className="text-xs" data-testid="badge-past-due-total">
+              {pastDueTotal}
+            </Badge>
           </div>
           {pastDueGroups.map((group) => (
             <div key={`pd-${group.stepKey}`} className="space-y-2">
@@ -402,14 +479,27 @@ export function SalesProcessFollowUpView({
               </div>
             </div>
           ))}
+          {pastDueQ.data?.hasMore && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPastDueShown((n) => n + BUCKET_PAGE_SIZE)}
+              disabled={pastDueQ.isFetching}
+              data-testid="button-show-more-past-due"
+            >
+              Show more ({pastDueTotal - pastDue.length} remaining)
+            </Button>
+          )}
         </section>
       )}
 
-      {today.length > 0 && (
+      {todayTotal > 0 && (
         <section className="space-y-2" data-testid="section-today">
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-semibold uppercase tracking-wide">Today</h2>
-            <Badge variant="secondary" className="text-xs">{today.length}</Badge>
+            <Badge variant="secondary" className="text-xs" data-testid="badge-today-total">
+              {todayTotal}
+            </Badge>
           </div>
           {todayGroups.map((group) => (
             <div key={`td-${group.stepKey}`} className="space-y-2">
@@ -427,10 +517,59 @@ export function SalesProcessFollowUpView({
               </div>
             </div>
           ))}
+          {todayQ.data?.hasMore && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setTodayShown((n) => n + BUCKET_PAGE_SIZE)}
+              disabled={todayQ.isFetching}
+              data-testid="button-show-more-today"
+            >
+              Show more ({todayTotal - today.length} remaining)
+            </Button>
+          )}
         </section>
       )}
 
-      {upcoming.length > 0 && (
+      {tomorrowTotal > 0 && (
+        <section className="space-y-2" data-testid="section-tomorrow">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold uppercase tracking-wide">Tomorrow</h2>
+            <Badge variant="secondary" className="text-xs" data-testid="badge-tomorrow-total">
+              {tomorrowTotal}
+            </Badge>
+          </div>
+          {tomorrowGroups.map((group) => (
+            <div key={`tm-${group.stepKey}`} className="space-y-2">
+              <StepGroupHeader group={group} />
+              <div className="space-y-2">
+                {group.tasks.map((t) => (
+                  <SalesProcessTaskRow
+                    key={t.id}
+                    task={t}
+                    step={group.step}
+                    onOpenLead={onOpenLead}
+                    onComposeEmail={handleComposeEmail}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+          {tomorrowQ.data?.hasMore && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setTomorrowShown((n) => n + BUCKET_PAGE_SIZE)}
+              disabled={tomorrowQ.isFetching}
+              data-testid="button-show-more-tomorrow"
+            >
+              Show more ({tomorrowTotal - tomorrow.length} remaining)
+            </Button>
+          )}
+        </section>
+      )}
+
+      {upcomingTotal > 0 && (
         <section className="space-y-2" data-testid="section-upcoming">
           <button
             className="flex items-center gap-2 hover-elevate rounded-md px-2 py-1 -mx-2"
@@ -442,8 +581,10 @@ export function SalesProcessFollowUpView({
             ) : (
               <ChevronRight className="h-4 w-4" />
             )}
-            <h2 className="text-sm font-semibold uppercase tracking-wide">Upcoming (next 7 days)</h2>
-            <Badge variant="outline" className="text-xs">{upcoming.length}</Badge>
+            <h2 className="text-sm font-semibold uppercase tracking-wide">Upcoming (next 7 days, after tomorrow)</h2>
+            <Badge variant="outline" className="text-xs" data-testid="badge-upcoming-total">
+              {upcomingTotal}
+            </Badge>
           </button>
           {upcomingOpen && (
             <div className="space-y-3 pl-6">
@@ -474,16 +615,29 @@ export function SalesProcessFollowUpView({
                   ))}
                 </div>
               ))}
+              {upcomingQ.data?.hasMore && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setUpcomingShown((n) => n + BUCKET_PAGE_SIZE)}
+                  disabled={upcomingQ.isFetching}
+                  data-testid="button-show-more-upcoming"
+                >
+                  Show more ({upcomingTotal - upcoming.length} remaining)
+                </Button>
+              )}
             </div>
           )}
         </section>
       )}
 
-      {estimateTasks.length > 0 && (
+      {estimateTotal > 0 && (
         <section className="space-y-2" data-testid="section-estimate-tasks">
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-semibold uppercase tracking-wide">Estimate follow-ups</h2>
-            <Badge variant="secondary" className="text-xs">{estimateTasks.length}</Badge>
+            <Badge variant="secondary" className="text-xs" data-testid="badge-estimate-total">
+              {estimateTotal}
+            </Badge>
           </div>
           <div className="space-y-2">
             {estimateTasks.map((t) => {
@@ -532,6 +686,16 @@ export function SalesProcessFollowUpView({
                 </Card>
               );
             })}
+            {estimateData?.hasMore && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setEstimateShown((n) => n + BUCKET_PAGE_SIZE)}
+                data-testid="button-show-more-estimate"
+              >
+                Show more ({estimateTotal - estimateTasks.length} remaining)
+              </Button>
+            )}
           </div>
         </section>
       )}

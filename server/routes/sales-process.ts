@@ -3,6 +3,7 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { requireManagerOrAdmin, type AuthedRequest } from "../auth-service";
 import { asyncHandler } from "../utils/async-handler";
+import { parseIntParam } from "../utils/validate-body";
 import { backfillOpenLeads, backfillForCadence } from "../services/sales-process";
 import { runDueAutoTasksOnce } from "../services/sales-process-cron";
 import { createCadenceSchema, entityTypeForTrigger, type SalesProcessTriggerType } from "@shared/schema";
@@ -327,27 +328,73 @@ export function registerSalesProcessRoutes(app: Express): void {
         .filter((s): s is Status => (validStatuses as readonly string[]).includes(s));
       if (parsed.length > 0) statuses = parsed;
     }
+    // Paging is opt-in: callers that pass `paged=1` (or `limit`/`offset`)
+    // get the `{ items, total, hasMore }` envelope. Callers that omit
+    // those params keep the legacy raw-array response, so the various
+    // older surfaces (lead detail to-do list, settings invalidations,
+    // service-internal callers) don't need to migrate at the same time.
+    const wantsPaged =
+      req.query.paged === '1' ||
+      req.query.paged === 'true' ||
+      req.query.limit !== undefined ||
+      req.query.offset !== undefined;
+    let limitVal: number | undefined;
+    let offsetVal: number | undefined;
+    if (wantsPaged) {
+      const parsedLimit = parseIntParam(req.query.limit as string | undefined, 50, 200);
+      if (parsedLimit === null || parsedLimit < 1) {
+        res.status(400).json({ message: "Invalid 'limit' parameter: must be a positive number" });
+        return;
+      }
+      const parsedOffset = parseIntParam(req.query.offset as string | undefined, 0);
+      if (parsedOffset === null || parsedOffset < 0) {
+        res.status(400).json({ message: "Invalid 'offset' parameter: must be a non-negative number" });
+        return;
+      }
+      limitVal = parsedLimit;
+      offsetVal = parsedOffset;
+    }
     // ?withEstimate=1 returns the estimate-anchored equivalent of withLead=1.
     if (req.query.withEstimate === '1' || req.query.withEstimate === 'true') {
-      const tasks = await storage.listEstimateTaskInstancesWithSummary(req.user.contractorId, {
+      const result = await storage.listEstimateTaskInstancesWithSummary(req.user.contractorId, {
         estimateId,
         contactId,
         statuses,
         from: fromDate,
         to: toDate,
+        limit: limitVal,
+        offset: offsetVal,
       });
-      res.json(tasks);
+      if (wantsPaged) {
+        res.json({
+          items: result.items,
+          total: result.total,
+          hasMore: (offsetVal ?? 0) + result.items.length < result.total,
+        });
+      } else {
+        res.json(result.items);
+      }
       return;
     }
     if (req.query.withLead === '1' || req.query.withLead === 'true') {
-      const tasks = await storage.listTaskInstancesWithLeadSummary(req.user.contractorId, {
+      const result = await storage.listTaskInstancesWithLeadSummary(req.user.contractorId, {
         leadId,
         contactId,
         statuses,
         from: fromDate,
         to: toDate,
+        limit: limitVal,
+        offset: offsetVal,
       });
-      res.json(tasks);
+      if (wantsPaged) {
+        res.json({
+          items: result.items,
+          total: result.total,
+          hasMore: (offsetVal ?? 0) + result.items.length < result.total,
+        });
+      } else {
+        res.json(result.items);
+      }
       return;
     }
     const tasks = await storage.listTaskInstances(req.user.contractorId, {

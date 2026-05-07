@@ -124,12 +124,25 @@ export function registerContactRoutes(app: Express): void {
 
   app.get("/api/follow-ups/unified", asyncHandler(async (req, res) => {
     const widgetMode = req.query.widget === "true";
-    const parsedLimit = parseIntParam(req.query.limit as string | undefined, 200, 500);
-    if (parsedLimit === null) {
-      res.status(400).json({ message: "Invalid 'limit' parameter: must be a number" });
+    // Per-page max of 200 (was a soft 500 cap with silent truncation).
+    // Default page size of 50 keeps first paint focused even on tenants
+    // with thousands of open follow-ups.
+    const parsedLimit = parseIntParam(req.query.limit as string | undefined, 50, 200);
+    if (parsedLimit === null || parsedLimit < 1) {
+      res.status(400).json({ message: "Invalid 'limit' parameter: must be a positive number" });
+      return;
+    }
+    const parsedOffset = parseIntParam(req.query.offset as string | undefined, 0);
+    if (parsedOffset === null || parsedOffset < 0) {
+      res.status(400).json({ message: "Invalid 'offset' parameter: must be a non-negative number" });
       return;
     }
     const limit = widgetMode ? 5 : parsedLimit;
+    const offset = widgetMode ? 0 : parsedOffset;
+    const fromRaw = typeof req.query.from === "string" ? new Date(req.query.from) : undefined;
+    const toRaw = typeof req.query.to === "string" ? new Date(req.query.to) : undefined;
+    const fromDate = fromRaw && !isNaN(fromRaw.getTime()) ? fromRaw : undefined;
+    const toDate = toRaw && !isNaN(toRaw.getTime()) ? toRaw : undefined;
     const contractorId = req.user.contractorId;
 
     type FollowUpItem = {
@@ -165,73 +178,107 @@ export function registerContactRoutes(app: Express): void {
       contact_id: string | null;
     };
 
+    // Server-side filter on follow_up_date so the UI can scope to a
+    // bucket (Past Due / Today / This Week / Upcoming) without paging
+    // through irrelevant rows. The same window applies to all three
+    // legs of the UNION.
+    const fromClause = fromDate
+      ? drizzleSql`AND follow_up_date >= ${fromDate}`
+      : drizzleSql``;
+    const toClause = toDate
+      ? drizzleSql`AND follow_up_date < ${toDate}`
+      : drizzleSql``;
+
     // Single UNION ALL query — each leg explicitly filters on contractor_id to
     // maintain multi-tenant isolation even if a future refactor removes the outer
     // guard. Results are sorted and limited in SQL to avoid in-process sorting.
-    const rows = await db.execute<UnionRow>(drizzleSql`
-      SELECT
-        c.id,
-        'lead'::text         AS row_type,
-        c.name               AS name,
-        NULL::text           AS title,
-        c.follow_up_date     AS follow_up_date,
-        c.emails[1]          AS email,
-        c.phones[1]          AS phone,
-        c.address            AS address,
-        NULL::text           AS value,
-        c.notes              AS notes,
-        c.source             AS source,
-        c.status::text       AS status,
-        NULL::text           AS contact_id
-      FROM contacts c
-      WHERE c.contractor_id = ${contractorId}
-        AND c.follow_up_date IS NOT NULL
+    // We run a parallel COUNT query (same UNION + filters) so an out-of-range
+    // offset still reports the true total instead of 0 — important for shared
+    // deep links where the page index outlives the data set.
+    const allFollowupsCte = drizzleSql`
+      all_followups AS (
+        SELECT
+          c.id,
+          'lead'::text         AS row_type,
+          c.name               AS name,
+          NULL::text           AS title,
+          c.follow_up_date     AS follow_up_date,
+          c.emails[1]          AS email,
+          c.phones[1]          AS phone,
+          c.address            AS address,
+          NULL::text           AS value,
+          c.notes              AS notes,
+          c.source             AS source,
+          c.status::text       AS status,
+          NULL::text           AS contact_id
+        FROM contacts c
+        WHERE c.contractor_id = ${contractorId}
+          AND c.follow_up_date IS NOT NULL
 
-      UNION ALL
+        UNION ALL
 
-      SELECT
-        e.id,
-        'estimate'::text                                            AS row_type,
-        COALESCE(ct.name, e.title)                                  AS name,
-        e.title                                                     AS title,
-        e.follow_up_date                                            AS follow_up_date,
-        ct.emails[1]                                                AS email,
-        ct.phones[1]                                                AS phone,
-        ct.address                                                  AS address,
-        e.amount::text                                              AS value,
-        e.description                                               AS notes,
-        NULL::text                                                  AS source,
-        e.status::text                                              AS status,
-        e.contact_id                                                AS contact_id
-      FROM estimates e
-      LEFT JOIN contacts ct ON ct.id = e.contact_id
-      WHERE e.contractor_id = ${contractorId}
-        AND e.follow_up_date IS NOT NULL
+        SELECT
+          e.id,
+          'estimate'::text                                            AS row_type,
+          COALESCE(ct.name, e.title)                                  AS name,
+          e.title                                                     AS title,
+          e.follow_up_date                                            AS follow_up_date,
+          ct.emails[1]                                                AS email,
+          ct.phones[1]                                                AS phone,
+          ct.address                                                  AS address,
+          e.amount::text                                              AS value,
+          e.description                                               AS notes,
+          NULL::text                                                  AS source,
+          e.status::text                                              AS status,
+          e.contact_id                                                AS contact_id
+        FROM estimates e
+        LEFT JOIN contacts ct ON ct.id = e.contact_id
+        WHERE e.contractor_id = ${contractorId}
+          AND e.follow_up_date IS NOT NULL
 
-      UNION ALL
+        UNION ALL
 
-      SELECT
-        j.id,
-        'job'::text                                                  AS row_type,
-        COALESCE(ct.name, j.title)                                   AS name,
-        j.title                                                      AS title,
-        j.follow_up_date                                             AS follow_up_date,
-        ct.emails[1]                                                 AS email,
-        ct.phones[1]                                                 AS phone,
-        ct.address                                                   AS address,
-        j.value::text                                                AS value,
-        j.notes                                                      AS notes,
-        NULL::text                                                   AS source,
-        j.status::text                                               AS status,
-        j.contact_id                                                 AS contact_id
-      FROM jobs j
-      LEFT JOIN contacts ct ON ct.id = j.contact_id
-      WHERE j.contractor_id = ${contractorId}
-        AND j.follow_up_date IS NOT NULL
+        SELECT
+          j.id,
+          'job'::text                                                  AS row_type,
+          COALESCE(ct.name, j.title)                                   AS name,
+          j.title                                                      AS title,
+          j.follow_up_date                                             AS follow_up_date,
+          ct.emails[1]                                                 AS email,
+          ct.phones[1]                                                 AS phone,
+          ct.address                                                   AS address,
+          j.value::text                                                AS value,
+          j.notes                                                      AS notes,
+          NULL::text                                                   AS source,
+          j.status::text                                               AS status,
+          j.contact_id                                                 AS contact_id
+        FROM jobs j
+        LEFT JOIN contacts ct ON ct.id = j.contact_id
+        WHERE j.contractor_id = ${contractorId}
+          AND j.follow_up_date IS NOT NULL
+      ),
+      filtered AS (
+        SELECT * FROM all_followups
+        WHERE TRUE
+          ${fromClause}
+          ${toClause}
+      )
+    `;
 
-      ORDER BY follow_up_date ASC
-      LIMIT ${limit}
-    `);
+    const [pageResult, countResult] = await Promise.all([
+      db.execute<UnionRow>(drizzleSql`
+        WITH ${allFollowupsCte}
+        SELECT * FROM filtered
+        ORDER BY follow_up_date ASC
+        LIMIT ${limit}
+        OFFSET ${offset}
+      `),
+      db.execute<{ total_count: number }>(drizzleSql`
+        WITH ${allFollowupsCte}
+        SELECT COUNT(*)::int AS total_count FROM filtered
+      `),
+    ]);
+    const rows = pageResult;
 
     const formatDate = (d: Date | string) => {
       const date = typeof d === "string" ? new Date(d) : d;
@@ -258,7 +305,12 @@ export function registerContactRoutes(app: Express): void {
       contactId: row.contact_id ?? undefined,
     }));
 
-    res.json(items);
+    const total = countResult.rows[0]?.total_count ?? 0;
+    res.json({
+      items,
+      total,
+      hasMore: offset + items.length < total,
+    });
   }));
 
   app.get("/api/contacts/lead-trend", asyncHandler(async (req, res) => {
