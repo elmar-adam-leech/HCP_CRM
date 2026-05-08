@@ -14,6 +14,52 @@ const DB_NAME = "auth-fallback";
 const DB_VERSION = 1;
 const STORE = "tokens";
 const KEY = "refresh_token";
+// task #737: also mirror the refresh token to localStorage so it survives an
+// eviction that wipes IDB. Reads check both; writes hit both. Format is the
+// raw token string (not a JSON envelope) for backward compatibility with the
+// IDB-only behaviour from #720.
+const LS_KEY = "refresh-token";
+
+function safeLocalStorage(): Storage | null {
+  try {
+    if (typeof window === "undefined") return null;
+    return window.localStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function readLocalStorage(): string | null {
+  const ls = safeLocalStorage();
+  if (!ls) return null;
+  try {
+    const raw = ls.getItem(LS_KEY);
+    return typeof raw === "string" && raw.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalStorage(token: string): boolean {
+  const ls = safeLocalStorage();
+  if (!ls) return false;
+  try {
+    ls.setItem(LS_KEY, token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearLocalStorageEntry(): void {
+  const ls = safeLocalStorage();
+  if (!ls) return;
+  try {
+    ls.removeItem(LS_KEY);
+  } catch {
+    // ignore — clear is best-effort
+  }
+}
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -69,11 +115,18 @@ async function withStore<T>(
 }
 
 export async function getStoredRefreshToken(): Promise<string | null> {
-  const value = await withStore<string>("readonly", (s) => s.get(KEY) as IDBRequest<string>);
-  return typeof value === "string" && value.length > 0 ? value : null;
+  // task #737: check both stores. IDB is the historical canonical store from
+  // #720; LS is the new mirror. Either may be evicted independently on iOS,
+  // so we accept whichever has a value.
+  const idbValue = await withStore<string>("readonly", (s) => s.get(KEY) as IDBRequest<string>);
+  if (typeof idbValue === "string" && idbValue.length > 0) return idbValue;
+  return readLocalStorage();
 }
 
 export async function setStoredRefreshToken(token: string): Promise<void> {
+  // task #737: write to BOTH stores in parallel so an eviction of one does
+  // not strand the SPA without a usable fallback.
+  writeLocalStorage(token);
   await withStore("readwrite", (s) => {
     s.put(token, KEY);
   });
@@ -89,6 +142,11 @@ export async function setStoredRefreshToken(token: string): Promise<void> {
  * freshly-issued refresh token outside IDB. See task #734.
  */
 export async function setStoredRefreshTokenStrict(token: string): Promise<void> {
+  // task #737: also mirror to localStorage. The LS write is best-effort —
+  // its failure does not block the strict IDB path because LS-only is a
+  // strictly weaker fallback than IDB+LS, and the existing telemetry
+  // contract is keyed to the IDB-write outcome.
+  writeLocalStorage(token);
   if (typeof indexedDB === "undefined") {
     throw new Error("IndexedDB unavailable");
   }
@@ -119,6 +177,9 @@ export async function setStoredRefreshTokenStrict(token: string): Promise<void> 
 }
 
 export async function clearStoredRefreshToken(): Promise<void> {
+  // task #737: clear from BOTH stores so a logout / dead-token outcome wipes
+  // every persistent copy of the refresh token.
+  clearLocalStorageEntry();
   await withStore("readwrite", (s) => {
     s.delete(KEY);
   });

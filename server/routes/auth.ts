@@ -152,6 +152,11 @@ export function registerAuthRoutes(app: Express): void {
         contractorId: user.contractorId!
       },
       refreshToken: rawRefresh,
+      // task #737: mirror the raw JWT in the response body so the SPA can
+      // persist it to localStorage + IndexedDB for the cookieless bearer-token
+      // fallback path. Cookies remain the default; this is a backstop for
+      // installed PWAs (iOS Safari) where the auth_token cookie is evicted.
+      authToken: token,
       message: "Login successful"
     });
   }));
@@ -498,6 +503,31 @@ export function registerAuthRoutes(app: Express): void {
         userAgent: req.headers["user-agent"] ?? null,
       });
       res.status(204).end();
+    }),
+  );
+
+  // task #737: tiny capability probe used by the SPA on first boot if both
+  // the auth_token cookie AND IndexedDB / localStorage are empty. Returning
+  // `{ supportsBearer: true }` lets the client log a one-off `bearer_probe`
+  // outcome so we can see how often the bearer path is the only thing keeping
+  // an installed PWA's session alive. Rate-limited to 10/min/IP — this
+  // endpoint never reads or writes any user state, so the cap is purely to
+  // bound the log volume from a misbehaving client.
+  const storageProbeRateLimiter = createRateLimiter({
+    windowMs: 60 * 1000,
+    maxRequests: 10,
+    keyPrefix: 'auth-storage-probe',
+  });
+  const storageProbeLog = logger('AuthStorageProbe');
+  app.post(
+    "/api/auth/storage-probe",
+    storageProbeRateLimiter,
+    asyncHandler(async (req: Request, res: Response) => {
+      storageProbeLog.info('bearer_probe', {
+        ip: req.ip ?? req.socket?.remoteAddress ?? null,
+        userAgent: req.headers['user-agent'] ?? null,
+      });
+      res.json({ supportsBearer: true });
     }),
   );
 

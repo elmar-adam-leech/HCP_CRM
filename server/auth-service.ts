@@ -284,7 +284,26 @@ export class AuthService {
   static requireAuth = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const token = AuthService.extractToken(req);
-      
+
+      // task #737: 1%-sampled telemetry so ops can see what fraction of
+      // production traffic is being served by the bearer-token fallback path
+      // vs the cookie path. Sampling avoids the per-request log volume that
+      // an unconditional emit would create on a multi-tenant CRM.
+      if (Math.random() < 0.01) {
+        const cookieToken = req.cookies?.auth_token;
+        const headerToken = AuthService.extractTokenFromHeader(req.headers.authorization);
+        const authSource: 'cookie' | 'bearer' | 'none' = cookieToken
+          ? 'cookie'
+          : headerToken
+            ? 'bearer'
+            : 'none';
+        log.info('auth_source_sample', {
+          authSource,
+          path: req.path,
+          method: req.method,
+        });
+      }
+
       if (!token) {
         res.status(401).json({ message: 'No authentication token provided' });
         return;

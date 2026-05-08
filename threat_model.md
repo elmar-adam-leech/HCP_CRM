@@ -87,6 +87,45 @@ Required guarantees:
 - All tenant-scoped resources MUST enforce both authentication and ownership/tenant membership checks to prevent IDOR and cross-tenant access.
 - Database access patterns MUST remain parameterized and tenant-filtered so injection or scope bypass cannot escalate into broader data compromise.
 
+## PWA storage trade-off (task #737 — cookieless bearer-token fallback)
+
+Installed PWAs on iOS Safari evict the `auth_token` httpOnly cookie under
+storage pressure, sometimes alongside IndexedDB. To meet the product
+expectation that field techs stay signed in, task #737 mirrors the short-lived
+auth JWT into BOTH `localStorage["auth-token"]` AND `IndexedDB
+auth-fallback/auth_token` (newer write wins on read), and attaches it as
+`Authorization: Bearer <jwt>` on every same-origin `/api/*` request when a
+stored copy is available. The cookie remains the default delivery path —
+bearer is added IN ADDITION TO `credentials: "include"`, never INSTEAD OF —
+and the server prefers the cookie when both arrive on the same request.
+
+This is a deliberate, narrow weakening of the existing security posture:
+
+- A successful XSS on the SPA can read the stored JWT (and the stored refresh
+  token mirrored under the same `auth-fallback` IDB database / matching
+  `localStorage` key from task #720), where it could not read the httpOnly
+  cookies. We accept this trade-off because (a) #720 already accepted the
+  same trade-off for the refresh token and (b) without this fallback,
+  installed PWAs cannot meet the basic product expectation of staying signed
+  in across iOS storage evictions.
+- Mitigations that remain in force: short auth-JWT TTL, refresh-token
+  rotation with replay detection (`replayed-past-grace` revokes the chain),
+  per-IP and per-token rate limits on `/api/auth/refresh`, server-side
+  preference for the cookie over the header, dead-token outcomes
+  (`not-found` / `revoked` / `expired` / `replayed-past-grace` /
+  `membership-missing`) clearing BOTH stores, and a single
+  `clearAllStoredAuthTokens()` helper that every logout path funnels through
+  to prevent stale bearer copies on disk.
+- Telemetry: a 1%-sampled `auth_source_sample` log (`AuthService`) reports
+  whether each authenticated request was served by the cookie or the bearer
+  path so ops can monitor real-world fallback usage; a `bearer_probe` log
+  (`AuthStorageProbe`, 10/min/IP) records when the SPA first asks the server
+  to confirm bearer support.
+- Future scans should treat any new storage of high-value secrets in
+  `localStorage` or IndexedDB as in-scope for the same trade-off
+  conversation, and should verify that newly-added logout / dead-token
+  paths still funnel through `clearAllStoredAuthTokens()`.
+
 ## 2026-04-22 Refresh Notes
 
 - Treat JWT role and integration-permission claims as high-risk scan anchors until token issuance and refresh are fully derived from `user_contractors`, not legacy `users` columns or stale JWT snapshots.

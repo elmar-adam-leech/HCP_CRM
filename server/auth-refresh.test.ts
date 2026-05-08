@@ -375,7 +375,15 @@ describe('handleRefreshRequest endpoint state machine', () => {
     );
 
     expect(res2.statusCode).toBe(200);
-    expect(res2.body).toEqual({ ok: true, grace: true });
+    // task #737: grace branch now also includes a freshly-minted authToken
+    // (so the SPA's LS+IDB auth-token mirror stays current) and a `via`
+    // marker so the client can prefer the working delivery path on
+    // subsequent retries inside the same tab. NO refreshToken — the grace
+    // branch deliberately does not rotate.
+    expect(res2.body).toMatchObject({ ok: true, grace: true });
+    expect(typeof (res2.body as { authToken?: unknown }).authToken).toBe('string');
+    expect((res2.body as { authToken: string }).authToken.length).toBeGreaterThan(0);
+    expect(['cookie', 'bearer']).toContain((res2.body as { via: string }).via);
     // #734 response contract: the grace branch DELIBERATELY omits `refreshToken`
     // from the body. No rotation occurred, so the IDB copy on the client is
     // still authoritative — re-emitting it would risk a stale-vs-rotated mix-up
@@ -493,6 +501,16 @@ describe('handleRefreshRequest endpoint state machine', () => {
     expect((res.body as { refreshToken: string }).refreshToken).toBe(
       res.cookies[REFRESH_COOKIE_NAME].value,
     );
+    // task #737: rotated body MUST also carry the freshly-minted auth JWT so
+    // the SPA's LS+IDB auth-token mirror stays current, AND `via: "bearer"`
+    // because the request was served from the body source (cookie was
+    // absent on this path). Drift between body authToken and the auth_token
+    // cookie value would silently log out IDB-only iOS PWA clients.
+    expect(typeof (res.body as { authToken?: unknown }).authToken).toBe('string');
+    expect((res.body as { authToken: string }).authToken).toBe(
+      res.cookies['auth_token'].value,
+    );
+    expect((res.body as { via: string }).via).toBe('bearer');
 
     // The original row was rotated, not revoked — same semantics as cookie path.
     const oldRow = store.rows.find((r) => r.id === rowId)!;

@@ -121,6 +121,10 @@ describe("refresh-token-storage", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    // task #737: storage now mirrors writes to localStorage too. Without an
+    // explicit clear here, a token written by one test would leak into the
+    // "returns null when nothing is stored" assertion in the next test.
+    try { window.localStorage.clear(); } catch {}
   });
 
   describe("happy path (IDB available)", () => {

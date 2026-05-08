@@ -404,6 +404,12 @@ describe('WebAuthn login (unauth)', () => {
     expect(typeof r.body.refreshToken).toBe('string');
     expect(r.body.refreshToken.length).toBeGreaterThan(0);
     expect(r.headers.refresh_token).toBe(r.body.refreshToken);
+    // task #737: body MUST also carry the raw auth JWT (matches auth_token
+    // cookie / header) so the SPA can mirror it into LS+IDB for the
+    // cookieless bearer-token fallback path.
+    expect(typeof r.body.authToken).toBe('string');
+    expect(r.body.authToken.length).toBeGreaterThan(0);
+    expect(r.body.authToken).toBe(r.headers.auth_token);
     // Counter advanced + lastUsedAt stamped
     expect(fakeDb.credentials[0].counter).toBe(1);
     expect(fakeDb.credentials[0].lastUsedAt).toBeInstanceOf(Date);

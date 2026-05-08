@@ -355,6 +355,10 @@ export default function AppInner() {
           setMfaPendingToken(data.pendingToken);
         } else {
           await persistRefreshTokenFromResponse(data);
+          // task #737: also persist the auth JWT into LS+IDB for the
+          // cookieless bearer-token fallback path.
+          const { persistAuthTokenFromResponse } = await import("@/lib/queryClient");
+          await persistAuthTokenFromResponse(data);
           queryClient.invalidateQueries({ queryKey: ['/api/auth/me'] });
         }
       } else {
@@ -404,6 +408,10 @@ export default function AppInner() {
       if (finishRes.ok) {
         const data = await finishRes.json().catch(() => ({}));
         await persistRefreshTokenFromResponse(data);
+        // task #737: also persist the auth JWT into LS+IDB for the
+        // cookieless bearer-token fallback path.
+        const { persistAuthTokenFromResponse } = await import("@/lib/queryClient");
+        await persistAuthTokenFromResponse(data);
         queryClient.invalidateQueries({ queryKey: ['/api/auth/me'] });
         return;
       }

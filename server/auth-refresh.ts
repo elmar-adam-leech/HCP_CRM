@@ -384,7 +384,20 @@ export async function handleRefreshRequest(req: Request, res: Response): Promise
       userId: existing.userId,
       contractorId: existing.contractorId,
     });
-    res.json({ ok: true, grace: true });
+    // task #737: include the freshly-minted auth JWT in the body so the SPA
+    // can update its localStorage / IDB auth-token mirror used by the
+    // cookieless bearer-token fallback path. `via` lets the client see
+    // whether the cookie or the bearer/IDB path served this refresh so it can
+    // prefer the working path on subsequent retries inside the same tab.
+    // No `refreshToken` here on purpose — the grace branch does NOT rotate,
+    // so the SPA's existing IDB copy is still authoritative (pinned by
+    // auth-refresh.test.ts).
+    res.json({
+      ok: true,
+      grace: true,
+      authToken: newAuthToken,
+      via: source === "body" ? "bearer" : "cookie",
+    });
     return;
   }
 
@@ -410,5 +423,16 @@ export async function handleRefreshRequest(req: Request, res: Response): Promise
   // Mirror the rotated raw token in the JSON body so the SPA can update its
   // IndexedDB fallback. The cookie is still the primary path; IDB is only a
   // backstop for iOS PWA cookie eviction.
-  res.json({ ok: true, refreshToken: newRaw });
+  //
+  // task #737: also mirror the freshly-minted auth JWT so the SPA can update
+  // its localStorage + IDB auth-token mirror used by the cookieless bearer
+  // path. `via` echoes whether the request was served from the cookie or the
+  // bearer/IDB-fallback source so the client can prefer the working path on
+  // subsequent retries inside the same tab.
+  res.json({
+    ok: true,
+    refreshToken: newRaw,
+    authToken: newAuthToken,
+    via: source === "body" ? "bearer" : "cookie",
+  });
 }

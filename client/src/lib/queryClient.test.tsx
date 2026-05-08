@@ -6,11 +6,41 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 vi.mock("./refresh-token-storage", () => ({
   getStoredRefreshToken: vi.fn(async () => null),
   setStoredRefreshToken: vi.fn(async () => {}),
+  setStoredRefreshTokenStrict: vi.fn(async () => {}),
   clearStoredRefreshToken: vi.fn(async () => {}),
 }));
 
-import { getQueryFn } from "./queryClient";
+// task #737: mock the new auth-token storage so the bearer-attach test below
+// can drive the "I have a stored JWT" branch without touching real IndexedDB.
+// The mock exposes a typed `__setStored` test hook so we don't need `any`
+// casts at the call sites — the cast is centralised here in the mock factory.
+interface AuthTokenStorageMock {
+  getStoredAuthTokenSync: ReturnType<typeof vi.fn>;
+  setStoredAuthTokenStrict: ReturnType<typeof vi.fn>;
+  clearStoredAuthToken: ReturnType<typeof vi.fn>;
+  ensureBootRecovery: ReturnType<typeof vi.fn>;
+  __setStored(t: string | null): void;
+}
+vi.mock("./auth-token-storage", () => {
+  let stored: string | null = null;
+  const mock: AuthTokenStorageMock = {
+    getStoredAuthTokenSync: vi.fn(() => stored),
+    setStoredAuthTokenStrict: vi.fn(async (t: string) => { stored = t; }),
+    clearStoredAuthToken: vi.fn(async () => { stored = null; }),
+    ensureBootRecovery: vi.fn(async () => stored),
+    __setStored(t: string | null) { stored = t; },
+  };
+  return mock;
+});
+
+import { apiRequest, getQueryFn } from "./queryClient";
 import * as storage from "./refresh-token-storage";
+import * as authTokenStorageRaw from "./auth-token-storage";
+const authTokenStorage = authTokenStorageRaw as unknown as AuthTokenStorageMock;
+
+function clearAuthCookie() {
+  document.cookie = "auth_token=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/";
+}
 
 describe("queryClient silent refresh — startup boot path", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -20,20 +50,17 @@ describe("queryClient silent refresh — startup boot path", () => {
     // @ts-expect-error jsdom global
     globalThis.fetch = fetchMock;
     vi.mocked(storage.getStoredRefreshToken).mockResolvedValue(null);
-    // Ensure any in-flight refresh from a previous test has had time to
-    // release the gate (the queryClient drops the gate on a setTimeout 0).
+    authTokenStorage.__setStored(null);
+    clearAuthCookie();
     await new Promise((r) => setTimeout(r, 5));
   });
 
   afterEach(() => {
     vi.clearAllMocks();
+    authTokenStorage.__setStored(null);
+    clearAuthCookie();
   });
 
-  // Regression for task #720 review item #3: every cold boot of the SPA
-  // hits /api/auth/me first, and on iOS PWA installs that request commonly
-  // 401s because the auth_token cookie has been evicted. The silent-refresh
-  // path MUST kick in there or the user gets bounced to /login on every
-  // cold start. This test pins the contract.
   it("retries /api/auth/me exactly once after a successful silent refresh", async () => {
     const userPayload = { user: { id: "u1", email: "test@example.com" } };
     fetchMock
@@ -75,3 +102,70 @@ function makeResponse(status: number, body: unknown): Response {
     headers: { "Content-Type": "application/json" },
   });
 }
+
+// task #737 step 4 — pin the bearer-fallback contract literally as written
+// in the task spec: "if `document.cookie` does NOT contain `auth_token`,
+// read the stored auth JWT from `auth-token-storage` and attach it as
+// `Authorization: Bearer <token>`." Cookies remain the default delivery
+// path; bearer is gated on the cookie-visibility check.
+describe("queryClient — task #737 bearer fallback header", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+    // @ts-expect-error jsdom global
+    globalThis.fetch = fetchMock;
+    authTokenStorage.__setStored("jwt-from-storage-abc");
+    clearAuthCookie();
+  });
+
+  afterEach(() => {
+    authTokenStorage.__setStored(null);
+    clearAuthCookie();
+    vi.clearAllMocks();
+  });
+
+  it("attaches Authorization: Bearer when document.cookie lacks auth_token and a stored JWT exists", async () => {
+    await apiRequest("GET", "/api/leads");
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init.headers as Record<string, string>)["Authorization"]).toBe(
+      "Bearer jwt-from-storage-abc",
+    );
+    // Cookie path stays in play — bearer is added IN ADDITION TO, never
+    // INSTEAD OF, the cookie. Server prefers cookie when both arrive.
+    expect(init.credentials).toBe("include");
+  });
+
+  it("getQueryFn attaches Authorization: Bearer under the same gate", async () => {
+    const fn = getQueryFn({ on401: "throw" });
+    await fn({
+      queryKey: ["/api/leads"],
+      signal: new AbortController().signal,
+      meta: undefined,
+    } as never);
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init.headers as Record<string, string>)["Authorization"]).toBe(
+      "Bearer jwt-from-storage-abc",
+    );
+    expect(init.credentials).toBe("include");
+  });
+
+  it("does NOT attach Authorization: Bearer when document.cookie shows a (non-httpOnly) auth_token", async () => {
+    // Test-environment cookies are necessarily JS-visible. This branch
+    // proves the gate respects the cookie-presence signal — production
+    // httpOnly cookies are invisible to JS by design and so won't trigger
+    // this branch in real traffic, but the gate itself is wired correctly.
+    document.cookie = "auth_token=jwt-from-cookie; path=/";
+    await apiRequest("GET", "/api/leads");
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init.headers as Record<string, string>)["Authorization"]).toBeUndefined();
+    expect(init.credentials).toBe("include");
+  });
+
+  it("omits the Authorization header when no stored auth JWT is present", async () => {
+    authTokenStorage.__setStored(null);
+    await apiRequest("GET", "/api/leads");
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init.headers as Record<string, string>)["Authorization"]).toBeUndefined();
+  });
+});

@@ -37,7 +37,7 @@ export function Header({
     try {
       // Pull the IDB-stored refresh token (task #720) so the server can revoke
       // its row even if iOS Safari has already evicted the refresh cookie.
-      const { getStoredRefreshToken, clearStoredRefreshToken } = await import(
+      const { getStoredRefreshToken } = await import(
         "@/lib/refresh-token-storage"
       );
       let refreshToken: string | null = null;
@@ -47,7 +47,11 @@ export function Header({
         "/api/auth/logout",
         refreshToken ? { refreshToken } : undefined,
       );
-      try { await clearStoredRefreshToken(); } catch {}
+      // task #737: wipe EVERY persistent copy (auth JWT + refresh token, both
+      // LS and IDB) through the single helper so no logout call site can
+      // drift and leave a stale bearer token on disk.
+      const { clearAllStoredAuthTokens } = await import("@/lib/queryClient");
+      try { await clearAllStoredAuthTokens(); } catch {}
       toast({
         title: "Logged out successfully",
         description: "You have been logged out of your account.",

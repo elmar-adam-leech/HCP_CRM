@@ -85,6 +85,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (req.path === '/auth/refresh') {
       return next();
     }
+    // task #737: storage-probe is a first-boot capability ping fired by the
+    // SPA when both the auth_token cookie and the localStorage/IDB JWT
+    // mirror are empty — exactly the unauthenticated state we need to
+    // measure. Must bypass requireAuth or the probe can never produce its
+    // intended `bearer_probe` telemetry. Has its own 10/min/IP rate limit.
+    if (req.path === '/auth/storage-probe') {
+      return next();
+    }
     if (req.path === '/auth/webauthn/login/begin' || req.path === '/auth/webauthn/login/finish') {
       return next(); // Public passkey sign-in endpoints (no existing session yet)
     }

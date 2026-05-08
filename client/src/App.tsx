@@ -99,6 +99,9 @@ function PublicLoginPage() {
           setMfaPendingToken(data.pendingToken);
         } else {
           await persistRefreshTokenFromResponse(data);
+          // task #737: persist auth JWT into LS+IDB (bearer fallback).
+          const { persistAuthTokenFromResponse } = await import("@/lib/queryClient");
+          await persistAuthTokenFromResponse(data);
           window.location.href = "/dashboard";
         }
       } else {
@@ -150,6 +153,9 @@ function PublicLoginPage() {
       if (finishRes.ok) {
         const data = await finishRes.json().catch(() => ({}));
         await persistRefreshTokenFromResponse(data);
+        // task #737: persist auth JWT into LS+IDB (bearer fallback).
+        const { persistAuthTokenFromResponse } = await import("@/lib/queryClient");
+        await persistAuthTokenFromResponse(data);
         window.location.href = "/dashboard";
         return;
       }

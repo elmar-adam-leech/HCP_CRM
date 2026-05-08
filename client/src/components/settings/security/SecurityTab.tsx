@@ -32,11 +32,12 @@ export function SecurityTab() {
     try {
       const result = await apiRequest("POST", "/api/auth/logout-company");
       const data = await result.json();
-      // Clear the IDB-stored refresh token (task #720) — this user's own session
-      // is also being terminated by logout-company.
+      // task #737: wipe EVERY persistent copy (auth JWT + refresh token, both
+      // LS and IDB) — this user's own session is also being terminated by
+      // logout-company, so any leftover bearer JWT must be cleared.
       try {
-        const { clearStoredRefreshToken } = await import("@/lib/refresh-token-storage");
-        await clearStoredRefreshToken();
+        const { clearAllStoredAuthTokens } = await import("@/lib/queryClient");
+        await clearAllStoredAuthTokens();
       } catch {}
       toast({
         title: "All company users signed out",

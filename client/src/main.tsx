@@ -68,6 +68,30 @@ class TopLevelErrorBoundary extends Component<
   }
 }
 
+// task #737 step 7 (literal spec): "The SPA hits this on first boot if both
+// cookie and storage are empty, purely so we can log a `bearer_probe`
+// outcome." Fire-and-forget telemetry — never blocks boot. The auth_token
+// cookie is httpOnly, so `document.cookie` cannot see it; per the spec's
+// gating model that's treated as "cookie not visible" and the probe is
+// allowed to fire alongside an empty storage mirror. The server-side
+// rate limit (10/min/IP, `AuthStorageProbe`) bounds the resulting volume.
+void (async () => {
+  try {
+    const { ensureBootRecovery } = await import("./lib/auth-token-storage");
+    const recovered = await ensureBootRecovery();
+    const cookieVisible = typeof document !== "undefined"
+      && document.cookie.split(";").some((c) => c.trim().startsWith("auth_token="));
+    if (!recovered && !cookieVisible) {
+      void fetch("/api/auth/storage-probe", {
+        method: "POST",
+        credentials: "include",
+      }).catch(() => {});
+    }
+  } catch {
+    // Probe is purely diagnostic; never block boot on its failure.
+  }
+})();
+
 const rootEl = document.getElementById("root")!;
 const tree = (
   <TopLevelErrorBoundary>

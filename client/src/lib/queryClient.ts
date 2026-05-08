@@ -4,6 +4,12 @@ import {
   getStoredRefreshToken,
   setStoredRefreshTokenStrict,
 } from "./refresh-token-storage";
+import {
+  clearStoredAuthToken,
+  getStoredAuthTokenSync,
+  setStoredAuthTokenStrict,
+} from "./auth-token-storage";
+
 
 class RateLimitError extends Error {
   retryAfter: number;
@@ -139,6 +145,28 @@ export async function persistRefreshTokenFromResponse(body: unknown): Promise<vo
 }
 
 /**
+ * task #737: persist the auth JWT returned in the response body of any mint
+ * endpoint (login, MFA verify, passkey finish, refresh-rotated, refresh-grace)
+ * into the localStorage + IndexedDB mirrors that back the cookieless bearer
+ * fallback path. Same telemetry channel as the refresh-token persist path.
+ */
+export async function persistAuthTokenFromResponse(body: unknown): Promise<void> {
+  if (
+    body &&
+    typeof body === "object" &&
+    "authToken" in body &&
+    typeof (body as { authToken: unknown }).authToken === "string" &&
+    (body as { authToken: string }).authToken.length > 0
+  ) {
+    try {
+      await setStoredAuthTokenStrict((body as { authToken: string }).authToken);
+    } catch (err) {
+      reportPersistFailure("persist", err);
+    }
+  }
+}
+
+/**
  * Clear the IDB copy. Call after logout / logout-all / remove-this-device.
  *
  * Today the only client surfaces that explicitly invoke a logout endpoint are
@@ -160,6 +188,26 @@ export async function clearStoredRefreshTokenSafe(): Promise<void> {
   try {
     await clearStoredRefreshToken();
   } catch {}
+}
+
+/**
+ * task #737: single helper that wipes EVERY persistent copy of the auth JWT
+ * AND the refresh token across BOTH localStorage AND IndexedDB. Use this
+ * from logout call sites and anywhere a dead-token outcome proves the stored
+ * tokens are no longer trustworthy. Drift between call sites is the most
+ * likely way to leave a stale bearer token on disk after sign-out, so every
+ * logout path MUST funnel through this single export.
+ */
+export async function clearAllStoredAuthTokens(): Promise<void> {
+  try {
+    await Promise.all([
+      clearStoredAuthToken(),
+      clearStoredRefreshToken(),
+    ]);
+  } catch {
+    // ignore — clear is best-effort. The server-side revocation already
+    // prevents any leftover bearer JWT from being accepted.
+  }
 }
 
 function reportRefreshFailure(stage: "cookie" | "idb", status: number, reason: string | null) {
@@ -197,6 +245,19 @@ async function doRefreshOnce(body?: { token: string }): Promise<{ ok: boolean; s
   }
 }
 
+function payloadVia(payload: unknown): "bearer" | "cookie" | null {
+  if (
+    payload &&
+    typeof payload === "object" &&
+    "via" in payload &&
+    typeof (payload as { via: unknown }).via === "string"
+  ) {
+    const v = (payload as { via: string }).via;
+    return v === "bearer" || v === "cookie" ? v : null;
+  }
+  return null;
+}
+
 async function attemptSilentRefresh(): Promise<boolean> {
   if (!inFlightRefresh) {
     inFlightRefresh = (async () => {
@@ -205,6 +266,13 @@ async function attemptSilentRefresh(): Promise<boolean> {
         const cookieAttempt = await doRefreshOnce();
         if (cookieAttempt.ok) {
           await persistRefreshTokenFromResponse(cookieAttempt.payload);
+          await persistAuthTokenFromResponse(cookieAttempt.payload);
+          // task #737: `via` field is logged server-side via the
+          // AuthRefresh telemetry. We no longer need to gate the bearer
+          // header attach client-side because bearer is attached on EVERY
+          // /api request whenever a stored auth JWT is present (the server
+          // prefers the cookie when both arrive).
+          payloadVia(cookieAttempt.payload);
           return true;
         }
 
@@ -225,6 +293,7 @@ async function attemptSilentRefresh(): Promise<boolean> {
         const bodyAttempt = await doRefreshOnce({ token: idbToken });
         if (bodyAttempt.ok) {
           await persistRefreshTokenFromResponse(bodyAttempt.payload);
+          await persistAuthTokenFromResponse(bodyAttempt.payload);
           return true;
         }
 
@@ -232,7 +301,9 @@ async function attemptSilentRefresh(): Promise<boolean> {
 
         // If the server explicitly rejected our IDB copy as not-found / revoked
         // / expired / replayed, the stored token is dead — drop it so we don't
-        // keep retrying it on every subsequent 401.
+        // keep retrying it on every subsequent 401. task #737: ALSO clear the
+        // auth-token mirrors (LS + IDB) — a revoked refresh chain implies the
+        // bearer JWT is no longer trustworthy either.
         if (
           bodyAttempt.status === 401 &&
           (bodyAttempt.reason === "not-found" ||
@@ -242,6 +313,7 @@ async function attemptSilentRefresh(): Promise<boolean> {
             bodyAttempt.reason === "membership-missing")
         ) {
           await clearStoredRefreshTokenSafe();
+          try { await clearStoredAuthToken(); } catch {}
         }
         return false;
       } finally {
@@ -257,6 +329,51 @@ async function attemptSilentRefresh(): Promise<boolean> {
   return inFlightRefresh;
 }
 
+/**
+ * task #737: build the request headers for a same-origin /api call. When the
+ * `auth_token` cookie is not visible to JS (because it's httpOnly OR because
+ * iOS Safari has evicted it), and we have a stored auth JWT, attach it as
+ * `Authorization: Bearer`. The server prefers the cookie when present, so on
+ * desktop browsers this header is a redundant safety copy; on iOS PWAs where
+ * the cookie has been wiped, it is the only thing keeping the session alive.
+ *
+ * `credentials: "include"` is still set on every request so the cookie path
+ * keeps working wherever it works — bearer is added IN ADDITION TO, never
+ * INSTEAD OF, the cookie.
+ */
+/**
+ * task #737 step 4 (literal spec): "if `document.cookie` does NOT contain
+ * `auth_token` (cookies disabled, evicted, or never set), read the stored
+ * auth JWT from `auth-token-storage` and attach it as
+ * `Authorization: Bearer <token>`."
+ *
+ * Note on httpOnly visibility: the production `auth_token` cookie is
+ * httpOnly and therefore NOT enumerated by `document.cookie`. By design,
+ * the spec's gate treats that as "cookie not visible → attach bearer as a
+ * safety copy." The server prefers the cookie when both arrive
+ * (`server/auth-service.ts → extractToken`), so on healthy desktop sessions
+ * the bearer header is harmless redundant material the server ignores; on
+ * installed iOS PWAs where the cookie has actually been evicted, it is the
+ * ONLY thing keeping the session alive. The XSS exposure trade-off is
+ * documented in `threat_model.md` "PWA storage trade-off."
+ */
+function isAuthCookieVisible(): boolean {
+  if (typeof document === "undefined") return false;
+  return document.cookie
+    .split(";")
+    .some((c) => c.trim().startsWith("auth_token="));
+}
+
+function buildHeaders(hasJsonBody: boolean): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (hasJsonBody) headers["Content-Type"] = "application/json";
+  if (!isAuthCookieVisible()) {
+    const token = getStoredAuthTokenSync();
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
 export async function apiRequest(
   method: string,
   url: string,
@@ -265,7 +382,7 @@ export async function apiRequest(
   const doFetch = () =>
     fetch(url, {
       method,
-      headers: data ? { "Content-Type": "application/json" } : {},
+      headers: buildHeaders(!!data),
       body: data ? JSON.stringify(data) : undefined,
       credentials: "include",
     });
@@ -290,7 +407,11 @@ export const getQueryFn: <T>(options: {
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
     const url = queryKey.join("/") as string;
-    const doFetch = () => fetch(url, { credentials: "include" });
+    const doFetch = () =>
+      fetch(url, {
+        headers: buildHeaders(false),
+        credentials: "include",
+      });
 
     let res = await doFetch();
 

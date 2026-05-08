@@ -240,6 +240,13 @@ describe('POST /api/auth/login response contract (#734)', () => {
     expect(r.body.refreshToken.length).toBeGreaterThan(0);
     expect(r.body.refreshToken).toBe(r.cookies['refresh_token']);
     expect(r.body.refreshToken).toBe(mocks.rawRefresh);
+    // task #737: body MUST also carry the raw auth JWT so the SPA can mirror
+    // it into LS+IDB for the cookieless bearer-token fallback path. The body
+    // value MUST equal the auth_token cookie value — drift would let an
+    // IDB-only client send a bearer the server has never issued.
+    expect(typeof r.body.authToken).toBe('string');
+    expect(r.body.authToken.length).toBeGreaterThan(0);
+    expect(r.body.authToken).toBe(r.cookies['auth_token']);
   });
 });
 
@@ -298,6 +305,11 @@ describe('POST /api/mfa/verify response contract (#734)', () => {
     expect(r.body.refreshToken.length).toBeGreaterThan(0);
     expect(r.body.refreshToken).toBe(r.cookies['refresh_token']);
     expect(r.body.refreshToken).toBe(mocks.rawRefresh);
+    // task #737: body MUST also carry the raw auth JWT (matches auth_token
+    // cookie). Same drift-prevention reasoning as the login contract above.
+    expect(typeof r.body.authToken).toBe('string');
+    expect(r.body.authToken.length).toBeGreaterThan(0);
+    expect(r.body.authToken).toBe(r.cookies['auth_token']);
   });
 });
 

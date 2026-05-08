@@ -390,6 +390,9 @@ export function registerWebAuthnRoutes(app: Express): void {
         contractorId: user.contractorId,
       },
       refreshToken: rawRefresh,
+      // task #737: mirror the raw JWT for the cookieless bearer-token fallback
+      // (installed PWAs on iOS Safari evict auth_token alongside IDB).
+      authToken: token,
       message: "Login successful",
     });
   }));

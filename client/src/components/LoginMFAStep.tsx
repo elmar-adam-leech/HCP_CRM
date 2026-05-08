@@ -29,8 +29,10 @@ export function LoginMFAStep({ pendingToken, onVerified, onCancel }: LoginMFASte
       });
       if (response.ok) {
         const data = await response.json().catch(() => ({}));
-        const { persistRefreshTokenFromResponse } = await import("@/lib/queryClient");
+        const { persistRefreshTokenFromResponse, persistAuthTokenFromResponse } = await import("@/lib/queryClient");
         await persistRefreshTokenFromResponse(data);
+        // task #737: persist auth JWT into LS+IDB (bearer fallback).
+        await persistAuthTokenFromResponse(data);
         onVerified();
       } else {
         const data = await response.json();
