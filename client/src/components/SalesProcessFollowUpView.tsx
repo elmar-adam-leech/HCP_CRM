@@ -335,6 +335,20 @@ export function SalesProcessFollowUpView({
     setEmailModal({ isOpen: true, task, initialContent: prefilledContent, guidance: guidance ?? undefined });
   };
 
+  // For the empty-state hint we still want "what is your next thing?".
+  // We only know the next item among rows we've already fetched; that's
+  // the earliest row in the upcoming bucket.
+  // NOTE: This hook MUST stay above the early return below — moving it
+  // after the `if (isLoading) return <skeleton/>` guard changes the hook
+  // count between renders and triggers React error #310 ("Rendered more
+  // hooks than during the previous render"). See task #739.
+  const nextUpcoming = useMemo(() => {
+    if (upcoming.length === 0) return undefined;
+    return upcoming.reduce((earliest, t) =>
+      new Date(t.dueAt) < new Date(earliest.dueAt) ? t : earliest,
+    );
+  }, [upcoming]);
+
   const isLoading = pastDueQ.isLoading || todayQ.isLoading || tomorrowQ.isLoading || upcomingQ.isLoading;
   if (isLoading && pastDue.length === 0 && today.length === 0 && tomorrow.length === 0 && upcoming.length === 0) {
     return (
@@ -350,16 +364,6 @@ export function SalesProcessFollowUpView({
   }
 
   const totalOpen = pastDueTotal + todayTotal + tomorrowTotal + upcomingTotal + estimateTotal;
-
-  // For the empty-state hint we still want "what is your next thing?".
-  // We only know the next item among rows we've already fetched; that's
-  // the earliest row in the upcoming bucket.
-  const nextUpcoming = useMemo(() => {
-    if (upcoming.length === 0) return undefined;
-    return upcoming.reduce((earliest, t) =>
-      new Date(t.dueAt) < new Date(earliest.dueAt) ? t : earliest,
-    );
-  }, [upcoming]);
 
   return (
     <div className="space-y-4">
