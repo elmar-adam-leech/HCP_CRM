@@ -34,6 +34,13 @@ export const users = pgTable("users", {
   mfaEnabled: boolean("mfa_enabled").default(false).notNull(),
   mfaSecretEncrypted: jsonb("mfa_secret_encrypted").$type<{ encrypted: string; iv: string; authTag: string } | null>(),
   mfaRecoveryCodes: jsonb("mfa_recovery_codes").$type<string[]>().default(sql`'[]'::jsonb`).notNull(),
+  // task #738: timestamp of when this user dismissed the post-login passkey
+  // enrollment prompt. Stored server-side because iOS PWA storage cannot be
+  // trusted to remember the dismissal across cold starts. NULL means the
+  // prompt has never been shown / dismissed; non-NULL means do not show it
+  // again. Set by both "Enable" and "Not now" — once a decision is made the
+  // prompt is retired.
+  passkeyPromptDismissedAt: timestamp("passkey_prompt_dismissed_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => ({
   emailIdx: index("users_email_idx").on(table.email),

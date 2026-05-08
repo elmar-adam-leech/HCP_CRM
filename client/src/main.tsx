@@ -75,22 +75,48 @@ class TopLevelErrorBoundary extends Component<
 // gating model that's treated as "cookie not visible" and the probe is
 // allowed to fire alongside an empty storage mirror. The server-side
 // rate limit (10/min/IP, `AuthStorageProbe`) bounds the resulting volume.
-void (async () => {
+/**
+ * task #738 — pre-render boot auth gate.
+ *
+ * Resolves cookie → bearer (with silent refresh) → conditional passkey
+ * BEFORE mounting React, then invalidates the /api/auth/me query so the
+ * SPA's first render sees the fresh session. Bounded by a 3-second
+ * overall budget so a misbehaving network or hung passkey prompt cannot
+ * delay app mount indefinitely.
+ */
+async function bootAuth(): Promise<void> {
+  const { apiRequest } = await import("./lib/queryClient");
+  const {
+    reportBootResolution,
+    attemptBootSilentPasskey,
+    determineBootSource,
+  } = await import("./lib/boot-auth");
+
+  let probedAuth = false;
   try {
-    const { ensureBootRecovery } = await import("./lib/auth-token-storage");
-    const recovered = await ensureBootRecovery();
-    const cookieVisible = typeof document !== "undefined"
-      && document.cookie.split(";").some((c) => c.trim().startsWith("auth_token="));
-    if (!recovered && !cookieVisible) {
-      void fetch("/api/auth/storage-probe", {
-        method: "POST",
-        credentials: "include",
-      }).catch(() => {});
-    }
+    const meRes = await apiRequest("GET", "/api/auth/me");
+    probedAuth = meRes.ok;
   } catch {
-    // Probe is purely diagnostic; never block boot on its failure.
+    probedAuth = false;
   }
-})();
+
+  if (probedAuth) {
+    const source = determineBootSource();
+    reportBootResolution(source === "none" ? "cookie" : source);
+    return;
+  }
+
+  const silent = await attemptBootSilentPasskey();
+  if (silent.ok) {
+    // Make sure the SPA's first render sees the fresh session — without
+    // this, useCurrentUser() may have already cached an unauthenticated
+    // result before the passkey assertion completed.
+    queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+    reportBootResolution(silent.source);
+  } else {
+    reportBootResolution("none");
+  }
+}
 
 const rootEl = document.getElementById("root")!;
 const tree = (
@@ -99,10 +125,26 @@ const tree = (
   </TopLevelErrorBoundary>
 );
 
-// If the server sent a pre-rendered marketing page, hydrate the existing DOM
-// in place so the user doesn't see a flash. Otherwise mount the SPA fresh.
-if (rootEl.hasChildNodes()) {
-  hydrateRoot(rootEl, tree);
-} else {
-  createRoot(rootEl).render(tree);
+function mount() {
+  if (rootEl.hasChildNodes()) {
+    hydrateRoot(rootEl, tree);
+  } else {
+    createRoot(rootEl).render(tree);
+  }
 }
+
+// Race the boot gate against a 3-second budget. Whichever finishes first
+// triggers React mount. Telemetry inside bootAuth still completes in the
+// background even if the budget expired first.
+void (async () => {
+  try {
+    await Promise.race([
+      bootAuth(),
+      new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+    ]);
+  } catch {
+    // Boot gate is purely diagnostic for mount; never block on its failure.
+  } finally {
+    mount();
+  }
+})();

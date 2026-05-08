@@ -15,6 +15,13 @@ export interface CurrentUser {
   canManageIntegrations: boolean;
   allowedIntegrations?: string[] | null;
   hasActiveCompanyIntegrations?: boolean;
+  // task #738: post-first-login passkey enrollment-prompt state.
+  // `passkeyPromptDismissedAt` is null until the user dismisses (or accepts)
+  // the prompt; `passkeyCount` reflects how many WebAuthn credentials they
+  // currently have. Both are surfaced from /api/auth/me so the SPA can decide
+  // whether to show the dialog without an extra round-trip.
+  passkeyPromptDismissedAt?: string | null;
+  passkeyCount?: number;
 }
 
 export interface CurrentUserResponse {

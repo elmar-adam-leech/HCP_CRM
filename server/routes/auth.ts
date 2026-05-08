@@ -523,9 +523,20 @@ export function registerAuthRoutes(app: Express): void {
     "/api/auth/storage-probe",
     storageProbeRateLimiter,
     asyncHandler(async (req: Request, res: Response) => {
+      // task #738: the boot-auth helper reports which resolution branch it
+      // ended up on (cookie / bearer / passkey-conditional / passkey-explicit /
+      // password / login-redirect). The field is optional and tolerated as
+      // any short string so the production log can pivot fallback usage by
+      // boot outcome rather than just "had nothing locally".
+      const bootResolution = typeof req.body?.bootResolution === 'string'
+        && req.body.bootResolution.length > 0
+        && req.body.bootResolution.length <= 40
+        ? req.body.bootResolution
+        : null;
       storageProbeLog.info('bearer_probe', {
         ip: req.ip ?? req.socket?.remoteAddress ?? null,
         userAgent: req.headers['user-agent'] ?? null,
+        bootResolution,
       });
       res.json({ supportsBearer: true });
     }),
@@ -570,6 +581,12 @@ export function registerAuthRoutes(app: Express): void {
         gmailEmail: supplemental?.gmailEmail || undefined,
         hasActiveCompanyIntegrations: enabledIntegrations.length > 0,
         callPreference: userContractor?.callPreference || 'integration',
+        // task #738: surface passkey-enrollment-prompt state so the SPA can
+        // show the post-first-login dialog at most once per user (per the
+        // dismiss timestamp), and gate it on the user actually having zero
+        // passkeys today.
+        passkeyPromptDismissedAt: supplemental?.passkeyPromptDismissedAt ?? null,
+        passkeyCount: supplemental?.passkeyCount ?? 0,
       }
     });
   }));

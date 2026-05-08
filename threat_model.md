@@ -126,6 +126,56 @@ This is a deliberate, narrow weakening of the existing security posture:
   conversation, and should verify that newly-added logout / dead-token
   paths still funnel through `clearAllStoredAuthTokens()`.
 
+## 2026-05-08 Task #738 — passkey-first cold-start
+
+Task #738 ("invisible re-sign-in with Face ID") adds three new public-ish
+surfaces and one authenticated surface to the auth subsystem. Each was
+designed against the existing trust boundaries:
+
+- `GET /api/auth/webauthn/has-credentials` (public, 10/min/IP) — used by the
+  SPA's boot-auth helper to decide whether attempting a silent passkey
+  unlock is worthwhile. To avoid becoming an account-enumeration oracle the
+  endpoint NEVER consults the database for the email branch: any
+  well-formed email returns `{ hasAny: true }`, malformed email returns
+  `{ hasAny: false }`, and the no-email branch gates on the non-secret
+  `pkhint=1` cookie. The constant-true response shape is the entire
+  defense — pinned by `server/routes/has-credentials.test.ts`.
+- `POST /api/auth/passkey-prompt/dismiss` (authenticated) — sets
+  `users.passkey_prompt_dismissed_at` to now. Idempotent. Tenant-irrelevant
+  (per-user, not per-contractor). No payload.
+- `POST /api/auth/storage-probe` now accepts an optional `bootResolution`
+  string field (length-bounded to 40 chars) so production telemetry can
+  distinguish cookie/bearer/passkey-conditional/passkey-explicit/password
+  outcomes. Still rate-limited 10/min/IP. Still a fire-and-forget log; no
+  database write, no auth side-effect.
+- `pkhint=1` cookie (client-written, non-httpOnly, SameSite=Lax, 1-year):
+  carries no PII, no user identifier, no integrity-bearing material — it is
+  literally the bit "this device has at least one local passkey". An
+  attacker reading this cookie learns nothing they couldn't learn by
+  attempting a WebAuthn assertion. PasskeysCard writes it on register and
+  clears it on remove via the same `setHasPasskeyFlag` helper that maintains
+  the `localStorage["hcp.webauthn.hasPasskey"]` mirror.
+- Conditional-UI passkey discovery in `LoginForm` re-uses the existing
+  `/api/auth/webauthn/login/begin` and `/finish` endpoints; no new server
+  surface is introduced for the silent path. The begin endpoint already
+  enforces its own anti-enumeration shape.
+
+Future scans should:
+
+- Treat `/api/auth/webauthn/has-credentials` as a high-value enumeration
+  target — any change that consults the database for the email branch
+  breaks the no-oracle invariant and must be re-reviewed. The pinned test
+  in `server/routes/has-credentials.test.ts` exists specifically to catch
+  this regression.
+- Verify any new client-side write of high-value secrets to LS / IDB /
+  cookies still respects the trade-off documented in "PWA storage
+  trade-off". The `pkhint` cookie is acceptable BECAUSE it carries no
+  secret; do not generalize this pattern to anything that does.
+- Verify `users.passkey_prompt_dismissed_at` reads/writes go through the
+  authenticated surface only — it is a per-user UX flag, not security
+  state, but a missing auth check would let an unauthenticated caller
+  spam-clear the prompt for arbitrary users.
+
 ## 2026-04-22 Refresh Notes
 
 - Treat JWT role and integration-permission claims as high-risk scan anchors until token issuance and refresh are fully derived from `user_contractors`, not legacy `users` columns or stale JWT snapshots.

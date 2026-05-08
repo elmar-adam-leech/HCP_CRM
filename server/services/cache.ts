@@ -97,10 +97,31 @@ export const getUserSupplementalCached = memoizee(
   async (userId: string) => {
     const user = await storage.getUser(userId);
     if (!user) return null;
+    // task #738: also surface passkey enrollment-prompt state and the
+    // user's current passkey count, so the SPA can decide whether to
+    // show the post-first-login enrollment dialog without a second
+    // network round-trip. Both fields change rarely (passkey
+    // register/remove + dismiss action) and the existing 60s TTL is
+    // acceptable — a fresh dismissal becomes visible on the next /me.
+    let passkeyCount = 0;
+    try {
+      const { db } = await import("../db");
+      const { webauthnCredentials } = await import("@shared/schema");
+      const { eq, sql } = await import("drizzle-orm");
+      const rows = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(webauthnCredentials)
+        .where(eq(webauthnCredentials.userId, userId));
+      passkeyCount = Number(rows[0]?.count ?? 0);
+    } catch {
+      passkeyCount = 0;
+    }
     return {
       dialpadDefaultNumber: user.dialpadDefaultNumber || undefined,
       gmailConnected: user.gmailConnected || false,
       gmailEmail: user.gmailEmail || undefined,
+      passkeyPromptDismissedAt: (user as { passkeyPromptDismissedAt?: Date | null }).passkeyPromptDismissedAt ?? null,
+      passkeyCount,
     };
   },
   {

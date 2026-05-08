@@ -96,6 +96,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (req.path === '/auth/webauthn/login/begin' || req.path === '/auth/webauthn/login/finish') {
       return next(); // Public passkey sign-in endpoints (no existing session yet)
     }
+    // task #738: cookieless first-boot probe used by the boot-auth helper to
+    // decide whether to attempt a silent passkey unlock. Always returns the
+    // same { hasAny } regardless of whether any specific email is registered
+    // — see has-credentials route handler for the no-enumeration contract.
+    if (req.path === '/auth/webauthn/has-credentials') {
+      return next();
+    }
     if (req.path === '/mfa/verify') {
       return next(); // Public MFA verify endpoint (uses pendingToken)
     }

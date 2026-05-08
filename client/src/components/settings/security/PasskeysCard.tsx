@@ -34,6 +34,23 @@ function setHasPasskeyFlag(value: boolean): void {
     // localStorage may be unavailable (private mode); login button stays
     // hidden in that case, which is the safe default.
   }
+  // task #738: also mirror the hint into a small non-httpOnly cookie so the
+  // server-side `/has-credentials` endpoint can return `hasAny: true` on
+  // first cold-boot WITHOUT being forced into an account-enumeration shape.
+  // Cookie carries no PII — it's literally `pkhint=1` (or absent). Survives
+  // localStorage eviction in the same way the refresh cookie does.
+  try {
+    if (typeof document === "undefined") return;
+    if (value) {
+      // Long-lived (1 year), SameSite=Lax so it accompanies same-site
+      // navigation. Path=/ so every route sees it.
+      document.cookie = "pkhint=1; Max-Age=31536000; Path=/; SameSite=Lax";
+    } else {
+      document.cookie = "pkhint=; Max-Age=0; Path=/; SameSite=Lax";
+    }
+  } catch {
+    // ignore — cookie write is best-effort
+  }
 }
 
 function formatDate(value: string | null): string {

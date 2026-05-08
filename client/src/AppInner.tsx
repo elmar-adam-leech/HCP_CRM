@@ -16,6 +16,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { LoginMFAStep } from "@/components/LoginMFAStep";
+import { PasskeyEnrollmentPrompt } from "@/components/PasskeyEnrollmentPrompt";
 import type { ContractorMembership, ActiveContractor } from "@/types/contractor";
 
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
@@ -359,6 +360,15 @@ export default function AppInner() {
           // cookieless bearer-token fallback path.
           const { persistAuthTokenFromResponse } = await import("@/lib/queryClient");
           await persistAuthTokenFromResponse(data);
+          // task #738: report `password` so production telemetry sees the
+          // full boot-resolution distribution including the slowest /
+          // most-friction outcome.
+          try {
+            const { reportBootResolution } = await import("@/lib/boot-auth");
+            reportBootResolution("password");
+          } catch {
+            // Telemetry must never block sign-in.
+          }
           queryClient.invalidateQueries({ queryKey: ['/api/auth/me'] });
         }
       } else {
@@ -412,6 +422,14 @@ export default function AppInner() {
         // cookieless bearer-token fallback path.
         const { persistAuthTokenFromResponse } = await import("@/lib/queryClient");
         await persistAuthTokenFromResponse(data);
+        // task #738: explicit (button-triggered) passkey sign-in is the
+        // `passkey-explicit` boot resolution branch.
+        try {
+          const { reportBootResolution } = await import("@/lib/boot-auth");
+          reportBootResolution("passkey-explicit");
+        } catch {
+          // Telemetry must never block sign-in.
+        }
         queryClient.invalidateQueries({ queryKey: ['/api/auth/me'] });
         return;
       }
@@ -533,6 +551,7 @@ export default function AppInner() {
                 <Router />
               </DashboardLayout>
               <MobileBottomNav />
+              <PasskeyEnrollmentPrompt user={user} />
               <Toaster />
             </BulkSelectionProvider>
             </TerminologyProvider>

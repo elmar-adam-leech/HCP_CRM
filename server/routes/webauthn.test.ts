@@ -231,6 +231,7 @@ vi.mock('../auth-service', () => ({
 vi.mock('../utils/audit-log', () => ({ auditLog: vi.fn(async () => undefined) }));
 vi.mock('../middleware/rate-limiter', () => ({
   authLoginRateLimiter: (_req: any, _res: any, next: any) => next(),
+  createRateLimiter: () => (_req: any, _res: any, next: any) => next(),
 }));
 
 import { registerWebAuthnRoutes } from './webauthn';
@@ -374,6 +375,23 @@ describe('WebAuthn login (unauth)', () => {
     expect(fakeDb.challenges).toHaveLength(1);
     expect(fakeDb.challenges[0].sessionId).toBe(r.body.sessionId);
     expect(fakeDb.challenges[0].purpose).toBe('login');
+  });
+
+  it('POST /login/begin requests a discoverable-credential flow (empty allowCredentials)', async () => {
+    // task #738: silent / conditional passkey UX requires the begin call
+    // to NOT pin allowCredentials — otherwise the platform would only
+    // surface the explicitly-listed credentials and Face ID at cold-start
+    // (when we don't yet know the user) couldn't work. Pin the contract.
+    const { generateAuthenticationOptions } = await import('@simplewebauthn/server');
+    const spy = generateAuthenticationOptions as unknown as ReturnType<typeof vi.fn>;
+    spy.mockClear();
+    const app = makeApp();
+    const r = await call(app, 'POST', '/api/auth/webauthn/login/begin');
+    expect(r.status).toBe(200);
+    expect(spy).toHaveBeenCalledTimes(1);
+    const arg = spy.mock.calls[0][0];
+    expect(arg.allowCredentials).toEqual([]);
+    expect(arg.userVerification).toBe('preferred');
   });
 
   it('POST /login/finish issues an auth_token cookie on success', async () => {

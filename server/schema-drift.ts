@@ -1276,6 +1276,11 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `ALTER TABLE estimates ADD COLUMN IF NOT EXISTS document_sent_at timestamp`,
       description: 'estimates.document_sent_at (task #721: document-sent timestamp, sticky, independent of visit status)',
     },
+    // ---- Task #738: users.passkey_prompt_dismissed_at (post-login passkey enrollment prompt dismissal) ----
+    {
+      sql: `ALTER TABLE users ADD COLUMN IF NOT EXISTS passkey_prompt_dismissed_at timestamp`,
+      description: 'users.passkey_prompt_dismissed_at (task #738: per-user dismissal of post-login passkey enrollment prompt)',
+    },
   ];
 
 export async function applyColumnMigrations(

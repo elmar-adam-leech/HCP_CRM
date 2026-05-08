@@ -29,9 +29,14 @@ import {
 import { asyncHandler } from "../utils/async-handler";
 import { auditLog } from "../utils/audit-log";
 import { logger } from "../utils/logger";
-import { authLoginRateLimiter } from "../middleware/rate-limiter";
+import { authLoginRateLimiter, createRateLimiter } from "../middleware/rate-limiter";
+import { users } from "@shared/schema";
 
 const log = logger("WebAuthnRoutes");
+// task #738: dedicated `[Auth]` channel for the two operational logs ops
+// grep on (`passkey_enroll`, `passkey_login`). Keeps the WebAuthnRoutes
+// channel for protocol-level warnings/errors and gives ops a stable prefix.
+const authLog = logger("Auth");
 
 const RP_NAME = "HCP CRM";
 const CHALLENGE_TTL_MS = 60 * 1000; // 60 seconds — generous for slow biometric prompts
@@ -213,6 +218,15 @@ export function registerWebAuthnRoutes(app: Express): void {
       userAgent: req.headers["user-agent"] ?? undefined,
     });
 
+    // task #738: structured operational log alongside the audit row so ops
+    // can grep `[Auth] passkey_enroll` to count silent re-sign-in adoption
+    // without joining against the audit_logs table.
+    authLog.info("passkey_enroll", {
+      userId,
+      contractorId: req.user.contractorId,
+      userAgent: req.headers["user-agent"] ?? undefined,
+    });
+
     res.json({
       id: inserted[0].id,
       deviceLabel: inserted[0].deviceLabel,
@@ -230,7 +244,11 @@ export function registerWebAuthnRoutes(app: Express): void {
 
     const options = await generateAuthenticationOptions({
       rpID,
-      userVerification: "required",
+      // task #738: "preferred" instead of "required" so devices without
+      // biometrics (e.g. older Android with PIN-only authenticator) can
+      // still authenticate. Modern iOS/macOS/Android still satisfy UV
+      // automatically because their platform authenticators always do UV.
+      userVerification: "preferred",
       // Empty allowCredentials → discoverable credential (resident key) flow,
       // which is what platform authenticators (Face ID / Touch ID) use.
       allowCredentials: [],
@@ -380,6 +398,15 @@ export function registerWebAuthnRoutes(app: Express): void {
       userAgent: req.headers["user-agent"] ?? undefined,
     });
 
+    // task #738: structured operational log so ops can grep `[Auth]
+    // passkey_login` for cold-start silent re-sign-in volume without
+    // joining audit_logs.
+    authLog.info("passkey_login", {
+      userId: user.id,
+      contractorId: user.contractorId,
+      userAgent: req.headers["user-agent"] ?? undefined,
+    });
+
     res.json({
       user: {
         id: user.id,
@@ -412,6 +439,80 @@ export function registerWebAuthnRoutes(app: Express): void {
       .where(eq(webauthnCredentials.userId, req.user.userId));
     res.json({ credentials: rows });
   }));
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // task #738: GET /api/auth/webauthn/has-credentials — public, rate-limited.
+  //
+  // Used by the SPA's boot-auth helper to decide whether attempting a silent
+  // passkey unlock is worthwhile. To avoid this becoming an account-enumeration
+  // oracle ("does this email have an account here?"):
+  //
+  //   • With a well-formed email query param, ALWAYS returns { hasAny: true }
+  //     regardless of whether any user with that email actually exists or has
+  //     a registered passkey. The front-end will simply attempt the conditional
+  //     UI WebAuthn flow; if no discoverable credential is present locally,
+  //     the browser silently does nothing — the user sees no error.
+  //   • Without an email param, returns { hasAny: true } only when the per-
+  //     device hint cookie `pkhint=1` is set (written client-side after a
+  //     successful local registration). This is a non-secret hint and never
+  //     identifies the user.
+  //   • With a malformed email, returns { hasAny: false } — purely a UX
+  //     short-circuit so a typo doesn't trigger an empty WebAuthn prompt.
+  //
+  // Rate-limited at 10/min/IP (matches the spec for task #738) to bound log
+  // volume from a misbehaving SPA. The probe is fired at most once per cold
+  // boot, so 10/min/IP is comfortably above the legitimate ceiling.
+  // ──────────────────────────────────────────────────────────────────────────
+  const hasCredentialsRateLimiter = createRateLimiter({
+    windowMs: 60 * 1000,
+    maxRequests: 10,
+    keyPrefix: 'webauthn-has-credentials',
+  });
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  app.get(
+    "/api/auth/webauthn/has-credentials",
+    hasCredentialsRateLimiter,
+    asyncHandler(async (req: Request, res: Response) => {
+      const emailRaw = typeof req.query.email === 'string' ? req.query.email.trim() : '';
+      if (emailRaw) {
+        if (!EMAIL_RE.test(emailRaw) || emailRaw.length > 254) {
+          res.json({ hasAny: false });
+          return;
+        }
+        // Constant-true response — does NOT consult the database. Returning
+        // true unconditionally for any well-formed email is the entire
+        // anti-enumeration design.
+        res.json({ hasAny: true });
+        return;
+      }
+      const cookieHint = (req.headers.cookie ?? '')
+        .split(';')
+        .map((c) => c.trim())
+        .some((c) => c === 'pkhint=1' || c.startsWith('pkhint=1;'));
+      res.json({ hasAny: cookieHint });
+    }),
+  );
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // task #738: POST /api/auth/passkey-prompt/dismiss — record that the user
+  // dismissed (or accepted) the post-first-login passkey enrollment prompt
+  // so it isn't shown to them again. Authenticated; no body required.
+  // Idempotent — repeated calls just refresh the dismissed-at timestamp.
+  // ──────────────────────────────────────────────────────────────────────────
+  app.post(
+    "/api/auth/passkey-prompt/dismiss",
+    requireAuth,
+    asyncHandler(async (req: AuthedRequest, res: Response) => {
+      await db.update(users)
+        .set({ passkeyPromptDismissedAt: new Date() })
+        .where(eq(users.id, req.user.userId));
+      try {
+        const { invalidateUserCache } = await import("../services/cache");
+        invalidateUserCache(req.user.userId);
+      } catch {}
+      res.json({ ok: true });
+    }),
+  );
 
   app.delete("/api/auth/webauthn/credentials/:id", requireAuth, asyncHandler(async (req: AuthedRequest, res: Response) => {
     const id = req.params.id;
