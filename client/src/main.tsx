@@ -84,23 +84,41 @@ class TopLevelErrorBoundary extends Component<
  * overall budget so a misbehaving network or hung passkey prompt cannot
  * delay app mount indefinitely.
  */
-async function bootAuth(): Promise<void> {
-  const { apiRequest } = await import("./lib/queryClient");
+/**
+ * task #743: kick off the /api/auth/me probe through react-query itself —
+ * NOT via a separate apiRequest — so when useCurrentUser() mounts a moment
+ * later it adopts the in-flight query under the same ["/api/auth/me"] key
+ * instead of firing a second request. This is the dedupe contract the
+ * task acceptance criterion is pinned on.
+ */
+function startMeProbe(): Promise<unknown> {
+  return queryClient
+    .fetchQuery({
+      queryKey: ["/api/auth/me"],
+      queryFn: async () => {
+        const { apiRequest } = await import("./lib/queryClient");
+        const res = await apiRequest("GET", "/api/auth/me");
+        if (!res.ok) {
+          throw new Error(`auth: ${res.status}`);
+        }
+        return res.json();
+      },
+      staleTime: 5 * 60 * 1000,
+    })
+    .catch(() => null);
+}
+
+async function bootAuth(meProbe: Promise<unknown>): Promise<void> {
   const {
     reportBootResolution,
     attemptBootSilentPasskey,
     determineBootSource,
   } = await import("./lib/boot-auth");
 
-  let probedAuth = false;
-  try {
-    const meRes = await apiRequest("GET", "/api/auth/me");
-    probedAuth = meRes.ok;
-  } catch {
-    probedAuth = false;
-  }
-
-  if (probedAuth) {
+  const probed = await meProbe;
+  if (probed) {
+    // The fetchQuery call already wrote the payload into the cache for
+    // useCurrentUser() — nothing more to do on the data side.
     const source = determineBootSource();
     reportBootResolution(source === "none" ? "cookie" : source);
     return;
@@ -108,9 +126,8 @@ async function bootAuth(): Promise<void> {
 
   const silent = await attemptBootSilentPasskey();
   if (silent.ok) {
-    // Make sure the SPA's first render sees the fresh session — without
-    // this, useCurrentUser() may have already cached an unauthenticated
-    // result before the passkey assertion completed.
+    // Re-fetch /api/auth/me through the same dedup'd key so useCurrentUser
+    // sees the fresh session that the silent passkey unlock just minted.
     queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
     reportBootResolution(silent.source);
   } else {
@@ -133,18 +150,33 @@ function mount() {
   }
 }
 
-// Race the boot gate against a 3-second budget. Whichever finishes first
-// triggers React mount. Telemetry inside bootAuth still completes in the
-// background even if the budget expired first.
+// task #743: kick off the auth probe FIRST (so the network request is
+// already in flight by the time react-query's hook subscribes to it),
+// then mount React IMMEDIATELY — no 3-second blank-screen wait. bootAuth
+// races the same in-flight promise against a 3-second guard rail and
+// drives the silent-passkey fallback when the cookie is gone.
+const meProbe = startMeProbe();
+mount();
+
 void (async () => {
   try {
     await Promise.race([
-      bootAuth(),
+      bootAuth(meProbe),
       new Promise<void>((resolve) => setTimeout(resolve, 3000)),
     ]);
   } catch {
-    // Boot gate is purely diagnostic for mount; never block on its failure.
-  } finally {
-    mount();
+    // Boot gate is purely diagnostic; never propagate a failure.
+  }
+})();
+
+// Register the app-shell service worker AFTER mount so its install never
+// competes with first interactive paint. No-ops in development.
+void (async () => {
+  try {
+    const { registerAppShellServiceWorker } = await import("./lib/register-sw");
+    registerAppShellServiceWorker();
+  } catch {
+    // Non-fatal: the app works without the shell cache, just slower on
+    // cold start.
   }
 })();
