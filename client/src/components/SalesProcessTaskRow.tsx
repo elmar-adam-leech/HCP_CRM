@@ -21,6 +21,30 @@ function renderTemplate(template: string, vars: Record<string, string>): string 
     .replace(/\{(\w+)\}/g, (_m, key) => vars[key] ?? "");
 }
 
+// Coalesce post-mutation refetches so a burst of Skip / Done / Reschedule
+// clicks results in ONE background refetch wave ~1s after the last click,
+// instead of 6+ refetches per click. The optimistic remove in
+// `optimisticRemove` already updated every matching cache, so the UI is
+// correct in the meantime; this is the safety-net resync. See task #746.
+let pendingTasksRefetch: ReturnType<typeof setTimeout> | null = null;
+function scheduleSalesProcessTasksRefetch() {
+  if (pendingTasksRefetch) clearTimeout(pendingTasksRefetch);
+  pendingTasksRefetch = setTimeout(() => {
+    pendingTasksRefetch = null;
+    queryClient.invalidateQueries({ queryKey: ["/api/sales-process/tasks"] });
+  }, 1000);
+}
+let pendingCompletedCountRefetch: ReturnType<typeof setTimeout> | null = null;
+function scheduleCompletedCountRefetch() {
+  if (pendingCompletedCountRefetch) clearTimeout(pendingCompletedCountRefetch);
+  pendingCompletedCountRefetch = setTimeout(() => {
+    pendingCompletedCountRefetch = null;
+    queryClient.invalidateQueries({
+      queryKey: ["/api/sales-process/tasks/completed-count"],
+    });
+  }, 1000);
+}
+
 interface SalesProcessTaskRowProps {
   task: TaskInstanceWithLead;
   step: SalesProcessStep | undefined;
@@ -75,7 +99,11 @@ export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/sales-process/tasks"] });
+      queryClient.invalidateQueries({
+        queryKey: ["/api/sales-process/tasks"],
+        refetchType: "none",
+      });
+      scheduleSalesProcessTasksRefetch();
     },
   });
 
@@ -111,7 +139,11 @@ export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
       });
     },
     onSuccess: (_data, nextDueAt) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/sales-process/tasks"] });
+      queryClient.invalidateQueries({
+        queryKey: ["/api/sales-process/tasks"],
+        refetchType: "none",
+      });
+      scheduleSalesProcessTasksRefetch();
       setReschedOpen(false);
       setPickedDate(undefined);
       toast({
@@ -179,8 +211,16 @@ export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/sales-process/tasks"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/sales-process/tasks/completed-count"] });
+      queryClient.invalidateQueries({
+        queryKey: ["/api/sales-process/tasks"],
+        refetchType: "none",
+      });
+      scheduleSalesProcessTasksRefetch();
+      queryClient.invalidateQueries({
+        queryKey: ["/api/sales-process/tasks/completed-count"],
+        refetchType: "none",
+      });
+      scheduleCompletedCountRefetch();
     },
   });
 
@@ -307,7 +347,11 @@ export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
               if (action === "call" && renderedCallTrack) setShowCallTrack(true);
             }}
             onCallCompleted={() => {
-              queryClient.invalidateQueries({ queryKey: ["/api/sales-process/tasks"] });
+              queryClient.invalidateQueries({
+                queryKey: ["/api/sales-process/tasks"],
+                refetchType: "none",
+              });
+              scheduleSalesProcessTasksRefetch();
             }}
           />
         )}
@@ -325,7 +369,11 @@ export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
             initialMessage={action === "text" ? renderedTemplate : undefined}
             guidance={step?.guidance ?? undefined}
             onSent={() => {
-              queryClient.invalidateQueries({ queryKey: ["/api/sales-process/tasks"] });
+              queryClient.invalidateQueries({
+                queryKey: ["/api/sales-process/tasks"],
+                refetchType: "none",
+              });
+              scheduleSalesProcessTasksRefetch();
             }}
           />
         )}
