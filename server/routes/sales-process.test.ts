@@ -21,6 +21,7 @@ vi.mock('../storage', () => {
     retryFailedTask: vi.fn(),
     markTaskCompleted: vi.fn(),
     markTaskSkipped: vi.fn(),
+    bulkMarkTasksTerminal: vi.fn(),
     getTaskInstance: vi.fn(),
   };
   return { storage };
@@ -280,6 +281,71 @@ describe('Settings → Sales Process tab API smoke', () => {
     expect(callArgs[1].to instanceof Date).toBe(true);
     expect((callArgs[1].from as Date).toISOString()).toBe(from);
     expect((callArgs[1].to as Date).toISOString()).toBe(to);
+  });
+
+  it('POST /api/sales-process/tasks/bulk-skip runs the batch through one transactional storage call and reports per-id outcome', async () => {
+    (storage.bulkMarkTasksTerminal as any).mockResolvedValueOnce(new Map([
+      ['a', 'updated'],
+      ['b', 'already_terminal'],
+      ['c', 'not_found'],
+    ]));
+    const app = makeApp();
+    const r = await call(app, 'POST', '/api/sales-process/tasks/bulk-skip', { ids: ['a', 'b', 'c'] });
+    expect(r.status).toBe(200);
+    expect(r.body.succeeded).toBe(2);
+    expect(r.body.failed).toBe(1);
+    expect(r.body.results.find((x: any) => x.id === 'c')).toEqual({ id: 'c', ok: false, error: 'not_found' });
+    // Exactly ONE storage call per bulk request — the whole batch is
+    // atomic inside the storage layer's drizzle transaction (no
+    // per-id loop in the route).
+    expect((storage.bulkMarkTasksTerminal as any).mock.calls.length).toBe(1);
+    const args = (storage.bulkMarkTasksTerminal as any).mock.calls[0];
+    expect(args[0]).toEqual(['a', 'b', 'c']);
+    expect(args[1]).toBe('tenant-1'); // tenant scope enforced — no IDOR.
+    expect(args[2]).toBe('skipped');
+    expect(args[3]).toBe('manual');
+    expect(args[4]).toBe('user-1');
+  });
+
+  it('POST /api/sales-process/tasks/bulk-complete batches completions through the transactional storage call', async () => {
+    (storage.bulkMarkTasksTerminal as any).mockResolvedValueOnce(new Map([
+      ['x', 'updated'],
+      ['y', 'updated'],
+    ]));
+    const app = makeApp();
+    const r = await call(app, 'POST', '/api/sales-process/tasks/bulk-complete', { ids: ['x', 'y'] });
+    expect(r.status).toBe(200);
+    expect(r.body.succeeded).toBe(2);
+    expect(r.body.failed).toBe(0);
+    const args = (storage.bulkMarkTasksTerminal as any).mock.calls[0];
+    expect(args[1]).toBe('tenant-1');
+    expect(args[2]).toBe('completed');
+    expect(args[3]).toBe('manual');
+    expect(args[4]).toBe('user-1');
+  });
+
+  it('POST /api/sales-process/tasks/bulk-skip surfaces a batch-level failure when the storage transaction rolls back', async () => {
+    // Simulate a mid-batch DB error. Because the storage layer wraps
+    // the batch in a single drizzle transaction, the whole batch
+    // rolls back and the route must report failure for every id —
+    // it MUST NOT report partial success.
+    (storage.bulkMarkTasksTerminal as any).mockRejectedValueOnce(new Error('db down'));
+    const app = makeApp();
+    const r = await call(app, 'POST', '/api/sales-process/tasks/bulk-skip', { ids: ['a', 'b', 'c'] });
+    expect(r.status).toBe(200);
+    expect(r.body.succeeded).toBe(0);
+    expect(r.body.failed).toBe(3);
+    expect(r.body.results.every((x: any) => x.ok === false && x.error === 'db down')).toBe(true);
+  });
+
+  it('POST /api/sales-process/tasks/bulk-skip rejects empty arrays and oversized batches', async () => {
+    const app = makeApp();
+    const empty = await call(app, 'POST', '/api/sales-process/tasks/bulk-skip', { ids: [] });
+    expect(empty.status).toBe(400);
+    const tooMany = await call(app, 'POST', '/api/sales-process/tasks/bulk-skip', {
+      ids: Array.from({ length: 201 }, (_, i) => `id-${i}`),
+    });
+    expect(tooMany.status).toBe(400);
   });
 
   it('PUT /api/sales-process rejects auto+call with a 400 validation error', async () => {

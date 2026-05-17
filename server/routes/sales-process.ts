@@ -519,6 +519,87 @@ export function registerSalesProcessRoutes(app: Express): void {
     res.json(current);
   }));
 
+  // Bulk skip / complete — lets a rep clean up a backlog of stale tasks in
+  // a single POST instead of one POST per row. Both endpoints accept up to
+  // 200 task IDs at a time (caps payload size and bounds the per-request
+  // work — even a power user catching up on a backlog is unlikely to
+  // select more than that at once). The whole batch is routed through ONE
+  // transactional storage call (storage.bulkMarkTasksTerminal) so a
+  // mid-batch DB error rolls back every row touched by the request.
+  // Per-id outcomes are returned so the UI can re-show only the rows that
+  // truly didn't apply: rows that were already terminal in another tab
+  // are reported as ok (matching the single-row endpoint's no-op
+  // behavior), and cross-tenant / deleted IDs are reported as
+  // `error: 'not_found'`. Both routes are tenant-scoped via
+  // req.user.contractorId, so a leaked task ID from another tenant simply
+  // appears as "not_found" — there's no IDOR risk. Authenticated routes
+  // are already covered by the global apiRateLimiter; the 200-id cap is
+  // the per-call work bound. See task #747.
+  const bulkBodySchema = z.object({
+    ids: z.array(z.string().min(1)).min(1).max(200),
+  });
+
+  type BulkResult = {
+    results: Array<{ id: string; ok: boolean; error?: string }>;
+    succeeded: number;
+    failed: number;
+  };
+
+  async function runBulkTaskAction(
+    req: AuthedRequest,
+    res: Response,
+    action: 'complete' | 'skip',
+  ): Promise<void> {
+    const parsed = bulkBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid bulk request', details: parsed.error.flatten() });
+      return;
+    }
+    const ids = Array.from(new Set(parsed.data.ids));
+    const out: BulkResult = { results: [], succeeded: 0, failed: 0 };
+    // ATOMIC: the entire batch runs inside one drizzle transaction
+    // (see storage.bulkMarkTasksTerminal). A mid-batch DB failure
+    // rolls back every row touched by this request, so the client
+    // never observes a partially-applied bulk action. "already
+    // terminal" rows are reported as ok (matching the single-row
+    // endpoint), and cross-tenant / deleted IDs report not_found.
+    try {
+      const target = action === 'complete' ? 'completed' : 'skipped';
+      const outcomes = await storage.bulkMarkTasksTerminal(
+        ids,
+        req.user.contractorId,
+        target,
+        'manual',
+        req.user.userId,
+      );
+      for (const id of ids) {
+        const o = outcomes.get(id);
+        if (o === 'updated' || o === 'already_terminal') {
+          out.results.push({ id, ok: true });
+          out.succeeded += 1;
+        } else {
+          out.results.push({ id, ok: false, error: 'not_found' });
+          out.failed += 1;
+        }
+      }
+    } catch (err) {
+      // Transaction rolled back — no rows changed. Surface a single
+      // batch-level failure so the UI can re-show every selected row.
+      const msg = err instanceof Error ? err.message : 'error';
+      for (const id of ids) out.results.push({ id, ok: false, error: msg });
+      out.failed = ids.length;
+    }
+    res.json(out);
+  }
+
+  app.post("/api/sales-process/tasks/bulk-complete", asyncHandler(async (req: AuthedRequest, res: Response) => {
+    await runBulkTaskAction(req, res, 'complete');
+  }));
+
+  app.post("/api/sales-process/tasks/bulk-skip", asyncHandler(async (req: AuthedRequest, res: Response) => {
+    await runBulkTaskAction(req, res, 'skip');
+  }));
+
   // Manager debug endpoint: force a cron tick FOR THE CALLER'S TENANT ONLY.
   // SECURITY: this is a write-trigger (causes outbound SMS/email sends), so
   // we must scope strictly to req.user.contractorId — otherwise a manager in

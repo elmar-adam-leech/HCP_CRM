@@ -2,6 +2,7 @@ import { memo, useState } from "react";
 import { Check, Phone, Mail, Bot, Clock, SkipForward, CalendarClock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { CallButton } from "@/components/CallButton";
@@ -27,7 +28,7 @@ function renderTemplate(template: string, vars: Record<string, string>): string 
 // `optimisticRemove` already updated every matching cache, so the UI is
 // correct in the meantime; this is the safety-net resync. See task #746.
 let pendingTasksRefetch: ReturnType<typeof setTimeout> | null = null;
-function scheduleSalesProcessTasksRefetch() {
+export function scheduleSalesProcessTasksRefetch() {
   if (pendingTasksRefetch) clearTimeout(pendingTasksRefetch);
   pendingTasksRefetch = setTimeout(() => {
     pendingTasksRefetch = null;
@@ -35,7 +36,7 @@ function scheduleSalesProcessTasksRefetch() {
   }, 1000);
 }
 let pendingCompletedCountRefetch: ReturnType<typeof setTimeout> | null = null;
-function scheduleCompletedCountRefetch() {
+export function scheduleCompletedCountRefetch() {
   if (pendingCompletedCountRefetch) clearTimeout(pendingCompletedCountRefetch);
   pendingCompletedCountRefetch = setTimeout(() => {
     pendingCompletedCountRefetch = null;
@@ -50,6 +51,8 @@ interface SalesProcessTaskRowProps {
   step: SalesProcessStep | undefined;
   onOpenLead: (leadId: string) => void;
   onComposeEmail: (task: TaskInstanceWithLead, prefilledContent?: string, guidance?: string | null) => void;
+  selected?: boolean;
+  onSelectedChange?: (id: string, selected: boolean) => void;
 }
 
 export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
@@ -57,6 +60,8 @@ export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
   step,
   onOpenLead,
   onComposeEmail,
+  selected,
+  onSelectedChange,
 }: SalesProcessTaskRowProps) {
   const { toast } = useToast();
 
@@ -261,6 +266,14 @@ export const SalesProcessTaskRow = memo(function SalesProcessTaskRow({
       className="flex flex-col sm:flex-row sm:items-center gap-3 rounded-md border p-3 hover-elevate"
       data-testid={`task-row-${task.id}`}
     >
+      {onSelectedChange && (
+        <Checkbox
+          checked={!!selected}
+          onCheckedChange={(v) => onSelectedChange(task.id, v === true)}
+          aria-label="Select task"
+          data-testid={`checkbox-task-${task.id}`}
+        />
+      )}
       <div className="min-w-0 flex-1 space-y-1">
         <div className="flex items-center gap-2 flex-wrap">
           <button

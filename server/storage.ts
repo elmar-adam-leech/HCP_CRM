@@ -605,6 +605,7 @@ export interface IStorage {
   countTaskInstancesForLead: typeof salesProcessMethods.countTaskInstancesForLead;
   countTaskInstancesForEntity: typeof salesProcessMethods.countTaskInstancesForEntity;
   markTaskCompleted: typeof salesProcessMethods.markTaskCompleted;
+  bulkMarkTasksTerminal: typeof salesProcessMethods.bulkMarkTasksTerminal;
   markTaskSkipped: typeof salesProcessMethods.markTaskSkipped;
   markTaskFailed: typeof salesProcessMethods.markTaskFailed;
   rescheduleTaskForRetry: typeof salesProcessMethods.rescheduleTaskForRetry;

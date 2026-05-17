@@ -701,6 +701,63 @@ async function markTaskSkipped(
   return r[0];
 }
 
+// Bulk variant of markTaskCompleted / markTaskSkipped — runs the entire
+// batch inside a single drizzle transaction so a mid-batch DB error
+// rolls back every row touched in the same request. Returns a per-id
+// outcome map so the caller can report which IDs succeeded, which were
+// already terminal, and which didn't exist for this tenant. See task #747.
+//
+// Implementation note: we do ONE UPDATE ... WHERE id IN (...) AND
+// contractor=$1 AND status='pending' to flip every pending row at once,
+// then ONE SELECT for the IDs that didn't get returned (so we can tell
+// "already terminal" apart from "not found / cross-tenant"). 2 queries
+// per bulk request instead of 2N — matches the 1-2 orders of magnitude
+// per-action overhead drop called out in the task brief.
+type BulkTerminalOutcome = 'updated' | 'already_terminal' | 'not_found';
+async function bulkMarkTasksTerminal(
+  ids: string[],
+  contractorId: string,
+  target: 'completed' | 'skipped',
+  reason: 'manual',
+  completedBy?: string | null,
+): Promise<Map<string, BulkTerminalOutcome>> {
+  const result = new Map<string, BulkTerminalOutcome>();
+  if (ids.length === 0) return result;
+  await db.transaction(async (tx) => {
+    const updated = await tx.update(salesProcessTaskInstances).set({
+      status: target,
+      completionReason: reason,
+      completedAt: new Date(),
+      completedBy: completedBy ?? null,
+    }).where(and(
+      inArray(salesProcessTaskInstances.id, ids),
+      eq(salesProcessTaskInstances.contractorId, contractorId),
+      eq(salesProcessTaskInstances.status, 'pending'),
+    )).returning();
+    for (const row of updated) result.set(row.id, 'updated');
+    const remaining = ids.filter((id) => !result.has(id));
+    if (remaining.length > 0) {
+      const existing = await tx.select({ id: salesProcessTaskInstances.id })
+        .from(salesProcessTaskInstances)
+        .where(and(
+          inArray(salesProcessTaskInstances.id, remaining),
+          eq(salesProcessTaskInstances.contractorId, contractorId),
+        ));
+      const existingIds = new Set(existing.map((r) => r.id));
+      for (const id of remaining) {
+        result.set(id, existingIds.has(id) ? 'already_terminal' : 'not_found');
+      }
+    }
+    // Mirror the single-row endpoints' structured audit log so bulk
+    // actions remain reconstructable from logs.
+    for (const row of updated) {
+      const verb = target === 'completed' ? 'instance_completed' : 'instance_skipped';
+      console.log(`[SalesProcess] sales_process ${verb} tenantId=${row.contractorId} entity=${row.leadId ? `lead:${row.leadId}` : `estimate:${row.estimateId}`} stepId=${row.stepId} instanceId=${row.id} reason=${reason} completedBy=${completedBy ?? 'system'} bulk=1`);
+    }
+  });
+  return result;
+}
+
 async function markTaskFailed(
   id: string,
   contractorId: string,
@@ -884,6 +941,7 @@ export const salesProcessMethods = {
   countTaskInstancesForEntity,
   markTaskCompleted,
   markTaskSkipped,
+  bulkMarkTasksTerminal,
   markTaskFailed,
   rescheduleTaskForRetry,
   rescheduleTask,

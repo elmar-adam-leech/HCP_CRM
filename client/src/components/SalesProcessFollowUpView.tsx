@@ -1,13 +1,19 @@
-import { useMemo, useState } from "react";
-import { useQuery, keepPreviousData } from "@tanstack/react-query";
-import { queryClient } from "@/lib/queryClient";
-import { ChevronDown, ChevronRight, Calendar, Settings as SettingsIcon, Phone, MessageSquare, Mail } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
+import { useQuery, keepPreviousData, useMutation } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { ChevronDown, ChevronRight, Calendar, Settings as SettingsIcon, Phone, MessageSquare, Mail, Check, SkipForward, X } from "lucide-react";
 import { useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
-import { SalesProcessTaskRow } from "@/components/SalesProcessTaskRow";
+import { useToast } from "@/hooks/use-toast";
+import {
+  SalesProcessTaskRow,
+  scheduleSalesProcessTasksRefetch,
+  scheduleCompletedCountRefetch,
+} from "@/components/SalesProcessTaskRow";
 import { SalesProcessNeedsAttentionBanner } from "@/components/SalesProcessNeedsAttentionBanner";
 import { EmailComposerModal } from "@/components/EmailComposerModal";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
@@ -121,6 +127,42 @@ function StepGroupHeader({ group }: { group: GroupedByStep }) {
   );
 }
 
+/**
+ * Bucket-header "select all in bucket" checkbox. Reflects three states:
+ *   - empty   → none of this bucket's currently-rendered rows are selected
+ *   - checked → every currently-rendered row in this bucket is selected
+ *   - "indeterminate" (visually a checked-but-different look from Radix) →
+ *     some but not all rows are selected
+ * Toggling flips the entire visible bucket; rows hidden behind "Show more"
+ * are deliberately NOT touched (the user can't see them, so a single click
+ * silently sweeping in 150 unseen rows would be surprising).
+ */
+function BucketSelectAll({
+  tasks,
+  selectedIds,
+  onChange,
+  testId,
+}: {
+  tasks: { id: string }[];
+  selectedIds: Set<string>;
+  onChange: (ids: string[], on: boolean) => void;
+  testId: string;
+}) {
+  if (tasks.length === 0) return null;
+  const ids = tasks.map((t) => t.id);
+  const selectedCount = ids.reduce((n, id) => (selectedIds.has(id) ? n + 1 : n), 0);
+  const allSelected = selectedCount === ids.length;
+  const someSelected = selectedCount > 0 && !allSelected;
+  return (
+    <Checkbox
+      checked={allSelected ? true : someSelected ? "indeterminate" : false}
+      onCheckedChange={(v) => onChange(ids, v === true)}
+      aria-label="Select all in bucket"
+      data-testid={testId}
+    />
+  );
+}
+
 interface SalesProcessFollowUpViewProps {
   cadences: SalesProcess[];
   steps: SalesProcessStep[];
@@ -190,6 +232,156 @@ export function SalesProcessFollowUpView({
     guidance?: string;
   }>({ isOpen: false });
   const [upcomingOpen, setUpcomingOpen] = useState(false);
+  const { toast } = useToast();
+
+  // Bulk-selection state — a single Set across every bucket so reps can
+  // sweep up "all my past-due AND today's call follow-ups" in one go. We
+  // store IDs rather than tasks so optimistically-removed rows fall out
+  // naturally when their query data updates.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const setRowSelected = useCallback((id: string, on: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+  const setManySelected = useCallback((ids: string[], on: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (on) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  }, []);
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  // Bulk mutations — POST a single array of IDs to the new bulk endpoints.
+  // We optimistically remove every selected row from every cached
+  // "/api/sales-process/tasks" list before the request goes out, so a
+  // 200-row sweep clears the UI in one paint and re-syncs once when the
+  // bulk response arrives. We re-use the same debounced refetch pattern
+  // as single-row mutations so a click on Skip/Done elsewhere on the
+  // page doesn't trigger a refetch storm.
+  type BulkResp = {
+    results: Array<{ id: string; ok: boolean; error?: string }>;
+    succeeded: number;
+    failed: number;
+  };
+  type BulkCtx = { previous: ReadonlyArray<[readonly unknown[], unknown]>; ids: string[] };
+
+  const bulkOptimisticRemove = useCallback(async (ids: string[]): Promise<BulkCtx> => {
+    await queryClient.cancelQueries({ queryKey: ["/api/sales-process/tasks"] });
+    const previous = queryClient.getQueriesData({ queryKey: ["/api/sales-process/tasks"] });
+    const idSet = new Set(ids);
+    for (const [key, data] of previous) {
+      if (Array.isArray(data)) {
+        queryClient.setQueryData(
+          key,
+          (data as TaskInstanceWithLead[]).filter((t) => !idSet.has(t.id)),
+        );
+      } else if (data && typeof data === 'object' && 'items' in (data as Record<string, unknown>)) {
+        const env = data as { items: TaskInstanceWithLead[]; total: number; hasMore: boolean };
+        if (Array.isArray(env.items)) {
+          const removed = env.items.filter((t) => idSet.has(t.id)).length;
+          queryClient.setQueryData(key, {
+            ...env,
+            items: env.items.filter((t) => !idSet.has(t.id)),
+            total: Math.max(0, (env.total ?? 0) - removed),
+          });
+        }
+      }
+    }
+    return { previous, ids };
+  }, []);
+
+  const rollbackBulk = useCallback((ctx: BulkCtx | undefined) => {
+    if (!ctx) return;
+    for (const [key, data] of ctx.previous) {
+      queryClient.setQueryData(key, data);
+    }
+  }, []);
+
+  // Reuse the SAME debounced refetch wave that single-row Skip / Done /
+  // Reschedule mutations use (see task #746). A bulk action immediately
+  // followed by a single-row click should still coalesce into one
+  // background refetch ~1s after the last click instead of triggering
+  // an immediate full-page refetch on top of the per-row debounce.
+  const bulkResync = useCallback(() => {
+    queryClient.invalidateQueries({
+      queryKey: ["/api/sales-process/tasks"],
+      refetchType: "none",
+    });
+    scheduleSalesProcessTasksRefetch();
+    queryClient.invalidateQueries({
+      queryKey: ["/api/sales-process/tasks/completed-count"],
+      refetchType: "none",
+    });
+    scheduleCompletedCountRefetch();
+  }, []);
+
+  const bulkSkipMutation = useMutation<BulkResp, Error, string[], BulkCtx>({
+    mutationFn: async (ids) => {
+      const res = await apiRequest("POST", "/api/sales-process/tasks/bulk-skip", { ids });
+      return res.json();
+    },
+    onMutate: bulkOptimisticRemove,
+    onError: (err, _ids, ctx) => {
+      rollbackBulk(ctx);
+      toast({ title: "Couldn't skip tasks", description: err.message, variant: "destructive" });
+    },
+    onSuccess: (data) => {
+      clearSelection();
+      bulkResync();
+      if (data.failed > 0) {
+        toast({
+          title: `Skipped ${data.succeeded} task${data.succeeded === 1 ? '' : 's'}`,
+          description: `${data.failed} couldn't be skipped (already cleared or not found).`,
+        });
+      } else {
+        toast({ title: `Skipped ${data.succeeded} task${data.succeeded === 1 ? '' : 's'}` });
+      }
+    },
+  });
+
+  const bulkCompleteMutation = useMutation<BulkResp, Error, string[], BulkCtx>({
+    mutationFn: async (ids) => {
+      const res = await apiRequest("POST", "/api/sales-process/tasks/bulk-complete", { ids });
+      return res.json();
+    },
+    onMutate: bulkOptimisticRemove,
+    onError: (err, _ids, ctx) => {
+      rollbackBulk(ctx);
+      toast({ title: "Couldn't mark tasks done", description: err.message, variant: "destructive" });
+    },
+    onSuccess: (data) => {
+      clearSelection();
+      bulkResync();
+      if (data.failed > 0) {
+        toast({
+          title: `Marked ${data.succeeded} done`,
+          description: `${data.failed} couldn't be completed (already cleared or not found).`,
+        });
+      } else {
+        toast({ title: `Marked ${data.succeeded} done` });
+      }
+    },
+  });
+
+  const bulkPending = bulkSkipMutation.isPending || bulkCompleteMutation.isPending;
+  const runBulkSkip = useCallback(() => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0 || bulkPending) return;
+    bulkSkipMutation.mutate(ids);
+  }, [selectedIds, bulkPending, bulkSkipMutation]);
+  const runBulkComplete = useCallback(() => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0 || bulkPending) return;
+    bulkCompleteMutation.mutate(ids);
+  }, [selectedIds, bulkPending, bulkCompleteMutation]);
 
   // Bucket date windows. Past Due reaches 30 days back to surface very-old
   // overdue items; Today is the standard 0:00–24:00 window; Upcoming is
@@ -465,6 +657,12 @@ export function SalesProcessFollowUpView({
       {pastDueTotal > 0 && (
         <section className="space-y-2" data-testid="section-past-due">
           <div className="flex items-center gap-2">
+            <BucketSelectAll
+              tasks={pastDue}
+              selectedIds={selectedIds}
+              onChange={setManySelected}
+              testId="checkbox-select-all-past-due"
+            />
             <h2 className="text-sm font-semibold uppercase tracking-wide text-destructive">
               Past Due
             </h2>
@@ -483,6 +681,8 @@ export function SalesProcessFollowUpView({
                     step={group.step}
                     onOpenLead={onOpenLead}
                     onComposeEmail={handleComposeEmail}
+                    selected={selectedIds.has(t.id)}
+                    onSelectedChange={setRowSelected}
                   />
                 ))}
               </div>
@@ -505,6 +705,12 @@ export function SalesProcessFollowUpView({
       {todayTotal > 0 && (
         <section className="space-y-2" data-testid="section-today">
           <div className="flex items-center gap-2">
+            <BucketSelectAll
+              tasks={today}
+              selectedIds={selectedIds}
+              onChange={setManySelected}
+              testId="checkbox-select-all-today"
+            />
             <h2 className="text-sm font-semibold uppercase tracking-wide">Today</h2>
             <Badge variant="secondary" className="text-xs" data-testid="badge-today-total">
               {todayTotal}
@@ -521,6 +727,8 @@ export function SalesProcessFollowUpView({
                     step={group.step}
                     onOpenLead={onOpenLead}
                     onComposeEmail={handleComposeEmail}
+                    selected={selectedIds.has(t.id)}
+                    onSelectedChange={setRowSelected}
                   />
                 ))}
               </div>
@@ -543,6 +751,12 @@ export function SalesProcessFollowUpView({
       {tomorrowTotal > 0 && (
         <section className="space-y-2" data-testid="section-tomorrow">
           <div className="flex items-center gap-2">
+            <BucketSelectAll
+              tasks={tomorrow}
+              selectedIds={selectedIds}
+              onChange={setManySelected}
+              testId="checkbox-select-all-tomorrow"
+            />
             <h2 className="text-sm font-semibold uppercase tracking-wide">Tomorrow</h2>
             <Badge variant="secondary" className="text-xs" data-testid="badge-tomorrow-total">
               {tomorrowTotal}
@@ -559,6 +773,8 @@ export function SalesProcessFollowUpView({
                     step={group.step}
                     onOpenLead={onOpenLead}
                     onComposeEmail={handleComposeEmail}
+                    selected={selectedIds.has(t.id)}
+                    onSelectedChange={setRowSelected}
                   />
                 ))}
               </div>
@@ -580,21 +796,29 @@ export function SalesProcessFollowUpView({
 
       {upcomingTotal > 0 && (
         <section className="space-y-2" data-testid="section-upcoming">
-          <button
-            className="flex items-center gap-2 hover-elevate rounded-md px-2 py-1 -mx-2"
-            onClick={() => setUpcomingOpen((v) => !v)}
-            data-testid="toggle-upcoming"
-          >
-            {upcomingOpen ? (
-              <ChevronDown className="h-4 w-4" />
-            ) : (
-              <ChevronRight className="h-4 w-4" />
-            )}
-            <h2 className="text-sm font-semibold uppercase tracking-wide">Upcoming (next 7 days, after tomorrow)</h2>
-            <Badge variant="outline" className="text-xs" data-testid="badge-upcoming-total">
-              {upcomingTotal}
-            </Badge>
-          </button>
+          <div className="flex items-center gap-2">
+            <BucketSelectAll
+              tasks={upcoming}
+              selectedIds={selectedIds}
+              onChange={setManySelected}
+              testId="checkbox-select-all-upcoming"
+            />
+            <button
+              className="flex items-center gap-2 hover-elevate rounded-md px-2 py-1 -mx-2"
+              onClick={() => setUpcomingOpen((v) => !v)}
+              data-testid="toggle-upcoming"
+            >
+              {upcomingOpen ? (
+                <ChevronDown className="h-4 w-4" />
+              ) : (
+                <ChevronRight className="h-4 w-4" />
+              )}
+              <h2 className="text-sm font-semibold uppercase tracking-wide">Upcoming (next 7 days, after tomorrow)</h2>
+              <Badge variant="outline" className="text-xs" data-testid="badge-upcoming-total">
+                {upcomingTotal}
+              </Badge>
+            </button>
+          </div>
           {upcomingOpen && (
             <div className="space-y-3 pl-6">
               {upcomingByDay.map(({ dateKey, groups }) => (
@@ -617,6 +841,8 @@ export function SalesProcessFollowUpView({
                             step={group.step}
                             onOpenLead={onOpenLead}
                             onComposeEmail={handleComposeEmail}
+                            selected={selectedIds.has(t.id)}
+                            onSelectedChange={setRowSelected}
                           />
                         ))}
                       </div>
@@ -643,6 +869,12 @@ export function SalesProcessFollowUpView({
       {estimateTotal > 0 && (
         <section className="space-y-2" data-testid="section-estimate-tasks">
           <div className="flex items-center gap-2">
+            <BucketSelectAll
+              tasks={estimateTasks}
+              selectedIds={selectedIds}
+              onChange={setManySelected}
+              testId="checkbox-select-all-estimate"
+            />
             <h2 className="text-sm font-semibold uppercase tracking-wide">Estimate follow-ups</h2>
             <Badge variant="secondary" className="text-xs" data-testid="badge-estimate-total">
               {estimateTotal}
@@ -658,6 +890,12 @@ export function SalesProcessFollowUpView({
               return (
                 <Card key={t.id} data-testid={`card-estimate-task-${t.id}`}>
                   <CardContent className="p-3 flex items-center gap-3 flex-wrap">
+                    <Checkbox
+                      checked={selectedIds.has(t.id)}
+                      onCheckedChange={(v) => setRowSelected(t.id, v === true)}
+                      aria-label="Select estimate follow-up"
+                      data-testid={`checkbox-estimate-task-${t.id}`}
+                    />
                     <Icon className="h-4 w-4 text-muted-foreground" />
                     <div className="flex flex-col min-w-0">
                       <button
@@ -707,6 +945,49 @@ export function SalesProcessFollowUpView({
             )}
           </div>
         </section>
+      )}
+
+      {selectedIds.size > 0 && (
+        <div
+          className="fixed inset-x-0 bottom-4 z-50 flex justify-center px-4 pointer-events-none"
+          data-testid="bulk-action-bar"
+        >
+          <div className="pointer-events-auto flex items-center gap-2 rounded-md border bg-background shadow-lg p-2 flex-wrap">
+            <Badge variant="secondary" className="text-xs" data-testid="badge-bulk-selected-count">
+              {selectedIds.size} selected
+            </Badge>
+            <Button
+              size="sm"
+              variant="default"
+              onClick={runBulkComplete}
+              disabled={bulkPending}
+              data-testid="button-bulk-complete"
+            >
+              <Check className="h-3.5 w-3.5 mr-1.5" />
+              Mark done selected
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={runBulkSkip}
+              disabled={bulkPending}
+              data-testid="button-bulk-skip"
+            >
+              <SkipForward className="h-3.5 w-3.5 mr-1.5" />
+              Skip selected
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={clearSelection}
+              disabled={bulkPending}
+              data-testid="button-bulk-clear"
+            >
+              <X className="h-3.5 w-3.5 mr-1.5" />
+              Clear selection
+            </Button>
+          </div>
+        </div>
       )}
 
       {emailModal.task && (
