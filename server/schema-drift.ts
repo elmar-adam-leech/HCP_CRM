@@ -1012,6 +1012,14 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       description: 'webhook_incidents lookup index by (contractor, service, kind)',
     },
     {
+      // Task #748: track oldest updated_at covered by the last successful
+      // backfill so the HCP settings card can show "Fetched through" next
+      // to "Last resync". Idempotent ADD IF NOT EXISTS for safe replay.
+      sql: `ALTER TABLE "webhook_incidents"
+              ADD COLUMN IF NOT EXISTS "backfill_fetched_through_at" timestamp`,
+      description: 'webhook_incidents.backfill_fetched_through_at (Task #748)',
+    },
+    {
       // Unique partial index — see migration 0032 comment. Enforces the
       // "at most one open incident per (contractor, service, kind)" rule
       // at the DB level so app-side ON CONFLICT DO NOTHING is atomic.

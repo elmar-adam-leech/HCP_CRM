@@ -134,6 +134,50 @@ describe('runHcpWebhookBackfill detects local existence and emits *.created vs *
     expect(text).not.toContain('3 job(s), 0 new');
   });
 
+  it("trigger='manual' honors a far-past since (no 7-day clamp); trigger='webhook-recovery' clamps to MAX_LOOKBACK_MS", async () => {
+    // Stub two empty pages for each trigger run.
+    (housecallProService.getEstimates as any).mockResolvedValue({ success: true, data: [] });
+    (housecallProService.getJobs as any).mockResolvedValue({ success: true, data: [] });
+
+    const farPast = new Date('2024-01-01T00:00:00.000Z');
+
+    const manual = await runHcpWebhookBackfill('t1', farPast, 'manual');
+    expect(manual.since).toBe(farPast.toISOString());
+
+    const recovery = await runHcpWebhookBackfill('t1', farPast, 'webhook-recovery');
+    const recoverySince = new Date(recovery.since).getTime();
+    // Should be clamped to within ~7 days of "now" — well after 2024-01-01.
+    expect(recoverySince).toBeGreaterThan(farPast.getTime());
+    expect(Date.now() - recoverySince).toBeLessThanOrEqual(7 * 24 * 60 * 60 * 1000 + 5_000);
+  });
+
+  it("trigger='manual' with null since falls back to epoch (no clamp)", async () => {
+    (housecallProService.getEstimates as any).mockResolvedValue({ success: true, data: [] });
+    (housecallProService.getJobs as any).mockResolvedValue({ success: true, data: [] });
+
+    const manual = await runHcpWebhookBackfill('t1', null, 'manual');
+    expect(manual.since).toBe(new Date(0).toISOString());
+  });
+
+  it('tracks oldest updated_at across pages into summary.fetchedThroughAt', async () => {
+    (housecallProService.getEstimates as any).mockResolvedValueOnce({
+      success: true,
+      data: [
+        { id: 'e1', updated_at: '2026-04-10T00:00:00.000Z' },
+        { id: 'e2', updated_at: '2026-03-15T00:00:00.000Z' },
+      ],
+    });
+    (housecallProService.getJobs as any).mockResolvedValueOnce({
+      success: true,
+      data: [{ id: 'j1', updated_at: '2026-02-01T00:00:00.000Z' }],
+    });
+    (storage.getEstimateByHousecallProEstimateId as any).mockResolvedValue(undefined);
+    (storage.getJobByHousecallProJobId as any).mockResolvedValue(undefined);
+
+    const summary = await runHcpWebhookBackfill('t1', new Date('2026-01-01T00:00:00.000Z'), 'manual');
+    expect(summary.fetchedThroughAt).toBe('2026-02-01T00:00:00.000Z');
+  });
+
   it('items missing an HCP id are skipped without throwing', async () => {
     (housecallProService.getEstimates as any).mockResolvedValueOnce({
       success: true,

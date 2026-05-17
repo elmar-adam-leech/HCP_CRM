@@ -82,6 +82,7 @@ export function HousecallProCard() {
     lastRejectionReason: string | null;
     lastBackfillAt: string | null;
     lastBackfillSummary: string | null;
+    lastBackfillFetchedThroughAt: string | null;
     backfillInProgress: boolean;
   }>({
     queryKey: ['/api/integrations/housecall-pro/webhook-status'],
@@ -511,7 +512,7 @@ export function HousecallProCard() {
                   <span className="text-xs text-muted-foreground flex items-center gap-1">
                     <RefreshCw className="h-3 w-3" />
                     {webhookStatus.lastBackfillAt
-                      ? <>Last resync: {formatRelativeTime(webhookStatus.lastBackfillAt)}{webhookStatus.lastBackfillSummary ? <> &middot; {webhookStatus.lastBackfillSummary}</> : null}</>
+                      ? <>Last resync: {formatRelativeTime(webhookStatus.lastBackfillAt)}{webhookStatus.lastBackfillFetchedThroughAt ? <> &middot; fetched through {new Date(webhookStatus.lastBackfillFetchedThroughAt).toLocaleDateString()}</> : null}{webhookStatus.lastBackfillSummary ? <> &middot; {webhookStatus.lastBackfillSummary}</> : null}</>
                       : <>Never resynced manually</>
                     }
                   </span>

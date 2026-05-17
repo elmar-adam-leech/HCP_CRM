@@ -129,41 +129,48 @@ export async function handleEstimateEvent(
               externalSource: 'housecall-pro',
             }, contractorId);
             contact = phoneMatch;
-          } else {
-            // No phone match either — create a new contact from the estimate's customer data.
-            const estimateCustomer = data.customer;
-            if (estimateCustomer) {
-              const name = [estimateCustomer.first_name, estimateCustomer.last_name].filter(Boolean).join(' ') || estimateCustomer.company || 'Unknown';
-              const emails = estimateCustomer.email ? [estimateCustomer.email] : [];
-              const phones = estimateCustomerPhone ? [estimateCustomerPhone] : [];
-              const hcpAddr = estimateCustomer.address;
-              const estStreet = hcpAddr?.street || undefined;
-              const estCity = hcpAddr?.city || undefined;
-              const estState = hcpAddr?.state || undefined;
-              const estZip = hcpAddr?.zip || undefined;
-              const address = buildFormattedAddress(estStreet, estCity, estState, estZip);
-              log.info(`estimate.created: creating new contact from estimate payload for HCP customer ${customerId}, estimate ${data.id}`);
-              contact = await storage.createContact({
-                name,
-                emails,
-                phones,
-                address,
-                street: estStreet,
-                city: estCity,
-                state: estState,
-                zip: estZip,
-                type: 'customer',
-                status: 'active',
-                source: estimateCustomer.lead_source ?? null,
-                externalId: customerId,
-                externalSource: 'housecall-pro',
-                housecallProCustomerId: customerId,
-              }, contractorId);
-              broadcastToContractor(contractorId, { type: 'contact_created', contactId: contact.id });
-              workflowEngine.triggerWorkflowsForEvent('contact_created', toWorkflowEvent(contact), contractorId).catch(err =>
-                log.error('contact_created trigger error', err));
-            }
           }
+        }
+        // Task #748: if we still have no contact (either no phone on the
+        // payload, or no phone match), create one from the estimate's
+        // customer block — symmetric with the jobs handler. Previously
+        // this fallback was nested under `if (estimateCustomerPhone)` so
+        // estimates whose HCP customer had no phone were silently dropped
+        // on backfill (the most common cause of "resync didn't import my
+        // older estimates"). The contact rather than the estimate is the
+        // entity we cannot fabricate, so missing-contact must create one
+        // rather than skip.
+        if (!contact && data.customer) {
+          const estimateCustomer = data.customer;
+          const name = [estimateCustomer.first_name, estimateCustomer.last_name].filter(Boolean).join(' ') || estimateCustomer.company || 'Unknown';
+          const emails = estimateCustomer.email ? [estimateCustomer.email] : [];
+          const phones = estimateCustomerPhone ? [estimateCustomerPhone] : [];
+          const hcpAddr = estimateCustomer.address;
+          const estStreet = hcpAddr?.street || undefined;
+          const estCity = hcpAddr?.city || undefined;
+          const estState = hcpAddr?.state || undefined;
+          const estZip = hcpAddr?.zip || undefined;
+          const address = buildFormattedAddress(estStreet, estCity, estState, estZip);
+          log.info(`estimate.created: creating new contact from estimate payload for HCP customer ${customerId}, estimate ${data.id} (phone=${estimateCustomerPhone ? 'yes' : 'no'})`);
+          contact = await storage.createContact({
+            name,
+            emails,
+            phones,
+            address,
+            street: estStreet,
+            city: estCity,
+            state: estState,
+            zip: estZip,
+            type: 'customer',
+            status: 'active',
+            source: estimateCustomer.lead_source ?? null,
+            externalId: customerId,
+            externalSource: 'housecall-pro',
+            housecallProCustomerId: customerId,
+          }, contractorId);
+          broadcastToContractor(contractorId, { type: 'contact_created', contactId: contact.id });
+          workflowEngine.triggerWorkflowsForEvent('contact_created', toWorkflowEvent(contact), contractorId).catch(err =>
+            log.error('contact_created trigger error', err));
         }
       }
       if (contact) {

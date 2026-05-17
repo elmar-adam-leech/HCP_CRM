@@ -20,6 +20,10 @@ const getEstimateByHousecallProEstimateId = vi.fn<(hcpId: string, contractorId: 
 const getEstimate = vi.fn<(contractorId: string, hcpId: string) => Promise<HcpFetchResult>>();
 const broadcastToContractor = vi.fn();
 const triggerWorkflowsForEvent = vi.fn().mockResolvedValue(undefined);
+const getContactByExternalId = vi.fn();
+const getContactByPhone = vi.fn();
+const createContact = vi.fn();
+const createEstimate = vi.fn();
 
 vi.mock('../storage', () => ({
   storage: {
@@ -27,6 +31,10 @@ vi.mock('../storage', () => ({
     updateEstimate: (id: string, d: UpdatePayload, c: string) => updateEstimate(id, d, c),
     getJobByHousecallProJobId: vi.fn(),
     isHcpCustomerExcluded: vi.fn().mockResolvedValue(false),
+    getContactByExternalId: (...args: any[]) => getContactByExternalId(...args),
+    getContactByPhone: (...args: any[]) => getContactByPhone(...args),
+    createContact: (...args: any[]) => createContact(...args),
+    createEstimate: (...args: any[]) => createEstimate(...args),
   },
 }));
 vi.mock('../db', () => ({ db: { update: () => ({ set: () => ({ where: vi.fn() }) }) } }));
@@ -285,6 +293,50 @@ describe('webhook merge with manual override', () => {
     await handleEstimateEvent(CONTRACTOR, 'estimate.updated', { id: 'hcp1' }, undefined);
 
     expect(updateEstimate.mock.calls[0][1].documentSentAt).toBeUndefined();
+  });
+
+  // ---- Task #748: estimate.created must create contact even with no phone ----
+
+  it("estimate.created: creates a contact from the customer block when no local contact exists AND the HCP customer has no phone", async () => {
+    // No existing local estimate → create branch.
+    getEstimateByHousecallProEstimateId.mockResolvedValue(undefined);
+    // No local contact by HCP customer id, and no phone to look up.
+    getContactByExternalId.mockResolvedValue(undefined);
+    getContactByPhone.mockResolvedValue(undefined);
+    const fakeContact = { id: 'new-contact-1', name: 'Phoneless Patty' };
+    createContact.mockResolvedValue(fakeContact);
+    // HCP fetch returns a minimal estimate body for downstream creation.
+    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp_no_phone', work_status: 'unscheduled' } });
+    createEstimate.mockResolvedValue({ id: 'local_est_new', status: 'sent' });
+
+    await handleEstimateEvent(
+      CONTRACTOR,
+      'estimate.created',
+      {
+        id: 'hcp_no_phone',
+        customer_id: 'cust_no_phone',
+        customer: {
+          id: 'cust_no_phone',
+          first_name: 'Phoneless',
+          last_name: 'Patty',
+          email: 'patty@example.com',
+          // Intentionally NO mobile_number / home_number / work_number / phone_numbers
+          address: { street: '1 Main', city: 'Springfield', state: 'IL', zip: '62701' },
+        },
+        total_amount: 50000,
+      } as any,
+      undefined,
+    );
+
+    expect(createContact).toHaveBeenCalledTimes(1);
+    const created = createContact.mock.calls[0][0];
+    expect(created.name).toBe('Phoneless Patty');
+    expect(created.housecallProCustomerId).toBe('cust_no_phone');
+    expect(created.externalId).toBe('cust_no_phone');
+    expect(created.externalSource).toBe('housecall-pro');
+    expect(created.phones).toEqual([]);
+    // And the estimate is still created (no longer silently dropped).
+    expect(createEstimate).toHaveBeenCalledTimes(1);
   });
 
   it('estimate.on_my_way: respects manual override (does not flip to in_progress)', async () => {

@@ -41,6 +41,15 @@ export interface HcpBackfillSummary {
   errors: string[];
   since: string;
   truncated: boolean;
+  /**
+   * Oldest `updated_at` observed across every estimate/job page actually
+   * processed by this backfill. Null when nothing was fetched (or none of
+   * the returned items carried `updated_at`). Surfaces as the "Fetched
+   * through" timestamp in the HCP settings card so admins can confirm a
+   * manual resync actually walked back as far as their configured sync
+   * start date.
+   */
+  fetchedThroughAt: string | null;
 }
 
 type Pageable<T> = (page: number) => Promise<{ ok: true; items: T[] } | { ok: false; error: string }>;
@@ -51,6 +60,21 @@ interface BackfillCounts {
 }
 
 /**
+ * Trigger source for a backfill run.
+ *   - 'webhook-recovery': the periodic / startup health checker noticed a
+ *     silent webhook and is replaying the last 7 days as a safety net.
+ *     Clamped to MAX_LOOKBACK_MS so a long-disabled webhook cannot DoS the
+ *     HCP API.
+ *   - 'manual': a contractor admin clicked "Resync now". Honors the
+ *     contractor's configured `housecallProSyncStartDate` exactly (no
+ *     clamp) so they can pull anything back to that date.
+ *
+ * Defaults to 'webhook-recovery' so existing callers (and tests that mock
+ * this function) keep their current behaviour.
+ */
+export type HcpBackfillTrigger = 'manual' | 'webhook-recovery';
+
+/**
  * Iterate pages of an HCP REST endpoint and replay each item through the
  * webhook dispatch pipeline. For each item we first look up whether a local
  * row already exists (by HCP id) — this lets us emit `*.created` for new
@@ -59,7 +83,7 @@ interface BackfillCounts {
  * local row exists, so we'd silently drop new entities created during the
  * outage if we always emitted `*.updated`).
  */
-async function paginateAndReplay<T extends { id?: string }>(
+async function paginateAndReplay<T extends { id?: string; updated_at?: string }>(
   entityName: 'estimate' | 'job',
   fetcher: Pageable<T>,
   contractorId: string,
@@ -85,6 +109,19 @@ async function paginateAndReplay<T extends { id?: string }>(
         log.warn(`[backfill] contractor=${contractorId} ${msg}`);
         summary.errors.push(msg);
         continue;
+      }
+      // Track the oldest `updated_at` we've actually fetched (across both
+      // entity types). The HCP listing is sorted `updated_at desc`, so the
+      // oldest item is the last one on the deepest page we reached — but
+      // we observe every item to stay correct if HCP ever returns out of
+      // order. Skipped items (no id) don't count; failed-replay items DO
+      // count because we did successfully pull them from HCP.
+      const itemUpdatedAt = item?.updated_at;
+      if (itemUpdatedAt) {
+        const prev = summary.fetchedThroughAt;
+        if (!prev || itemUpdatedAt < prev) {
+          summary.fetchedThroughAt = itemUpdatedAt;
+        }
       }
       try {
         const exists = await existsLocally(hcpId);
@@ -115,17 +152,30 @@ async function paginateAndReplay<T extends { id?: string }>(
 export async function runHcpWebhookBackfill(
   contractorId: string,
   since: Date | null,
+  trigger: HcpBackfillTrigger = 'webhook-recovery',
 ): Promise<HcpBackfillSummary> {
   const now = Date.now();
-  // Clamp `since` to MAX_LOOKBACK_MS in the past. If we have no prior
-  // event at all, assume the maximum window.
-  const lowerBound = new Date(now - MAX_LOOKBACK_MS);
-  const effectiveSince = !since || since.getTime() < lowerBound.getTime()
-    ? lowerBound
-    : since;
+  // Task #748: split the lookback policy by trigger source.
+  //   - 'webhook-recovery' keeps the original 7-day clamp so a long-silent
+  //     webhook cannot trigger an unbounded fetch.
+  //   - 'manual' honors the caller's `since` exactly (the manual entry
+  //     point feeds in the contractor's configured sync-start date), with
+  //     a permissive lower bound so a missing/unknown `since` still walks
+  //     all the way back rather than getting silently clamped to 7 days.
+  let effectiveSince: Date;
+  if (trigger === 'manual') {
+    // Epoch is fine as the floor: HCP's `modified_since` accepts any ISO
+    // timestamp and MAX_PAGES * PAGE_SIZE still caps the per-run cost.
+    effectiveSince = since ?? new Date(0);
+  } else {
+    const lowerBound = new Date(now - MAX_LOOKBACK_MS);
+    effectiveSince = !since || since.getTime() < lowerBound.getTime()
+      ? lowerBound
+      : since;
+  }
   const sinceIso = effectiveSince.toISOString();
 
-  log.info(`[backfill] contractor=${contractorId} fetching estimates+jobs modified_since=${sinceIso}`);
+  log.info(`[backfill] contractor=${contractorId} trigger=${trigger} fetching estimates+jobs modified_since=${sinceIso}`);
 
   const summary: HcpBackfillSummary = {
     estimates: 0,
@@ -135,6 +185,7 @@ export async function runHcpWebhookBackfill(
     errors: [],
     since: sinceIso,
     truncated: false,
+    fetchedThroughAt: null,
   };
 
   // ----- Estimates -----
@@ -216,5 +267,6 @@ export function summarizeBackfill(summary: HcpBackfillSummary): string {
     parts.push(`${summary.errors.length} error(s)`);
   }
   const truncatedNote = summary.truncated ? ', truncated at limit' : '';
-  return parts.join(', ') + ` (since ${summary.since}${truncatedNote})`;
+  const throughNote = summary.fetchedThroughAt ? `, through ${summary.fetchedThroughAt}` : '';
+  return parts.join(', ') + ` (since ${summary.since}${throughNote}${truncatedNote})`;
 }

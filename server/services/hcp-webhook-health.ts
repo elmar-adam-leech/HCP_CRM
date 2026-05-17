@@ -156,9 +156,20 @@ async function closeOpenIncident(contractorId: string, kind: string): Promise<vo
   // disable — is exactly the kind of failure that recovers and re-trips).
 }
 
-async function markIncidentBackfill(incidentId: string, summary: string): Promise<void> {
+async function markIncidentBackfill(
+  incidentId: string,
+  summary: string,
+  fetchedThroughAt: Date | null = null,
+): Promise<void> {
   await db.update(webhookIncidents)
-    .set({ backfillAttemptedAt: new Date(), backfillSummary: summary })
+    .set({
+      backfillAttemptedAt: new Date(),
+      backfillSummary: summary,
+      // Always overwrite (including with null on failure) so a later
+      // failure does not show a stale "fetched through" from a prior
+      // success on the same incident row.
+      backfillFetchedThroughAt: fetchedThroughAt,
+    })
     .where(eq(webhookIncidents.id, incidentId));
 }
 
@@ -182,10 +193,12 @@ async function getLastSuccessfulEventAt(contractorId: string): Promise<Date | nu
 export async function getLastBackfill(contractorId: string): Promise<{
   attemptedAt: Date;
   summary: string | null;
+  fetchedThroughAt: Date | null;
 } | null> {
   const rows = await db.select({
     backfillAttemptedAt: webhookIncidents.backfillAttemptedAt,
     backfillSummary: webhookIncidents.backfillSummary,
+    backfillFetchedThroughAt: webhookIncidents.backfillFetchedThroughAt,
   })
     .from(webhookIncidents)
     .where(and(
@@ -197,7 +210,11 @@ export async function getLastBackfill(contractorId: string): Promise<{
     .limit(1);
   const row = rows[0];
   if (!row || !row.backfillAttemptedAt) return null;
-  return { attemptedAt: row.backfillAttemptedAt, summary: row.backfillSummary };
+  return {
+    attemptedAt: row.backfillAttemptedAt,
+    summary: row.backfillSummary,
+    fetchedThroughAt: row.backfillFetchedThroughAt ?? null,
+  };
 }
 
 // Per-contractor in-progress tracker for manual resyncs. Keeps the HTTP
@@ -233,10 +250,17 @@ export function triggerManualBackfill(contractorId: string): {
 
 async function runManualBackfillBackground(contractorId: string): Promise<void> {
   try {
-    const since = await getLastSuccessfulEventAt(contractorId);
+    // Task #748: the manual resync entry point honors the contractor's
+    // configured `housecallProSyncStartDate` directly (no 7-day clamp).
+    // We fall back to the last successful webhook event only when no
+    // start date is configured, matching prior behaviour for accounts
+    // that have never set one. Final fallback (no event either) is null,
+    // which `runHcpWebhookBackfill(trigger='manual')` interprets as epoch.
+    const configuredStart = await storage.getHousecallProSyncStartDate(contractorId);
+    const since = configuredStart ?? await getLastSuccessfulEventAt(contractorId);
     let result: Awaited<ReturnType<typeof runHcpWebhookBackfill>>;
     try {
-      result = await runHcpWebhookBackfill(contractorId, since);
+      result = await runHcpWebhookBackfill(contractorId, since, 'manual');
     } catch (err) {
       const msg = `manual backfill failed: ${err instanceof Error ? err.message : String(err)}`;
       log.error(`[backfill] contractor=${contractorId} ${msg}`);
@@ -244,11 +268,11 @@ async function runManualBackfillBackground(contractorId: string): Promise<void> 
       const failureSummary = `manual: ${msg}`;
       const existingOpen = await getOpenIncident(contractorId, KIND_STALENESS);
       if (existingOpen) {
-        await markIncidentBackfill(existingOpen.id, failureSummary);
+        await markIncidentBackfill(existingOpen.id, failureSummary, null);
       } else {
         try {
           const { incident } = await openIncidentAtomic(contractorId, KIND_STALENESS);
-          await markIncidentBackfill(incident.id, failureSummary);
+          await markIncidentBackfill(incident.id, failureSummary, null);
           await closeOpenIncident(contractorId, KIND_STALENESS);
         } catch (incErr) {
           log.error('Failed to record manual backfill failure incident', incErr);
@@ -257,16 +281,17 @@ async function runManualBackfillBackground(contractorId: string): Promise<void> 
       return;
     }
     const summaryText = summarizeBackfill(result);
+    const fetchedThroughAt = result.fetchedThroughAt ? new Date(result.fetchedThroughAt) : null;
     // Manual backfills are recorded under an open incident if one exists,
     // otherwise under a fresh row that is immediately closed (so we keep an
     // audit trail without leaving a phantom open incident).
     const existingOpen = await getOpenIncident(contractorId, KIND_STALENESS);
     if (!existingOpen) {
       const { incident } = await openIncidentAtomic(contractorId, KIND_STALENESS);
-      await markIncidentBackfill(incident.id, `manual: ${summaryText}`);
+      await markIncidentBackfill(incident.id, `manual: ${summaryText}`, fetchedThroughAt);
       await closeOpenIncident(contractorId, KIND_STALENESS);
     } else {
-      await markIncidentBackfill(existingOpen.id, `manual: ${summaryText}`);
+      await markIncidentBackfill(existingOpen.id, `manual: ${summaryText}`, fetchedThroughAt);
     }
     broadcastToContractor(contractorId, { type: 'webhook_status_updated' });
   } catch (outerErr) {
@@ -741,9 +766,10 @@ async function tryBackfillForOpenIncident(
   }
 
   try {
-    const result = await runHcpWebhookBackfill(contractorId, lastEventAt);
+    const result = await runHcpWebhookBackfill(contractorId, lastEventAt, 'webhook-recovery');
     const summary = summarizeBackfill(result);
-    await markIncidentBackfill(incidentId, summary);
+    const fetchedThroughAt = result.fetchedThroughAt ? new Date(result.fetchedThroughAt) : null;
+    await markIncidentBackfill(incidentId, summary, fetchedThroughAt);
     log.info(`[backfill] contractor=${contractorId} ${phase} auto-backfill complete — ${summary}`);
     return { kind: 'success', summary };
   } catch (err) {
@@ -849,6 +875,7 @@ export async function getWebhookStatus(contractorId: string): Promise<{
   lastRejectionReason: string | null;
   lastBackfillAt: Date | null;
   lastBackfillSummary: string | null;
+  lastBackfillFetchedThroughAt: Date | null;
   backfillInProgress: boolean;
 }> {
   const [latestEventResult, rejectionSpikeResult, rejectionCount24h, lastBackfill] = await Promise.all([
@@ -914,6 +941,7 @@ export async function getWebhookStatus(contractorId: string): Promise<{
     lastRejectionReason: rejectionSpikeResult.lastRejectionReason,
     lastBackfillAt: lastBackfill?.attemptedAt ?? null,
     lastBackfillSummary: lastBackfill?.summary ?? null,
+    lastBackfillFetchedThroughAt: lastBackfill?.fetchedThroughAt ?? null,
     backfillInProgress: manualBackfillsInProgress.has(contractorId),
   };
 }
@@ -1005,9 +1033,10 @@ async function runStartupFastCheck(): Promise<void> {
         // we already pulled.
         let backfillNote = '';
         try {
-          const result = await runHcpWebhookBackfill(contractorId, lastEventAt);
+          const result = await runHcpWebhookBackfill(contractorId, lastEventAt, 'webhook-recovery');
           const summaryText = summarizeBackfill(result);
-          await markIncidentBackfill(incident.id, summaryText);
+          const fetchedThroughAt = result.fetchedThroughAt ? new Date(result.fetchedThroughAt) : null;
+          await markIncidentBackfill(incident.id, summaryText, fetchedThroughAt);
           backfillNote = ` We already pulled the latest from HCP for you (${summaryText}).`;
         } catch (err) {
           log.error(`[backfill] contractor=${contractorId} startup auto-backfill threw`, err);

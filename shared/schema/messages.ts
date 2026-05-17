@@ -172,6 +172,13 @@ export const webhookIncidents = pgTable("webhook_incidents", {
   notifiedAt: timestamp("notified_at"),
   backfillAttemptedAt: timestamp("backfill_attempted_at"),
   backfillSummary: text("backfill_summary"),
+  // Task #748: oldest `updated_at` (across estimates+jobs) covered by the
+  // last successful backfill on this incident row. Lets the HCP settings
+  // card surface the real "fetched through" date next to "Last resync" so
+  // an admin can confirm a manual resync actually walked back as far as
+  // their configured `housecallProSyncStartDate`. Null when the backfill
+  // returned no items.
+  backfillFetchedThroughAt: timestamp("backfill_fetched_through_at"),
 }, (table) => ({
   contractorServiceKindIdx: index("webhook_incidents_contractor_service_kind_idx").on(table.contractorId, table.service, table.kind),
   // UNIQUE partial index: at most one OPEN incident per (contractor, service,
