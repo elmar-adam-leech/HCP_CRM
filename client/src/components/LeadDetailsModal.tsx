@@ -238,6 +238,15 @@ function LeadDetailsContent({ contact, onSendEmail, onSchedule, onEdit, onEditSt
 
       <section>
         <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+          Submission History
+        </h3>
+        <LeadSubmissionHistory contactId={contact.id} />
+      </section>
+
+      <div className="border-t" />
+
+      <section>
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
           Contact Information
         </h3>
         <div className="space-y-2.5 min-w-0">
@@ -281,19 +290,6 @@ function LeadDetailsContent({ contact, onSendEmail, onSchedule, onEdit, onEditSt
           Active Workflows
         </h3>
         <WorkflowEnrollmentBadges contactId={contact.id} variant="full" />
-      </section>
-
-      <div className="border-t" />
-
-      <LeadSalesProcessTasks contactId={contact.id} />
-
-      <div className="border-t" />
-
-      <section>
-        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-          Submission History
-        </h3>
-        <LeadSubmissionHistory contactId={contact.id} />
       </section>
 
       <div className="border-t" />
