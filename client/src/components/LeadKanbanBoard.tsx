@@ -194,7 +194,7 @@ function KanbanColumnComponent({
 
 const COLUMN_DEFINITIONS: Array<{ id: string; title: string; status: KanbanColumn["status"] }> = [
   { id: "new", title: "New Leads", status: "new" },
-  { id: "contacted", title: "Contacted", status: "contacted" },
+  { id: "contacted", title: "Following Up", status: "contacted" },
   { id: "scheduled", title: "Scheduled", status: "scheduled" },
   { id: "disqualified", title: "Disqualified", status: "disqualified" },
   { id: "lost", title: "Lost", status: "lost" },

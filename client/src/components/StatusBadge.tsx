@@ -11,7 +11,7 @@ type StatusBadgeProps = {
 
 const statusLabels: Record<string, string> = {
   new: "New",
-  contacted: "Contacted",
+  contacted: "Following Up",
   scheduled: "Scheduled",
   sent: "Sent",
   approved: "Approved",
