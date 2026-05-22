@@ -56,11 +56,14 @@ export function registerMessagingRoutes(app: Express): void {
                 const newCode = generateBookingCode();
                 contact = await storage.updateContact(contact.id, { bookingCode: newCode }, req.user.contractorId) ?? contact;
               }
-              const codeParam = contact.bookingCode
-                ? `c=${contact.bookingCode}`
-                : `contactId=${contact.id}`;
-              const bookingUrl = `https://${domain}/book/${contractor.bookingSlug}?${codeParam}`;
-              messageContent = messageContent.replace(/\{\{booking_link\}\}/g, bookingUrl);
+              if (contact.bookingCode) {
+                const bookingUrl = `https://${domain}/book/${contractor.bookingSlug}?c=${contact.bookingCode}`;
+                messageContent = messageContent.replace(/\{\{booking_link\}\}/g, bookingUrl);
+              } else {
+                // bookingCode generation failed — omit the link rather than
+                // falling back to a raw UUID (not a proof of identity).
+                log.warn('[messaging] bookingCode still absent after lazy backfill — omitting booking_link');
+              }
             }
           }
         }

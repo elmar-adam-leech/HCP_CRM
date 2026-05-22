@@ -94,9 +94,9 @@ export default function PublicBooking() {
   const searchString = useSearch();
   const urlParams = useMemo(() => new URLSearchParams(searchString), [searchString]);
   const isEmbedded = urlParams.get('embed') === 'true';
-  // Support short code (?c=<code>), or legacy UUID params (?contact=<uuid> or ?contactId=<uuid>)
+  // Support short code (?c=<code>) only — legacy ?contact= / ?contactId= UUID
+  // params are no longer accepted (raw UUIDs are not proof of identity).
   const bookingCode = urlParams.get('c');
-  const legacyContactId = urlParams.get('contact') || urlParams.get('contactId');
   const [bookingComplete, setBookingComplete] = useState(false);
   const [bookingWarning, setBookingWarning] = useState<{ message: string; notesEcho?: string } | null>(null);
   const [bookingDetails, setBookingDetails] = useState<{ startTime: string } | null>(null);
@@ -160,11 +160,18 @@ export default function PublicBooking() {
     }).catch(() => {});
   }, [slug, contractorData]);
 
-  // Redirect to the contractor's post-booking URL after a short delay, if configured
+  // Redirect to the contractor's post-booking URL after a short delay, if configured.
+  // Only https: URLs are permitted to prevent javascript:/data: XSS via stored redirect.
   useEffect(() => {
     if (!bookingComplete) return;
     const redirectUrl = contractorData?.contractor?.bookingRedirectUrl;
     if (!redirectUrl) return;
+    try {
+      const parsed = new URL(redirectUrl);
+      if (parsed.protocol !== 'https:') return;
+    } catch {
+      return;
+    }
     if (isEmbedded && window.top) {
       window.top.location.href = redirectUrl;
     } else {
@@ -172,21 +179,17 @@ export default function PublicBooking() {
     }
   }, [bookingComplete, contractorData, isEmbedded]);
 
-  // Fetch contact data for prefilling if a booking identifier is present in the URL
-  const prefillIdentifier = bookingCode || legacyContactId;
+  // Fetch contact data for prefilling if a booking code is present in the URL
   const { data: prefillData } = useQuery<{ prefill: PrefillData }>({
-    queryKey: ['/api/public/book', slug, 'contact', prefillIdentifier],
+    queryKey: ['/api/public/book', slug, 'contact', bookingCode],
     queryFn: async () => {
-      const param = bookingCode
-        ? `c=${encodeURIComponent(bookingCode)}`
-        : `contactId=${encodeURIComponent(legacyContactId!)}`;
-      const response = await fetch(`/api/public/book/${slug}/contact?${param}`);
+      const response = await fetch(`/api/public/book/${slug}/contact?c=${encodeURIComponent(bookingCode!)}`);
       if (!response.ok) {
         return { prefill: null };
       }
       return response.json();
     },
-    enabled: !!slug && !!prefillIdentifier,
+    enabled: !!slug && !!bookingCode,
   });
 
   const form = useForm<BookingFormValues>({
@@ -269,13 +272,9 @@ export default function PublicBooking() {
           notes: data.notes,
           source: 'public_booking',
           timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          // Pass the short booking code (preferred) and/or the legacy
-          // contactId UUID so the backend can verify the caller controls the
-          // pre-populated contact record. Both forms are equally unguessable;
-          // workflow-rendered links may still use the legacy form for older
-          // contacts whose bookingCode was not yet backfilled.
+          // Pass the short booking code so the backend can verify the caller
+          // controls the pre-populated contact record.
           bookingCode: bookingCode || undefined,
-          contactId: legacyContactId || undefined,
         }),
       });
 

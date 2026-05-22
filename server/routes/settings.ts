@@ -517,10 +517,15 @@ export function registerSettingsRoutes(app: Express): void {
     }
 
     if (bookingRedirectUrl) {
+      let parsedRedirect: URL;
       try {
-        new URL(bookingRedirectUrl);
+        parsedRedirect = new URL(bookingRedirectUrl);
       } catch {
         res.status(400).json({ message: "Post-booking redirect URL must be a valid URL (e.g. https://example.com/thank-you)" });
+        return;
+      }
+      if (parsedRedirect.protocol !== 'https:') {
+        res.status(400).json({ message: "Post-booking redirect URL must use the https:// scheme" });
         return;
       }
     }

@@ -298,10 +298,9 @@ export function registerPublicRoutes(app: Express): void {
   // Get contact info for prefilling public booking form
   app.get("/api/public/book/:slug/contact", publicBookingRateLimiter, asyncHandler(async (req: Request, res: Response) => {
     const { slug } = req.params;
-    const contactId = req.query.contactId as string | undefined;
     const bookingCode = req.query.c as string | undefined;
 
-    if (!contactId && !bookingCode) {
+    if (!bookingCode) {
       res.status(400).json({ message: "Missing contact identifier" });
       return;
     }
@@ -313,12 +312,12 @@ export function registerPublicRoutes(app: Express): void {
       return;
     }
 
-    // Look up contact by short code (preferred) or legacy UUID
+    // Look up contact by short booking code only — legacy raw UUID params are
+    // no longer accepted because possession of an opaque UUID is not proof of
+    // identity and such links never expire.
     let contact;
     if (bookingCode) {
       contact = await storage.getContactByBookingCode(bookingCode, contractor.id);
-    } else if (contactId) {
-      contact = await storage.getContact(contactId, contractor.id);
     }
 
     if (!contact) {
@@ -339,7 +338,7 @@ export function registerPublicRoutes(app: Express): void {
   // Create a booking from public page (stricter rate limit for submissions)
   app.post("/api/public/book/:slug", publicBookingSubmitRateLimiter, asyncHandler(async (req: Request, res: Response) => {
     const { slug } = req.params;
-    const { name, email, phone, address, customerAddressComponents: rawSubmittedComponents, startTime, notes, source, timeZone, bookingCode, contactId: legacyContactIdParam } = req.body;
+    const { name, email, phone, address, customerAddressComponents: rawSubmittedComponents, startTime, notes, source, timeZone, bookingCode } = req.body;
     let customerAddressComponents: AddressComponents | undefined =
       rawSubmittedComponents && typeof rawSubmittedComponents === 'object'
         ? (rawSubmittedComponents as AddressComponents)
@@ -423,19 +422,12 @@ export function registerPublicRoutes(app: Express): void {
     // applied to the pre-existing contact.
     const existingContactId = await storage.findMatchingContact(contractor.id, emails, phones);
 
-    // Verify ownership via bookingCode (preferred) or legacy contactId UUID.
-    // Both forms are equally unguessable; the prefill endpoint already accepts
-    // either, so we mirror that behavior here. Without this, customers who
-    // arrive on a workflow-rendered legacy `?contactId=<uuid>` link would be
-    // treated as unverified at submit time and a duplicate contact would be
-    // created.
+    // Verify ownership via bookingCode only. The legacy raw-UUID contactId
+    // parameter has been retired: possession of an internal UUID is not proof
+    // of identity and those links never expire (see task #776 fix).
     let tokenContact: Awaited<ReturnType<typeof storage.getContactByBookingCode>> | null = null;
     if (existingContactId && bookingCode) {
       tokenContact = (await storage.getContactByBookingCode(bookingCode as string, contractor.id)) ?? null;
-    }
-    if (!tokenContact && existingContactId && legacyContactIdParam && typeof legacyContactIdParam === 'string') {
-      const legacy = await storage.getContact(legacyContactIdParam, contractor.id);
-      if (legacy) tokenContact = legacy;
     }
     const callerOwnsContact = !!tokenContact && tokenContact.id === existingContactId;
 
