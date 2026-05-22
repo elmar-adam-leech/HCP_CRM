@@ -772,19 +772,80 @@ export default function FollowUps() {
         </Card>
       ) : (
         <>
-          <div className="grid gap-4">
-            {followUpItems.map((item) => (
-              <FollowUpCard
-                key={`${item.type}-${item.id}`}
-                item={item}
-                onSetFollowUp={handleSetFollowUp}
-                onContact={handleContact}
-                onSchedule={handleSchedule}
-                onEdit={handleEdit}
-                onRemoveFollowUp={handleRemoveFollowUp}
-              />
-            ))}
-          </div>
+          {filterView === "all" ? (
+            <div className="grid gap-4">
+              {(() => {
+                // Partition the visible items into the same four buckets the
+                // top-of-page filter exposes so reps can see what's urgent vs.
+                // upcoming at a glance. Boundaries mirror `dateRange` above:
+                // past-due < todayStart <= today < tomorrow <= this week <
+                // endOfWeekExclusive <= upcoming. Task #761.
+                const now = new Date();
+                const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+                const tomorrow = new Date(todayStart); tomorrow.setDate(tomorrow.getDate() + 1);
+                const daysUntilSatEnd = 6 - now.getDay();
+                const endOfWeekExclusive = new Date(todayStart);
+                endOfWeekExclusive.setDate(endOfWeekExclusive.getDate() + daysUntilSatEnd + 1);
+
+                const buckets: { key: string; label: string; items: FollowUpItem[] }[] = [
+                  { key: "overdue", label: "Past Due", items: [] },
+                  { key: "today", label: "Today", items: [] },
+                  { key: "thisweek", label: "This Week", items: [] },
+                  { key: "upcoming", label: "Upcoming", items: [] },
+                ];
+                for (const item of followUpItems) {
+                  const d = new Date(item.followUpDate);
+                  if (d < todayStart) buckets[0].items.push(item);
+                  else if (d < tomorrow) buckets[1].items.push(item);
+                  else if (d < endOfWeekExclusive) buckets[2].items.push(item);
+                  else buckets[3].items.push(item);
+                }
+
+                return buckets
+                  .filter(b => b.items.length > 0)
+                  .map(b => (
+                    <div key={b.key} className="space-y-3" data-testid={`followups-section-${b.key}`}>
+                      <div
+                        className="sticky top-0 z-30 -mx-1 px-1 py-2 bg-background/95 backdrop-blur flex items-center gap-2 border-b"
+                        data-testid={`followups-section-header-${b.key}`}
+                      >
+                        <h3 className="text-sm font-semibold">{b.label}</h3>
+                        <Badge variant="secondary" className="text-xs">
+                          {b.items.length}
+                        </Badge>
+                      </div>
+                      <div className="grid gap-4">
+                        {b.items.map(item => (
+                          <FollowUpCard
+                            key={`${item.type}-${item.id}`}
+                            item={item}
+                            onSetFollowUp={handleSetFollowUp}
+                            onContact={handleContact}
+                            onSchedule={handleSchedule}
+                            onEdit={handleEdit}
+                            onRemoveFollowUp={handleRemoveFollowUp}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ));
+              })()}
+            </div>
+          ) : (
+            <div className="grid gap-4">
+              {followUpItems.map((item) => (
+                <FollowUpCard
+                  key={`${item.type}-${item.id}`}
+                  item={item}
+                  onSetFollowUp={handleSetFollowUp}
+                  onContact={handleContact}
+                  onSchedule={handleSchedule}
+                  onEdit={handleEdit}
+                  onRemoveFollowUp={handleRemoveFollowUp}
+                />
+              ))}
+            </div>
+          )}
           <FollowUpsPager
             page={page}
             totalPages={totalPages}

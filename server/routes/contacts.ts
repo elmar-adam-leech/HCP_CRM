@@ -253,6 +253,17 @@ export function registerContactRoutes(app: Express): void {
         ) coaching ON true
         WHERE c.contractor_id = ${contractorId}
           AND c.follow_up_date IS NOT NULL
+          -- Only surface contacts whose newest open lead is still in a
+          -- "following up" state. Excludes qualified/converted/disqualified/
+          -- lost leads as well as any aged or archived lead row (task #761).
+          AND EXISTS (
+            SELECT 1 FROM leads l
+            WHERE l.contact_id = c.id
+              AND l.contractor_id = ${contractorId}
+              AND l.status IN ('new', 'contacted')
+              AND l.aged = false
+              AND l.archived = false
+          )
 
         UNION ALL
 
@@ -288,6 +299,9 @@ export function registerContactRoutes(app: Express): void {
         ) coaching ON true
         WHERE e.contractor_id = ${contractorId}
           AND e.follow_up_date IS NOT NULL
+          -- Only surface estimates that still need a rep follow-up.
+          -- Excludes scheduled/approved/rejected (task #761).
+          AND e.status IN ('in_progress', 'sent')
 
         UNION ALL
 
