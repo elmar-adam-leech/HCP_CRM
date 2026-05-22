@@ -148,16 +148,6 @@ export function serveStatic(app: Express) {
   // overwrite them.
   const LOGO_RE =
     /^.*[\\/](hcp-crm-logo|favicon|apple-touch-icon|icon-\d+)[\w.-]*\.(avif|webp|png|svg|ico)$/i;
-  app.use(
-    express.static(distPath, {
-      setHeaders(res, filePath) {
-        if (LOGO_RE.test(filePath)) {
-          res.setHeader("Cache-Control", "public, max-age=2592000");
-        }
-      },
-    }),
-  );
-
   // Marketing/public routes are pre-rendered into per-route HTML files at
   // build time (scripts/prerender.mjs). Serve those files directly so the
   // browser paints content before any JavaScript loads. The hashed JS/CSS
@@ -183,6 +173,41 @@ export function serveStatic(app: Express) {
         ? path.resolve(distPath, "index.html")
         : path.resolve(distPath, route.replace(/^\//, ""), "index.html"),
     ]),
+  );
+
+  // Register exact-match handlers for the prerendered marketing routes
+  // BEFORE express.static. Otherwise express.static sees the per-route
+  // directory (e.g. dist/public/licenses/) and emits a 301 redirect from
+  // `/licenses` to `/licenses/`, which Lighthouse flags as a redirect on the
+  // canonical URL. We serve the same file on both forms (no redirect either
+  // way) so existing inbound links to the trailing-slash form stay 200 OK.
+  // Crawlers discover the canonical no-slash form via <link rel="canonical">
+  // injected by scripts/prerender.mjs.
+  const sendPrerendered = (filePath: string) =>
+    (_req: import("express").Request, res: import("express").Response) => {
+      res.set("Cache-Control", PRERENDERED_CACHE_CONTROL);
+      res.set("Content-Type", "text/html; charset=utf-8");
+      res.sendFile(filePath);
+    };
+  for (const route of PRERENDERED_ROUTE_PATHS) {
+    const filePath = PRERENDERED_ROUTES[route];
+    if (!fs.existsSync(filePath)) continue;
+    if (route === "/") {
+      app.get("/", sendPrerendered(filePath));
+      continue;
+    }
+    app.get(route, sendPrerendered(filePath));
+    app.get(`${route}/`, sendPrerendered(filePath));
+  }
+
+  app.use(
+    express.static(distPath, {
+      setHeaders(res, filePath) {
+        if (LOGO_RE.test(filePath)) {
+          res.setHeader("Cache-Control", "public, max-age=2592000");
+        }
+      },
+    }),
   );
 
   const spaShellPath = fs.existsSync(path.resolve(distPath, "spa.html"))

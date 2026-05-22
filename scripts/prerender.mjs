@@ -95,11 +95,24 @@ async function main() {
     ],
   };
 
+  // Canonical origin for prerendered marketing pages. Used to emit a
+  // <link rel="canonical"> tag that points at the no-trailing-slash form
+  // (e.g. /licenses, not /licenses/) so crawlers consolidate signals on
+  // the canonical URL. Overridable via CANONICAL_ORIGIN.
+  const canonicalOrigin = (
+    process.env.CANONICAL_ORIGIN || "https://hcpcrm.com"
+  ).replace(/\/+$/, "");
+
   for (const route of PRERENDER_PATHS) {
     const html = render(route);
     let pageHtml = spaShell.replace(
       `<div id="root"></div>`,
       `<div id="root">${html}</div>`
+    );
+    const canonicalHref = `${canonicalOrigin}${route === "/" ? "/" : route}`;
+    pageHtml = pageHtml.replace(
+      "</head>",
+      `    <link rel="canonical" href="${canonicalHref}">\n  </head>`
     );
     const preloads = LCP_PRELOAD_BY_ROUTE[route];
     if (preloads && preloads.length) {
