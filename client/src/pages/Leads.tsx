@@ -38,7 +38,7 @@ import { useLeadActions } from "@/hooks/useLeadActions";
 import { LeadModals } from "@/components/LeadModals";
 import type { LeadActiveModal } from "@/types/leadTypes";
 
-const LEAD_STATUSES = ["new", "contacted", "scheduled", "disqualified", "lost"] as const;
+const LEAD_STATUSES = ["new", "following up", "scheduled", "disqualified", "lost"] as const;
 
 type LeadViewMode = "active" | "archived" | "aged";
 
