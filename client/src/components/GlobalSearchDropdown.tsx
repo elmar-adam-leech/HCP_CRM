@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Search, Users, Briefcase, Calendar, ArrowRight } from "lucide-react";
+import { Search, Users, Briefcase, Calendar, ArrowRight, Contact as ContactIcon } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -87,6 +87,32 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
     staleTime: 10_000,
   });
 
+  // Contacts section: non-lead types only (customers + inactive), so we don't
+   // duplicate the Leads section above. Fetch both in one round trip per type
+   // since the paginated endpoint takes a single `type` filter; cap to 5 each
+   // and merge client-side, dedup'd by id.
+  const { data: customersData, isLoading: customersLoading } = useQuery<PaginatedResponse<Contact>>({
+    queryKey: ["/api/contacts/paginated", { search: debouncedQuery, limit: 5, type: "customer" }],
+    queryFn: () =>
+      fetch(
+        `/api/contacts/paginated?search=${encodeURIComponent(debouncedQuery)}&limit=5&type=customer`,
+        { credentials: "include" }
+      ).then((r) => r.json()),
+    enabled,
+    staleTime: 10_000,
+  });
+
+  const { data: inactiveData, isLoading: inactiveLoading } = useQuery<PaginatedResponse<Contact>>({
+    queryKey: ["/api/contacts/paginated", { search: debouncedQuery, limit: 5, type: "inactive" }],
+    queryFn: () =>
+      fetch(
+        `/api/contacts/paginated?search=${encodeURIComponent(debouncedQuery)}&limit=5&type=inactive`,
+        { credentials: "include" }
+      ).then((r) => r.json()),
+    enabled,
+    staleTime: 10_000,
+  });
+
   const { data: jobsData, isLoading: jobsLoading } = useQuery<PaginatedResponse<JobWithContact>>({
     queryKey: ["/api/jobs/paginated", { search: debouncedQuery, limit: 5 }],
     queryFn: () =>
@@ -112,9 +138,20 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
   const leads = leadsData?.data ?? [];
   const jobs = jobsData?.data ?? [];
   const estimateItems = estimatesData?.data ?? [];
+  const contactItems = (() => {
+    const seen = new Set<string>();
+    const merged: Contact[] = [];
+    for (const c of [...(customersData?.data ?? []), ...(inactiveData?.data ?? [])]) {
+      if (seen.has(c.id)) continue;
+      seen.add(c.id);
+      merged.push(c);
+    }
+    return merged;
+  })();
 
-  const anyLoading = leadsLoading || jobsLoading || estimatesLoading;
-  const hasAnyResults = leads.length > 0 || jobs.length > 0 || estimateItems.length > 0;
+  const contactsLoading = customersLoading || inactiveLoading;
+  const anyLoading = leadsLoading || jobsLoading || estimatesLoading || contactsLoading;
+  const hasAnyResults = leads.length > 0 || jobs.length > 0 || estimateItems.length > 0 || contactItems.length > 0;
   const showEmpty = !anyLoading && !hasAnyResults && enabled;
 
   const navigate = (path: string) => {
@@ -137,7 +174,7 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
     <div ref={containerRef} className="relative flex-1 max-w-xs sm:max-w-md">
       <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground pointer-events-none z-10" />
       <Input
-        placeholder="Search leads, jobs, or estimates..."
+        placeholder="Search leads, contacts, estimates, jobs..."
         value={inputValue}
         onChange={(e) => setInputValue(e.target.value)}
         onFocus={() => {
@@ -203,6 +240,53 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
                         )}
                         <StatusBadge status={(lead.status ?? "new") as Parameters<typeof StatusBadge>[0]['status']} entityType="lead" />
                       </div>
+                    </button>
+                  ))
+                )}
+              </div>
+
+              <div className="border-t my-1" />
+
+              {/* Contacts section (customers + inactive — leads live in the section above) */}
+              <div>
+                <div className="flex items-center justify-between px-3 pt-2 pb-1">
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    <ContactIcon className="h-3 w-3" />
+                    Contacts
+                  </div>
+                  <button
+                    onClick={handleViewAll("/contacts")}
+                    className="flex items-center gap-0.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    View all <ArrowRight className="h-3 w-3" />
+                  </button>
+                </div>
+                {contactsLoading ? (
+                  <>
+                    <SkeletonRow />
+                    <SkeletonRow />
+                  </>
+                ) : contactItems.length === 0 ? (
+                  <div className="px-3 py-2 text-xs text-muted-foreground italic">No contacts found</div>
+                ) : (
+                  contactItems.slice(0, 3).map((contact) => (
+                    <button
+                      key={contact.id}
+                      onClick={() => navigate(`/contacts?open=${contact.id}`)}
+                      className="w-full flex items-center justify-between gap-3 px-3 py-2 text-left hover-elevate active-elevate-2 transition-colors"
+                      data-testid={`row-contact-${contact.id}`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium truncate">{contact.name}</div>
+                        {(contact.emails?.[0] || contact.phones?.[0]) && (
+                          <div className="text-xs text-muted-foreground truncate">
+                            {contact.emails?.[0] ?? contact.phones?.[0]}
+                          </div>
+                        )}
+                      </div>
+                      <Badge variant="secondary" className="text-xs shrink-0">
+                        {contact.type === "inactive" ? "Inactive" : "Customer"}
+                      </Badge>
                     </button>
                   ))
                 )}

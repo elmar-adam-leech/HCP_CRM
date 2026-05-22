@@ -6,10 +6,9 @@ import { useToast } from "@/hooks/use-toast";
 import { PageHeader } from "@/components/ui/page-header-v2";
 import { PageLayout } from "@/components/ui/page-layout";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { PaginationBar } from "@/components/ui/pagination-bar";
-import { Search, GitMerge, X, Clock } from "lucide-react";
+import { GitMerge, X, Clock } from "lucide-react";
 import type { Contact } from "@shared/schema";
 import { useWebSocketInvalidation } from "@/hooks/useWebSocketInvalidation";
 import { useCurrentUser, isStrictAdmin } from "@/hooks/useCurrentUser";
@@ -35,7 +34,13 @@ type ContactsResponse = {
 const PAGE_SIZE = 9;
 
 export default function Contacts() {
-  const [searchQuery, setSearchQuery] = useState("");
+  // Search is driven entirely by the URL `?search=` param (set by the global
+  // header search dropdown's "View all" link). The in-page search input was
+  // removed in task #754 to make the header the single search surface.
+  const [searchQuery, setSearchQuery] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return new URLSearchParams(window.location.search).get("search") ?? "";
+  });
   const [page, setPage] = useState(1);
   const [detailContact, setDetailContact] = useState<ContactWithCounts | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ isOpen: boolean; contactId?: string; contactName?: string }>({ isOpen: false });
@@ -162,27 +167,34 @@ export default function Contacts() {
     setDeleteConfirm({ isOpen: true, contactId: contact.id, contactName: contact.name });
   }, []);
 
-  // Open the contact detail panel automatically when navigated here with `?id=…`,
-  // e.g. from the Recent Activity timeline jumping to a matched customer.
+  // Open the contact detail panel automatically when navigated here with
+  // `?id=…` (legacy, used by Recent Activity timeline) or `?open=…` (used by
+  // the global header search dropdown — task #754). The `?search=…` param is
+  // consumed by useState initializer above and stripped here so refreshing
+  // the page after manual edits doesn't keep re-applying it.
   const [location] = useLocation();
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const id = params.get("id");
-    if (!id) return;
+    const id = params.get("open") ?? params.get("id");
     let cancelled = false;
-    (async () => {
-      try {
-        const res = await apiRequest("GET", `/api/contacts/${id}`);
-        const contact = await res.json();
-        if (!cancelled) setDetailContact(contact);
-      } catch {
-        // Ignore fetch failures — page still loads in list view.
-      }
-    })();
-    params.delete("id");
-    const nextSearch = params.toString();
-    const nextUrl = nextSearch ? `${location}?${nextSearch}` : location;
-    window.history.replaceState({}, "", nextUrl);
+    if (id) {
+      (async () => {
+        try {
+          const res = await apiRequest("GET", `/api/contacts/${id}`);
+          const contact = await res.json();
+          if (!cancelled) setDetailContact(contact);
+        } catch {
+          // Ignore fetch failures — page still loads in list view.
+        }
+      })();
+    }
+    if (params.has("id") || params.has("open")) {
+      params.delete("id");
+      params.delete("open");
+      const nextSearch = params.toString();
+      const nextUrl = nextSearch ? `${location}?${nextSearch}` : location;
+      window.history.replaceState({}, "", nextUrl);
+    }
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location]);
@@ -297,16 +309,20 @@ export default function Contacts() {
       />
 
       <div className="flex items-center gap-2 mb-4 flex-wrap">
-        {!retentionView && (
-          <div className="relative flex-1 max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search contacts..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9"
-              data-testid="input-search-contacts"
-            />
+        {!retentionView && searchQuery && (
+          <div className="flex items-center gap-1 text-sm text-muted-foreground shrink-0">
+            <span>
+              Filtering by &ldquo;<span className="font-medium text-foreground">{searchQuery}</span>&rdquo;
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setSearchQuery("")}
+              data-testid="button-clear-contact-search"
+            >
+              <X className="h-3 w-3 mr-1" />
+              Clear
+            </Button>
           </div>
         )}
 
