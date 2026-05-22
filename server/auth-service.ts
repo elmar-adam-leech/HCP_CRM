@@ -229,6 +229,80 @@ export class AuthService {
   }
 
   /**
+   * Full token validation for non-Express contexts such as WebSocket upgrades.
+   * Performs the same checks as requireAuth: JWT signature, JTI revocation,
+   * user existence, tokenVersion, and contractor membership.
+   *
+   * Returns the decoded JWTPayload on success, or null if any check fails.
+   */
+  static async validateTokenFull(token: string): Promise<JWTPayload | null> {
+    try {
+      const decoded = AuthService.verifyToken(token);
+      if (!decoded) return null;
+
+      // Check JTI revocation (same cache path as requireAuth)
+      if (decoded.jti) {
+        const cached = jtiCache.get(decoded.jti);
+        let isRevoked: boolean;
+        if (cached !== null) {
+          isRevoked = cached;
+        } else {
+          const rows = await db.select({ jti: revokedTokens.jti })
+            .from(revokedTokens)
+            .where(eq(revokedTokens.jti, decoded.jti))
+            .limit(1);
+          isRevoked = rows.length > 0;
+          jtiCache.set(decoded.jti, isRevoked);
+        }
+        if (isRevoked) return null;
+      }
+
+      // Verify user still exists
+      const user = await getUserCached(decoded.userId);
+      if (!user) return null;
+
+      // Check tokenVersion — covers "sign out all devices" via logout-all
+      if (decoded.tokenVersion !== user.tokenVersion) {
+        if (decoded.jti) evictAuthCache(decoded.jti);
+        return null;
+      }
+
+      // Verify the user still belongs to the contractor in the token
+      const userContractor = await getUserContractorCached(decoded.userId, decoded.contractorId);
+      if (!userContractor) return null;
+
+      return decoded;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Lightweight session revalidation for already-connected WebSocket clients.
+   * Called on each heartbeat cycle to detect logout, membership removal, or
+   * token-version increments that occurred after the socket was established.
+   *
+   * Does NOT verify a JWT — the token is no longer available after connection.
+   * Instead it checks: user existence, tokenVersion match, contractor membership.
+   *
+   * @param userId        - The userId stored on the socket at connect time.
+   * @param contractorId  - The contractorId stored on the socket at connect time.
+   * @param tokenVersion  - The tokenVersion from the JWT decoded at connect time.
+   * @returns true if the session is still valid, false if it should be terminated.
+   */
+  static async revalidateSession(userId: string, contractorId: string, tokenVersion: number): Promise<boolean> {
+    try {
+      const user = await getUserCached(userId);
+      if (!user) return false;
+      if (user.tokenVersion !== tokenVersion) return false;
+      const userContractor = await getUserContractorCached(userId, contractorId);
+      return !!userContractor;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Delete expired rows from revoked_tokens. Called hourly from server/index.ts.
    *
    * Note: The tokenVersion field on the users table handles "sign out all devices"

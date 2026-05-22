@@ -2,7 +2,7 @@ import type { Express, Request, Response } from "express";
 import { storage } from "../storage";
 import { insertUserSchema, users, userContractors, passwordResetTokens, type User } from "@shared/schema";
 import { db } from "../db";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { AuthService, requireAuth, requireAdmin, type AuthenticatedRequest } from "../auth-service";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
@@ -21,6 +21,7 @@ import {
   issueRefreshToken,
   refreshTokenRateLimiter,
 } from "../auth-refresh";
+import { terminateUserConnections } from "../websocket";
 
 // Per-IP/per-token brute-force defence for the refresh endpoint. The endpoint
 // itself only does one indexed DB lookup, so the limit is generous, but capping
@@ -318,6 +319,15 @@ export function registerAuthRoutes(app: Express): void {
       const token = crypto.randomBytes(32).toString('hex');
       const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
 
+      // Delete any existing unused reset tokens for this user before issuing
+      // a fresh one. This ensures only the most recently issued link is valid,
+      // preventing parallel reset links from accumulating independently usable tokens.
+      await db.delete(passwordResetTokens)
+        .where(and(
+          eq(passwordResetTokens.userId, user.id),
+          isNull(passwordResetTokens.usedAt),
+        ));
+
       await db.insert(passwordResetTokens).values({
         userId: user.id,
         token,
@@ -371,16 +381,23 @@ export function registerAuthRoutes(app: Express): void {
 
     const hashedPassword = await bcrypt.hash(newPassword, 12);
 
-    // Update password, increment tokenVersion, and mark reset token as used atomically.
-    // Incrementing tokenVersion immediately invalidates all existing JWT sessions for
-    // this user — an attacker holding a stolen cookie can no longer use it after reset.
+    // Update password, increment tokenVersion, and invalidate ALL unused reset
+    // tokens for this user atomically.
+    // - tokenVersion increment immediately invalidates all existing JWT sessions
+    //   so an attacker holding a stolen cookie can no longer use it after reset.
+    // - Marking every unused reset token (not just the current one) as used
+    //   ensures that parallel reset links issued before this redemption cannot
+    //   be replayed to retake the account after the password has been changed.
     await Promise.all([
       db.update(users)
         .set({ password: hashedPassword, tokenVersion: sql`token_version + 1` })
         .where(eq(users.id, resetTokenRecord.userId)),
       db.update(passwordResetTokens)
         .set({ usedAt: new Date() })
-        .where(eq(passwordResetTokens.id, resetTokenRecord.id)),
+        .where(and(
+          eq(passwordResetTokens.userId, resetTokenRecord.userId),
+          isNull(passwordResetTokens.usedAt),
+        )),
     ]);
 
     const userResult = await db.select().from(users).where(eq(users.id, resetTokenRecord.userId)).limit(1);
@@ -411,6 +428,9 @@ export function registerAuthRoutes(app: Express): void {
       await storage.revokeRefreshTokenByHash(hashRefreshToken(rawRefresh));
     }
     await auditLog(req, 'logout', 'user', user.userId);
+    // Immediately close any open WebSocket connections for this user so that
+    // a stolen token cannot keep a real-time data channel alive after logout.
+    terminateUserConnections(user.userId);
     res.clearCookie('auth_token', { path: '/' });
     clearRefreshCookie(res);
     res.json({ message: "Logged out successfully" });
@@ -425,6 +445,10 @@ export function registerAuthRoutes(app: Express): void {
       .where(eq(users.id, user.userId));
     // Revoke every refresh token for this user across every device.
     await storage.revokeRefreshTokensForUser(user.userId);
+    // Immediately close any open WebSocket connections for this user so that
+    // stolen tokens cannot keep real-time data channels alive after a
+    // sign-out-all-devices action.
+    terminateUserConnections(user.userId);
     res.clearCookie('auth_token', { path: '/' });
     clearRefreshCookie(res);
     res.json({ message: "All sessions signed out" });

@@ -15,6 +15,7 @@ const wsMessageSchema = z.object({
 interface AuthenticatedWebSocket extends WebSocket {
   userId?: string;
   contractorId?: string;
+  tokenVersion?: number;
   isAlive?: boolean;
 }
 
@@ -61,29 +62,43 @@ export function setupWebSocket(server: Server) {
     const { pathname } = parse(request.url || '');
 
     if (pathname === '/ws') {
-      // Extract and verify JWT token
+      // Extract token before doing any async work so we can close the socket
+      // synchronously if no token was provided.
       const token = extractToken(request);
-      
+
       if (!token) {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
         socket.destroy();
         return;
       }
 
-      const decoded = AuthService.verifyToken(token);
-      if (!decoded) {
+      // Full async auth validation: checks JWT signature, JTI revocation,
+      // user existence, tokenVersion, and contractor membership — identical to
+      // requireAuth. A simple verifyToken() call (signature only) is NOT
+      // sufficient because it would allow revoked tokens (post-logout),
+      // invalidated sessions (post-logout-all), and removed memberships to
+      // open a persistent real-time data channel.
+      AuthService.validateTokenFull(token).then((decoded) => {
+        if (!decoded) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+
+        // Upgrade the connection
+        wss!.handleUpgrade(request, socket, head, (ws: AuthenticatedWebSocket) => {
+          ws.userId = decoded.userId;
+          ws.contractorId = decoded.contractorId;
+          // Store tokenVersion so the heartbeat revalidation can detect
+          // logout-all (which increments tokenVersion) without a raw token.
+          ws.tokenVersion = decoded.tokenVersion;
+          ws.isAlive = true;
+
+          wss!.emit('connection', ws, request);
+        });
+      }).catch(() => {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
         socket.destroy();
-        return;
-      }
-
-      // Upgrade the connection
-      wss!.handleUpgrade(request, socket, head, (ws: AuthenticatedWebSocket) => {
-        ws.userId = decoded.userId;
-        ws.contractorId = decoded.contractorId;
-        ws.isAlive = true;
-        
-        wss!.emit('connection', ws, request);
       });
     }
     // Non-/ws paths: do nothing — Vite's HMR upgrade handler (registered earlier)
@@ -140,7 +155,7 @@ export function setupWebSocket(server: Server) {
     });
   });
 
-  // Heartbeat interval - ping clients every 2 minutes
+  // Heartbeat interval - ping clients every 2 minutes and revalidate sessions.
   // SCALING NOTE: `wss.clients` is a Set local to this Node.js process. In a
   // multi-process or multi-pod deployment, each process only pings the connections
   // it owns. Clients connected to other processes are NOT reachable here. For
@@ -150,12 +165,35 @@ export function setupWebSocket(server: Server) {
   // per-process — each process should independently health-check its own connections.
   const HEARTBEAT_INTERVAL_MS = 120_000; // 2 minutes
   heartbeatIntervalHandle = setInterval(() => {
-    wss!.clients.forEach((ws: AuthenticatedWebSocket) => {
+    wss!.clients.forEach(async (ws: AuthenticatedWebSocket) => {
       if (ws.isAlive === false) {
         log(`[WebSocket] Terminating inactive connection - User: ${ws.userId}`);
-        return ws.terminate();
+        ws.terminate();
+        return;
       }
-      
+
+      // Revalidate session on every heartbeat cycle.  This catches:
+      //   - Explicit logout (tokenVersion incremented via logout-all)
+      //   - Membership removal (userContractor row deleted)
+      //   - User account deletion
+      // Note: JTI revocation from a single-device logout is caught at connection
+      // time via validateTokenFull; ongoing connections are covered by tokenVersion
+      // because logout-all always increments it, and terminateUserConnections is
+      // called by logout to cut them immediately.
+      if (ws.userId && ws.contractorId && ws.tokenVersion !== undefined) {
+        const valid = await AuthService.revalidateSession(ws.userId, ws.contractorId, ws.tokenVersion);
+        if (!valid) {
+          log(`[WebSocket] Terminating invalidated session - User: ${ws.userId}`);
+          try {
+            ws.send(JSON.stringify({ type: 'session_expired', message: 'Session expired or access revoked' }));
+          } catch {
+            // Ignore send errors when the socket is already closing
+          }
+          ws.terminate();
+          return;
+        }
+      }
+
       ws.isAlive = false;
       ws.ping();
     });
@@ -241,6 +279,30 @@ export function broadcastToContractor(contractorId: string, message: WebSocketBr
   log(`[WebSocket] Broadcasted message to ${sentCount} clients for contractor ${contractorId}`);
 }
 
+
+/**
+ * Immediately terminate all open WebSocket connections for a given user.
+ *
+ * Called by the logout and logout-all handlers so that a revoked or
+ * invalidated session is cut off right away rather than waiting for the
+ * next heartbeat cycle (up to 2 minutes later).
+ *
+ * A `session_expired` message is sent before termination so the client
+ * SPA can handle the disconnection gracefully (e.g. redirect to login).
+ */
+export function terminateUserConnections(userId: string): void {
+  if (!wss) return;
+  wss.clients.forEach((client: AuthenticatedWebSocket) => {
+    if (client.userId === userId && client.readyState === WebSocket.OPEN) {
+      try {
+        client.send(JSON.stringify({ type: 'session_expired', message: 'Session terminated' }));
+      } catch {
+        // Ignore send errors — we're terminating anyway
+      }
+      client.terminate();
+    }
+  });
+}
 
 export function getConnectedClientsCount(contractorId?: string): number {
   if (!wss) return 0;
