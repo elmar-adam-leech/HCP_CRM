@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Search, Users, Briefcase, Calendar, ArrowRight, Contact as ContactIcon } from "lucide-react";
@@ -7,7 +7,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "./StatusBadge";
 import type { Contact, Job, Estimate } from "@shared/schema";
-import { formatEntityTitle } from "@/lib/utils";
+import { formatEntityTitle, cn } from "@/lib/utils";
 
 interface PaginatedResponse<T> {
   data: T[];
@@ -30,11 +30,15 @@ function SkeletonRow() {
   );
 }
 
+const HIGHLIGHT_CLASS = "bg-accent text-accent-foreground";
+
 export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
   const [inputValue, setInputValue] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [isOpen, setIsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const containerRef = useRef<HTMLDivElement>(null);
+  const rowRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [, setLocation] = useLocation();
 
   // 300ms debounce
@@ -63,15 +67,6 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  // Close on Escape
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setIsOpen(false);
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
   }, []);
 
   const enabled = debouncedQuery.length >= 2;
@@ -138,7 +133,7 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
   const leads = leadsData?.data ?? [];
   const jobs = jobsData?.data ?? [];
   const estimateItems = estimatesData?.data ?? [];
-  const contactItems = (() => {
+  const contactItems = useMemo(() => {
     const seen = new Set<string>();
     const merged: Contact[] = [];
     for (const c of [...(customersData?.data ?? []), ...(inactiveData?.data ?? [])]) {
@@ -147,12 +142,15 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
       merged.push(c);
     }
     return merged;
-  })();
+  }, [customersData, inactiveData]);
 
   const contactsLoading = customersLoading || inactiveLoading;
   const anyLoading = leadsLoading || jobsLoading || estimatesLoading || contactsLoading;
-  const hasAnyResults = leads.length > 0 || jobs.length > 0 || estimateItems.length > 0 || contactItems.length > 0;
-  const showEmpty = !anyLoading && !hasAnyResults && enabled;
+
+  const visibleLeads = leads.slice(0, 3);
+  const visibleContacts = contactItems.slice(0, 3);
+  const visibleEstimates = estimateItems.slice(0, 3);
+  const visibleJobs = jobs.slice(0, 3);
 
   const navigate = (path: string) => {
     onSearch?.("");
@@ -160,7 +158,71 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
     setIsOpen(false);
     setInputValue("");
     setDebouncedQuery("");
+    setActiveIndex(-1);
   };
+
+  // Flat list of activation handlers, in visual order.
+  const flatActivators = useMemo<Array<() => void>>(() => {
+    const list: Array<() => void> = [];
+    for (const l of visibleLeads) list.push(() => navigate(`/leads?open=${l.id}`));
+    for (const c of visibleContacts) list.push(() => navigate(`/contacts?open=${c.id}`));
+    for (const e of visibleEstimates) list.push(() => navigate(`/estimates?open=${e.id}`));
+    for (const j of visibleJobs) list.push(() => navigate(`/jobs?open=${j.id}`));
+    return list;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleLeads, visibleContacts, visibleEstimates, visibleJobs]);
+
+  // Compute starting flat-index per section for highlight lookups.
+  const leadsStart = 0;
+  const contactsStart = leadsStart + visibleLeads.length;
+  const estimatesStart = contactsStart + visibleContacts.length;
+  const jobsStart = estimatesStart + visibleEstimates.length;
+
+  // Resize the refs array to match the flat row count each render so stale
+  // refs from a previous, longer result set never linger.
+  rowRefs.current.length = flatActivators.length;
+
+  // Reset highlight whenever the result set changes (new query, new data, or
+  // the dropdown closes).
+  useEffect(() => {
+    setActiveIndex(-1);
+  }, [debouncedQuery, isOpen, flatActivators.length]);
+
+  // Scroll the highlighted row into view when it changes.
+  useEffect(() => {
+    if (activeIndex < 0) return;
+    const el = rowRefs.current[activeIndex];
+    if (el) el.scrollIntoView({ block: "nearest" });
+  }, [activeIndex]);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Escape") {
+      if (isOpen) {
+        e.preventDefault();
+        setIsOpen(false);
+        setActiveIndex(-1);
+      }
+      return;
+    }
+    if (!isOpen || flatActivators.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((idx) => (idx + 1) % flatActivators.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((idx) =>
+        idx <= 0 ? flatActivators.length - 1 : idx - 1
+      );
+    } else if (e.key === "Enter") {
+      if (activeIndex >= 0 && activeIndex < flatActivators.length) {
+        e.preventDefault();
+        flatActivators[activeIndex]();
+      }
+    }
+  };
+
+  const hasAnyResults = leads.length > 0 || jobs.length > 0 || estimateItems.length > 0 || contactItems.length > 0;
+  const showEmpty = !anyLoading && !hasAnyResults && enabled;
 
   const handleViewAll = (path: string) => (e: React.MouseEvent) => {
     e.preventDefault();
@@ -180,6 +242,13 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
         onFocus={() => {
           if (debouncedQuery.length >= 2) setIsOpen(true);
         }}
+        onKeyDown={handleKeyDown}
+        role="combobox"
+        aria-expanded={isOpen}
+        aria-controls="global-search-listbox"
+        aria-activedescendant={
+          activeIndex >= 0 ? `global-search-row-${activeIndex}` : undefined
+        }
         className="pl-8"
         data-testid="input-search"
       />
@@ -191,7 +260,11 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
               No results for &ldquo;{debouncedQuery}&rdquo;
             </div>
           ) : (
-            <div className="max-h-96 overflow-y-auto">
+            <div
+              id="global-search-listbox"
+              role="listbox"
+              className="max-h-96 overflow-y-auto"
+            >
 
               {/* Leads section */}
               <div>
@@ -212,36 +285,48 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
                     <SkeletonRow />
                     <SkeletonRow />
                   </>
-                ) : leads.length === 0 ? (
+                ) : visibleLeads.length === 0 ? (
                   <div className="px-3 py-2 text-xs text-muted-foreground italic">No leads found</div>
                 ) : (
-                  leads.slice(0, 3).map((lead) => (
-                    <button
-                      key={lead.id}
-                      onClick={() => navigate(`/leads?open=${lead.id}`)}
-                      className="w-full flex items-center justify-between gap-3 px-3 py-2 text-left hover-elevate active-elevate-2 transition-colors"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium truncate">{lead.name}</div>
-                        {lead.emails?.[0] && (
-                          <div className="text-xs text-muted-foreground truncate">{lead.emails[0]}</div>
+                  visibleLeads.map((lead, i) => {
+                    const flatIdx = leadsStart + i;
+                    const isActive = activeIndex === flatIdx;
+                    return (
+                      <button
+                        key={lead.id}
+                        id={`global-search-row-${flatIdx}`}
+                        ref={(el) => { rowRefs.current[flatIdx] = el; }}
+                        role="option"
+                        aria-selected={isActive}
+                        onMouseEnter={() => setActiveIndex(flatIdx)}
+                        onClick={() => navigate(`/leads?open=${lead.id}`)}
+                        className={cn(
+                          "w-full flex items-center justify-between gap-3 px-3 py-2 text-left hover-elevate active-elevate-2 transition-colors",
+                          isActive && HIGHLIGHT_CLASS
                         )}
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        {lead.allLeadsArchived && (
-                          <Badge variant="secondary" className="text-xs" data-testid={`badge-archived-${lead.id}`}>
-                            Archived
-                          </Badge>
-                        )}
-                        {lead.anyLeadAged && (
-                          <Badge variant="secondary" className="text-xs" data-testid={`badge-aged-${lead.id}`}>
-                            Aged
-                          </Badge>
-                        )}
-                        <StatusBadge status={(lead.status ?? "new") as Parameters<typeof StatusBadge>[0]['status']} entityType="lead" />
-                      </div>
-                    </button>
-                  ))
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium truncate">{lead.name}</div>
+                          {lead.emails?.[0] && (
+                            <div className="text-xs text-muted-foreground truncate">{lead.emails[0]}</div>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {lead.allLeadsArchived && (
+                            <Badge variant="secondary" className="text-xs" data-testid={`badge-archived-${lead.id}`}>
+                              Archived
+                            </Badge>
+                          )}
+                          {lead.anyLeadAged && (
+                            <Badge variant="secondary" className="text-xs" data-testid={`badge-aged-${lead.id}`}>
+                              Aged
+                            </Badge>
+                          )}
+                          <StatusBadge status={(lead.status ?? "new") as Parameters<typeof StatusBadge>[0]['status']} entityType="lead" />
+                        </div>
+                      </button>
+                    );
+                  })
                 )}
               </div>
 
@@ -266,29 +351,41 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
                     <SkeletonRow />
                     <SkeletonRow />
                   </>
-                ) : contactItems.length === 0 ? (
+                ) : visibleContacts.length === 0 ? (
                   <div className="px-3 py-2 text-xs text-muted-foreground italic">No contacts found</div>
                 ) : (
-                  contactItems.slice(0, 3).map((contact) => (
-                    <button
-                      key={contact.id}
-                      onClick={() => navigate(`/contacts?open=${contact.id}`)}
-                      className="w-full flex items-center justify-between gap-3 px-3 py-2 text-left hover-elevate active-elevate-2 transition-colors"
-                      data-testid={`row-contact-${contact.id}`}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium truncate">{contact.name}</div>
-                        {(contact.emails?.[0] || contact.phones?.[0]) && (
-                          <div className="text-xs text-muted-foreground truncate">
-                            {contact.emails?.[0] ?? contact.phones?.[0]}
-                          </div>
+                  visibleContacts.map((contact, i) => {
+                    const flatIdx = contactsStart + i;
+                    const isActive = activeIndex === flatIdx;
+                    return (
+                      <button
+                        key={contact.id}
+                        id={`global-search-row-${flatIdx}`}
+                        ref={(el) => { rowRefs.current[flatIdx] = el; }}
+                        role="option"
+                        aria-selected={isActive}
+                        onMouseEnter={() => setActiveIndex(flatIdx)}
+                        onClick={() => navigate(`/contacts?open=${contact.id}`)}
+                        className={cn(
+                          "w-full flex items-center justify-between gap-3 px-3 py-2 text-left hover-elevate active-elevate-2 transition-colors",
+                          isActive && HIGHLIGHT_CLASS
                         )}
-                      </div>
-                      <Badge variant="secondary" className="text-xs shrink-0">
-                        {contact.type === "inactive" ? "Inactive" : "Customer"}
-                      </Badge>
-                    </button>
-                  ))
+                        data-testid={`row-contact-${contact.id}`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium truncate">{contact.name}</div>
+                          {(contact.emails?.[0] || contact.phones?.[0]) && (
+                            <div className="text-xs text-muted-foreground truncate">
+                              {contact.emails?.[0] ?? contact.phones?.[0]}
+                            </div>
+                          )}
+                        </div>
+                        <Badge variant="secondary" className="text-xs shrink-0">
+                          {contact.type === "inactive" ? "Inactive" : "Customer"}
+                        </Badge>
+                      </button>
+                    );
+                  })
                 )}
               </div>
 
@@ -313,29 +410,41 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
                     <SkeletonRow />
                     <SkeletonRow />
                   </>
-                ) : estimateItems.length === 0 ? (
+                ) : visibleEstimates.length === 0 ? (
                   <div className="px-3 py-2 text-xs text-muted-foreground italic">No estimates found</div>
                 ) : (
-                  estimateItems.slice(0, 3).map((est) => (
-                    <button
-                      key={est.id}
-                      onClick={() => navigate(`/estimates?open=${est.id}`)}
-                      className="w-full flex items-center justify-between gap-3 px-3 py-2 text-left hover-elevate active-elevate-2 transition-colors"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium truncate">{est.title}</div>
-                        <div className="text-xs text-muted-foreground truncate">
-                          {est.contactName}
-                          {est.amount != null && (
-                            <span className="ml-1">
-                              &middot; ${Number(est.amount).toLocaleString()}
-                            </span>
-                          )}
+                  visibleEstimates.map((est, i) => {
+                    const flatIdx = estimatesStart + i;
+                    const isActive = activeIndex === flatIdx;
+                    return (
+                      <button
+                        key={est.id}
+                        id={`global-search-row-${flatIdx}`}
+                        ref={(el) => { rowRefs.current[flatIdx] = el; }}
+                        role="option"
+                        aria-selected={isActive}
+                        onMouseEnter={() => setActiveIndex(flatIdx)}
+                        onClick={() => navigate(`/estimates?open=${est.id}`)}
+                        className={cn(
+                          "w-full flex items-center justify-between gap-3 px-3 py-2 text-left hover-elevate active-elevate-2 transition-colors",
+                          isActive && HIGHLIGHT_CLASS
+                        )}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium truncate">{est.title}</div>
+                          <div className="text-xs text-muted-foreground truncate">
+                            {est.contactName}
+                            {est.amount != null && (
+                              <span className="ml-1">
+                                &middot; ${Number(est.amount).toLocaleString()}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                      <StatusBadge status={est.status} entityType="estimate" />
-                    </button>
-                  ))
+                        <StatusBadge status={est.status} entityType="estimate" />
+                      </button>
+                    );
+                  })
                 )}
               </div>
               
@@ -360,24 +469,36 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
                     <SkeletonRow />
                     <SkeletonRow />
                   </>
-                ) : jobs.length === 0 ? (
+                ) : visibleJobs.length === 0 ? (
                   <div className="px-3 py-2 text-xs text-muted-foreground italic">No jobs found</div>
                 ) : (
-                  jobs.slice(0, 3).map((job) => (
-                    <button
-                      key={job.id}
-                      onClick={() => navigate(`/jobs?open=${job.id}`)}
-                      className="w-full flex items-center justify-between gap-3 px-3 py-2 text-left hover-elevate active-elevate-2 transition-colors"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium truncate">{formatEntityTitle('job', job.title)}</div>
-                        {job.contactName && (
-                          <div className="text-xs text-muted-foreground truncate">{job.contactName}</div>
+                  visibleJobs.map((job, i) => {
+                    const flatIdx = jobsStart + i;
+                    const isActive = activeIndex === flatIdx;
+                    return (
+                      <button
+                        key={job.id}
+                        id={`global-search-row-${flatIdx}`}
+                        ref={(el) => { rowRefs.current[flatIdx] = el; }}
+                        role="option"
+                        aria-selected={isActive}
+                        onMouseEnter={() => setActiveIndex(flatIdx)}
+                        onClick={() => navigate(`/jobs?open=${job.id}`)}
+                        className={cn(
+                          "w-full flex items-center justify-between gap-3 px-3 py-2 text-left hover-elevate active-elevate-2 transition-colors",
+                          isActive && HIGHLIGHT_CLASS
                         )}
-                      </div>
-                      <StatusBadge status={job.status} entityType="job" />
-                    </button>
-                  ))
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium truncate">{formatEntityTitle('job', job.title)}</div>
+                          {job.contactName && (
+                            <div className="text-xs text-muted-foreground truncate">{job.contactName}</div>
+                          )}
+                        </div>
+                        <StatusBadge status={job.status} entityType="job" />
+                      </button>
+                    );
+                  })
                 )}
               </div>
 
