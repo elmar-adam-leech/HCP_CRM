@@ -160,16 +160,46 @@ export async function ingestLead(
     }
 
     // Enrich the existing contact with any new non-empty fields from the incoming payload
-    // (tags, notes, address, UTM fields, phones, emails) even when no duplicate lead exists
+    // (tags, notes, address, UTM fields, phones, emails) even when no duplicate lead exists.
+    // Also promote customer/inactive contacts back to `lead` so they surface on the Leads page —
+    // this covers the case where an HCP-synced customer gets a fresh inbound lead (n8n,
+    // public booking, Facebook, etc.) but the type was never flipped back.
     if (contact) {
+      const promote = contact.type !== 'lead';
+      const promotionUpdate: Record<string, unknown> = {};
+      if (promote) {
+        promotionUpdate.type = 'lead';
+        if (contact.status === 'disqualified' || contact.status === 'lost') {
+          promotionUpdate.status = 'new';
+        }
+      }
+
       const enrichment = buildContactEnrichment(contact, input, normalizedPhones);
-      if (enrichment) {
-        log.info(`Enriching existing contact ${contact.id} with fields from new lead: ${Object.keys(enrichment).join(', ')}`);
-        const updated = await storage.updateContact(contact.id, enrichment, contractorId);
+      const combined = enrichment || Object.keys(promotionUpdate).length > 0
+        ? { ...(enrichment || {}), ...promotionUpdate }
+        : null;
+
+      if (combined) {
+        log.info(`Updating existing contact ${contact.id} with fields from new lead: ${Object.keys(combined).join(', ')}${promote ? ` (promoting type ${contact.type} → lead)` : ''}`);
+        const updated = await storage.updateContact(contact.id, combined as Partial<Contact>, contractorId);
         if (updated) contact = updated;
       } else if (normalizedPhones.length > 0 && (!contact.phones || contact.phones.length === 0)) {
         const updated = await storage.updateContact(contact.id, { phones: normalizedPhones }, contractorId);
         if (updated) contact = updated;
+      }
+
+      if (promote && contact) {
+        try {
+          await storage.createActivity({
+            type: 'note',
+            title: 'Re-engaged from customer',
+            content: `Re-engaged from customer — new lead via ${input.source}`,
+            contactId: contact.id,
+            userId: null,
+          }, contractorId);
+        } catch (e) {
+          log.error(`Failed to log re-engagement activity for contact ${contact.id}:`, e instanceof Error ? e.message : e);
+        }
       }
     }
   }
