@@ -109,14 +109,25 @@ app.use(helmet({
 }));
 app.set("trust proxy", 1);
 const hcpWebhookPattern = /^\/api\/webhooks\/[^/]+\/housecall-pro\/?$/;
+const facebookWebhookPath = '/api/webhooks/facebook';
 app.use((req, res, next) => {
   if (hcpWebhookPattern.test(req.path)) {
+    return express.raw({ type: 'application/json' })(req, res, next);
+  }
+  // Capture raw body for Facebook webhook POSTs so the handler can verify
+  // X-Hub-Signature-256 before JSON-parsing the payload.
+  if (req.method === 'POST' && req.path === facebookWebhookPath) {
     return express.raw({ type: 'application/json' })(req, res, next);
   }
   next();
 });
 app.use((req, res, next) => {
   if (hcpWebhookPattern.test(req.path)) {
+    return next();
+  }
+  // Facebook POST: body is already a Buffer after the raw branch above.
+  // Skip the json() parser so the Buffer is preserved for signature verification.
+  if (req.method === 'POST' && req.path === facebookWebhookPath) {
     return next();
   }
   return express.json()(req, res, next);

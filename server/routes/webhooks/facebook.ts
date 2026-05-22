@@ -1,4 +1,5 @@
 import type { Express, Request, Response } from 'express';
+import crypto from 'crypto';
 import axios from 'axios';
 import { CredentialService } from '../../credential-service';
 import { asyncHandler } from '../../utils/async-handler';
@@ -7,10 +8,52 @@ import { db } from '../../db';
 import { contractorCredentials } from '@shared/schema';
 import { eq, and } from 'drizzle-orm';
 import { processFacebookLead } from '../../sync/facebook-leads';
+import { facebookWebhookRateLimiter } from '../../middleware/rate-limiter';
 
 const log = logger('FacebookWebhook');
 
 const FB_API_VERSION = 'v25.0';
+
+/**
+ * Verify the X-Hub-Signature-256 header sent by Meta on every webhook POST.
+ *
+ * Meta computes:  HMAC-SHA256(rawBody, FACEBOOK_APP_SECRET)
+ * and sends it as:  X-Hub-Signature-256: sha256=<hex>
+ *
+ * Returns true only when the computed and provided signatures match via
+ * constant-time comparison. If FACEBOOK_APP_SECRET is not configured the
+ * function returns false so the request is rejected, preventing the endpoint
+ * from accepting any traffic when the environment is not properly set up.
+ */
+function verifyFacebookSignature(rawBody: Buffer, signatureHeader: string | undefined): boolean {
+  const appSecret = process.env.FACEBOOK_APP_SECRET;
+  if (!appSecret) {
+    log.error('FACEBOOK_APP_SECRET is not configured — cannot verify webhook signature');
+    return false;
+  }
+
+  if (!signatureHeader) {
+    log.warn('Missing X-Hub-Signature-256 header on Facebook webhook POST');
+    return false;
+  }
+
+  const providedHex = signatureHeader.replace(/^sha256=/, '');
+  const expectedHex = crypto
+    .createHmac('sha256', appSecret)
+    .update(rawBody)
+    .digest('hex');
+
+  // Use constant-time comparison to prevent timing-based signature oracle attacks.
+  const expectedBuf = Buffer.from(expectedHex, 'hex');
+  const providedBuf = Buffer.from(providedHex, 'hex');
+
+  if (expectedBuf.length !== providedBuf.length) {
+    log.warn('Facebook webhook signature length mismatch — likely malformed header');
+    return false;
+  }
+
+  return crypto.timingSafeEqual(expectedBuf, providedBuf);
+}
 
 export function registerFacebookWebhookRoutes(app: Express): void {
   app.get('/api/webhooks/facebook', asyncHandler<Request>(async (req: Request, res: Response) => {
@@ -27,27 +70,49 @@ export function registerFacebookWebhookRoutes(app: Express): void {
     }
   }));
 
-  app.post('/api/webhooks/facebook', asyncHandler<Request>(async (req: Request, res: Response) => {
-    res.sendStatus(200);
+  app.post(
+    '/api/webhooks/facebook',
+    facebookWebhookRateLimiter,
+    asyncHandler<Request>(async (req: Request, res: Response) => {
+      // req.body is a raw Buffer (set by express.raw in index.ts) for this path.
+      const rawBody: Buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body));
 
-    try {
-      const body = req.body;
-      if (body?.object !== 'page') return;
-
-      for (const entry of body.entry ?? []) {
-        for (const change of entry.changes ?? []) {
-          if (change.field !== 'leadgen') continue;
-
-          const { page_id, leadgen_id } = change.value ?? {};
-          if (!page_id || !leadgen_id) continue;
-
-          await processLeadgenEvent(String(page_id), String(leadgen_id));
-        }
+      // ── Signature verification ────────────────────────────────────────────
+      // Reject the request immediately if Meta's HMAC-SHA256 signature does not
+      // match. This must happen BEFORE we touch any payload fields so that a
+      // forged request never reaches lead-processing logic.
+      const signatureHeader = req.headers['x-hub-signature-256'] as string | undefined;
+      if (!verifyFacebookSignature(rawBody, signatureHeader)) {
+        log.warn('Facebook webhook request rejected: invalid or missing X-Hub-Signature-256');
+        // Return 403 so the caller knows the request was explicitly rejected.
+        // Meta will retry on 5xx but not on 4xx, which is the correct behaviour
+        // here — a bad signature is never going to succeed on retry.
+        res.sendStatus(403);
+        return;
       }
-    } catch (err) {
-      log.error('Error processing Facebook webhook payload:', err instanceof Error ? err.message : err);
-    }
-  }));
+
+      // Signature is valid — acknowledge immediately so Meta does not retry.
+      res.sendStatus(200);
+
+      try {
+        const body = JSON.parse(rawBody.toString('utf8'));
+        if (body?.object !== 'page') return;
+
+        for (const entry of body.entry ?? []) {
+          for (const change of entry.changes ?? []) {
+            if (change.field !== 'leadgen') continue;
+
+            const { page_id, leadgen_id } = change.value ?? {};
+            if (!page_id || !leadgen_id) continue;
+
+            await processLeadgenEvent(String(page_id), String(leadgen_id));
+          }
+        }
+      } catch (err) {
+        log.error('Error processing Facebook webhook payload:', err instanceof Error ? err.message : err);
+      }
+    }),
+  );
 }
 
 async function processLeadgenEvent(pageId: string, leadgenId: string): Promise<void> {

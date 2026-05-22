@@ -161,6 +161,16 @@ export const webhookRateLimiter = createRateLimiter({
   keyPrefix: 'webhook',
 });
 
+// Dedicated rate limiter for the Facebook lead webhook.
+// Meta's servers deliver at most a handful of events per second in practice.
+// 60/min per IP blocks automated spam from non-Meta senders without affecting
+// legitimate delivery from Meta's IP ranges.
+export const facebookWebhookRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 60,
+  keyPrefix: 'fb-webhook',
+});
+
 export const authLoginRateLimiter = createRateLimiter({
   windowMs: 60 * 1000,
   maxRequests: 5,
