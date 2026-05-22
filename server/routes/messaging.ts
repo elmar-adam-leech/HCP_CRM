@@ -8,7 +8,7 @@ import { db } from "../db";
 import { eq, and } from "drizzle-orm";
 import { DialpadService } from "../dialpad";
 import { gmailService } from "../gmail-service";
-import { type AuthedRequest } from "../auth-service";
+import { type AuthedRequest, requireIntegrationManager } from "../auth-service";
 import { broadcastToContractor } from "../websocket";
 import { providerService } from "../providers/provider-service";
 
@@ -523,7 +523,7 @@ export function registerMessagingRoutes(app: Express): void {
     res.json({ available: availableProviders, configured: tenantProviders });
   }));
 
-  app.post("/api/providers", asyncHandler(async (req, res) => {
+  app.post("/api/providers", requireIntegrationManager, asyncHandler(async (req, res) => {
     const { providerType, providerName } = req.body;
     if (!providerType || !providerName) {
       res.status(400).json({ message: "Provider type and name are required" });

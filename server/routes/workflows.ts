@@ -94,7 +94,7 @@ export function registerWorkflowRoutes(app: Express): void {
     res.json(workflow);
   }));
 
-  app.post("/api/workflows", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  app.post("/api/workflows", requireManagerOrAdmin, asyncHandler(async (req: AuthedRequest, res: Response) => {
     const validation = parseBody(insertWorkflowSchema, req, res);
     if (!validation) return;
 
@@ -121,7 +121,7 @@ export function registerWorkflowRoutes(app: Express): void {
     res.status(201).json(workflow);
   }));
 
-  app.patch("/api/workflows/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  app.patch("/api/workflows/:id", requireManagerOrAdmin, asyncHandler(async (req: AuthedRequest, res: Response) => {
     const validation = parseBody(insertWorkflowSchema.partial(), req, res);
     if (!validation) return;
 
@@ -164,7 +164,7 @@ export function registerWorkflowRoutes(app: Express): void {
     res.json(workflow);
   }));
 
-  app.delete("/api/workflows/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  app.delete("/api/workflows/:id", requireManagerOrAdmin, asyncHandler(async (req: AuthedRequest, res: Response) => {
     const deleted = await storage.deleteWorkflow(req.params.id, req.user.contractorId);
     if (!deleted) {
       res.status(404).json({ error: 'Workflow not found' });
@@ -245,7 +245,7 @@ export function registerWorkflowRoutes(app: Express): void {
     res.json(steps);
   }));
 
-  app.post("/api/workflows/:workflowId/steps", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  app.post("/api/workflows/:workflowId/steps", requireManagerOrAdmin, asyncHandler(async (req: AuthedRequest, res: Response) => {
     const workflow = await storage.getWorkflow(req.params.workflowId, req.user.contractorId);
     if (!workflow) {
       res.status(404).json({ error: 'Workflow not found' });
@@ -263,7 +263,7 @@ export function registerWorkflowRoutes(app: Express): void {
     res.status(201).json(step);
   }));
 
-  app.put("/api/workflows/:workflowId/steps", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  app.put("/api/workflows/:workflowId/steps", requireManagerOrAdmin, asyncHandler(async (req: AuthedRequest, res: Response) => {
     const workflow = await storage.getWorkflow(req.params.workflowId, req.user.contractorId);
     if (!workflow) {
       res.status(404).json({ error: 'Workflow not found' });
@@ -296,7 +296,7 @@ export function registerWorkflowRoutes(app: Express): void {
     res.json(createdSteps);
   }));
 
-  app.patch("/api/workflow-steps/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  app.patch("/api/workflow-steps/:id", requireManagerOrAdmin, asyncHandler(async (req: AuthedRequest, res: Response) => {
     const existingStep = await storage.getWorkflowStep(req.params.id);
     if (!existingStep) {
       res.status(404).json({ error: 'Workflow step not found' });
@@ -321,7 +321,7 @@ export function registerWorkflowRoutes(app: Express): void {
     res.json(step);
   }));
 
-  app.delete("/api/workflow-steps/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  app.delete("/api/workflow-steps/:id", requireManagerOrAdmin, asyncHandler(async (req: AuthedRequest, res: Response) => {
     const existingStep = await storage.getWorkflowStep(req.params.id);
     if (!existingStep) {
       res.status(404).json({ error: 'Workflow step not found' });
@@ -595,7 +595,7 @@ export function registerWorkflowRoutes(app: Express): void {
   }));
 
 
-  app.post("/api/workflows/:workflowId/execute", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  app.post("/api/workflows/:workflowId/execute", requireManagerOrAdmin, asyncHandler(async (req: AuthedRequest, res: Response) => {
     const workflow = await storage.getWorkflow(req.params.workflowId, req.user.contractorId);
     if (!workflow) {
       res.status(404).json({ error: 'Workflow not found' });
