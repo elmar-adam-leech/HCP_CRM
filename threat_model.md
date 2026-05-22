@@ -6,6 +6,13 @@ This project is a multi-tenant CRM for field-service contractors. It exposes an 
 
 The stack is a React/Vite frontend (`client/`) and a Node.js/Express backend (`server/`) with PostgreSQL via Drizzle ORM and shared schemas in `shared/`. Authentication uses JWTs delivered primarily in an HTTP-only `auth_token` cookie, with multi-company membership and per-session active `contractorId` scoping. Production assumptions for this threat model: `NODE_ENV=production`, TLS is terminated by the platform, and mockup/dev sandbox surfaces are not deployed.
 
+Deployment-specific note from the 2026-05-22 scan: the public `hcpcrm.com`
+deployment currently sits behind a Cloudflare edge that returns HTTP 403 for
+requests carrying a mismatched `Host` header. As a result, Host-header
+poisoning findings that depend on arbitrary external `Host` values are not
+currently production-reachable on this deployment unless the edge/domain
+configuration changes.
+
 ## Assets
 
 - **User accounts and active sessions** — JWT session cookies, MFA state, password reset tokens, and token revocation state. Compromise enables account takeover and lateral movement across contractor data.
