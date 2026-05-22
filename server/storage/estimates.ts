@@ -299,6 +299,20 @@ async function updateEstimate(id: string, estimate: UpdateEstimate, contractorId
     priorStatus = before[0]?.status;
   }
 
+  // Task #762: auto-clear stale follow_up_date when an estimate transitions
+  // into a closed state that the Follow-Ups page already excludes (task #761).
+  // The excluded states are scheduled/approved/rejected. Without this,
+  // reopening an estimate (back to in_progress/sent) would silently restore
+  // a months-old follow-up date. We only clear if the caller didn't pass an
+  // explicit followUpDate in this same update.
+  if (
+    cleanEstimate.followUpDate === undefined &&
+    typeof cleanEstimate.status === 'string' &&
+    ['scheduled', 'approved', 'rejected'].includes(cleanEstimate.status)
+  ) {
+    cleanEstimate.followUpDate = null;
+  }
+
   // Stamp approved_at / rejected_at the first time an estimate enters that
   // status. We compare to the existing row so subsequent edits (notes, etc.)
   // and re-affirmations of the same status don't bump the timestamp. Callers

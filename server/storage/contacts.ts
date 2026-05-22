@@ -701,8 +701,26 @@ async function updateLead(id: string, lead: Partial<InsertLead>, contractorId: s
         .where(and(eq(leads.id, id), eq(leads.contractorId, contractorId)))
         .limit(1))[0]?.status
     : undefined;
+
+  // Task #762: auto-clear stale follow_up_date when a lead transitions into a
+  // closed state that the Follow-Ups page already excludes (task #761). The
+  // excluded states are: status NOT IN ('new','contacted'), aged=true, or
+  // archived=true. Without this, reopening a lead would silently restore a
+  // months-old follow-up date. We only clear if the caller didn't pass an
+  // explicit followUpDate in this same update.
+  const patch: Partial<InsertLead> = { ...lead };
+  if (patch.followUpDate === undefined) {
+    const closedStatuses = ['qualified', 'converted', 'disqualified', 'lost'];
+    const movingToClosedStatus = patch.status !== undefined && closedStatuses.includes(patch.status);
+    const movingToAged = patch.aged === true;
+    const movingToArchived = patch.archived === true;
+    if (movingToClosedStatus || movingToAged || movingToArchived) {
+      patch.followUpDate = null;
+    }
+  }
+
   const result = await db.update(leads)
-    .set({ ...lead, updatedAt: new Date() })
+    .set({ ...patch, updatedAt: new Date() })
     .where(and(eq(leads.id, id), eq(leads.contractorId, contractorId)))
     .returning();
   if (result[0]) invalidateReportsCache(contractorId);
@@ -746,8 +764,10 @@ async function deleteLead(id: string, contractorId: string): Promise<boolean> {
 }
 
 async function archiveLead(id: string, contractorId: string): Promise<Lead | undefined> {
+  // Task #762: clear stale follow_up_date in the same UPDATE so reopening
+  // (restoreLead) doesn't silently bring back an old date.
   const result = await db.update(leads)
-    .set({ archived: true, updatedAt: new Date() })
+    .set({ archived: true, followUpDate: null, updatedAt: new Date() })
     .where(and(eq(leads.contactId, id), eq(leads.contractorId, contractorId)))
     .returning();
   return result[0];
@@ -762,8 +782,10 @@ async function restoreLead(id: string, contractorId: string): Promise<Lead | und
 }
 
 async function ageLead(id: string, contractorId: string): Promise<Lead | undefined> {
+  // Task #762: clear stale follow_up_date when a lead is aged, mirroring the
+  // archive path. Unaging won't restore the old date.
   const result = await db.update(leads)
-    .set({ aged: true, updatedAt: new Date() })
+    .set({ aged: true, followUpDate: null, updatedAt: new Date() })
     .where(and(eq(leads.contactId, id), eq(leads.contractorId, contractorId)))
     .returning();
   return result[0];
