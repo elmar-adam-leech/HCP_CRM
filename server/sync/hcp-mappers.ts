@@ -98,10 +98,12 @@ export function mapHcpEstimateStatus(hcpEstimate: { status?: string; work_status
 export type EstimateStatus = 'approved' | 'rejected' | 'scheduled' | 'sent' | 'in_progress';
 
 /**
- * Forward-progression order used when reconciling HCP polling/webhook updates
- * with the local status. Polling moves an estimate forward through these
- * steps; it never moves the status backwards. (`rejected` is terminal and
- * handled separately.)
+ * Forward-progression order that mirrors HCP's real estimate lifecycle:
+ * an estimate is created (`scheduled`), the tech heads out and it moves to
+ * `in_progress` (on-my-way), the document is then sent to the customer
+ * (`sent`), and finally the customer accepts it (`approved`). Polling /
+ * webhook updates walk the local status forward through these steps and
+ * never move it backwards. (`rejected` is terminal and handled separately.)
  */
 const STATUS_ORDER: Record<EstimateStatus, number> = {
   scheduled: 0,
@@ -114,18 +116,20 @@ const STATUS_ORDER: Record<EstimateStatus, number> = {
 /**
  * Merge an HCP-derived estimate status with the existing local status,
  * applying the rules that protect manual user changes and prevent the
- * polling sync from silently downgrading or regressing the local status.
+ * polling sync from silently regressing the local status.
  *
  * Rules (in priority order):
  *   1. A terminal `rejected` from HCP always wins (covers cancelled / declined).
  *   2. If the user has manually set the status in the CRM UI
  *      (`manuallySet === true`), the local status is preserved — HCP can no
  *      longer overwrite it (except via rule 1).
- *   3. Polling/webhook updates are forward-only. If the mapped HCP status is
- *      not strictly more advanced than the local status (per `STATUS_ORDER`),
- *      the local status is kept. This blocks both the historical
- *      `* -> scheduled` regression and other unintended downgrades like
- *      `approved -> sent` or `in_progress -> sent`.
+ *   3. Polling/webhook updates are forward-only along the HCP lifecycle
+ *      (scheduled → in_progress → sent → approved). If the mapped HCP status
+ *      is not strictly more advanced than the local status (per
+ *      `STATUS_ORDER`), the local status is kept. This blocks unintended
+ *      regressions like `* -> scheduled` or `approved -> sent`, while still
+ *      allowing the natural `in_progress -> sent` promotion when an
+ *      `estimate.sent` event arrives after an earlier `estimate.on_my_way`.
  *   4. Otherwise the mapped HCP status wins.
  */
 export function resolveHcpEstimateStatus(

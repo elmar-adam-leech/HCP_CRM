@@ -221,3 +221,17 @@ describe('resolveHcpEstimateStatus (merge with local)', () => {
     expect(resolveHcpEstimateStatus('scheduled', 'scheduled', true)).toBe('scheduled');
   });
 });
+
+describe('resolveHcpEstimateStatus — in_progress → sent (task #764)', () => {
+  // Pins the exact regression: an `estimate.sent` webhook arriving after
+  // an earlier `estimate.on_my_way` (local = in_progress) must promote the
+  // local status to 'sent', not be silently dropped as a "downgrade".
+  it("promotes in_progress to sent when HCP reports 'sent' and the status is not manually set", () => {
+    expect(resolveHcpEstimateStatus('sent', 'in_progress', false)).toBe('sent');
+  });
+
+  // And the manual-override rule must still win for the same transition.
+  it('preserves a manually-set in_progress against an HCP-reported sent', () => {
+    expect(resolveHcpEstimateStatus('sent', 'in_progress', true)).toBe('in_progress');
+  });
+});
