@@ -105,8 +105,8 @@ export type EstimateStatus = 'approved' | 'rejected' | 'scheduled' | 'sent' | 'i
  */
 const STATUS_ORDER: Record<EstimateStatus, number> = {
   scheduled: 0,
-  sent: 1,
-  in_progress: 2,
+  in_progress: 1,
+  sent: 2,
   approved: 3,
   rejected: 99,
 };
