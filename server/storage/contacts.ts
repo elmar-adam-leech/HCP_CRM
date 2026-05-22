@@ -149,15 +149,25 @@ export function buildContactConditions(contractorId: string, options: ContactFil
   const isTextSearch = !!options.search?.trim();
   const bypassPipelineGates = options.includeAll || isTextSearch;
 
-  if (options.type) {
-    conditions.push(eq(contacts.type, options.type));
+  // Effective type set: `types` (multi) takes precedence over `type` (single).
+  // An empty effective set means "no type filter applied".
+  const effectiveTypes: Array<'lead' | 'customer' | 'inactive'> =
+    options.types && options.types.length > 0
+      ? options.types
+      : (options.type ? [options.type] : []);
+  const includesLeadScope = effectiveTypes.length === 0 || effectiveTypes.includes('lead');
+
+  if (effectiveTypes.length === 1) {
+    conditions.push(eq(contacts.type, effectiveTypes[0]));
+  } else if (effectiveTypes.length > 1) {
+    conditions.push(inArray(contacts.type, effectiveTypes));
   }
 
   if (!skipStatusFilter && !bypassPipelineGates) {
     if (options.status && options.status !== 'all') {
       conditions.push(eq(contacts.status, options.status as typeof contactStatusEnum.enumValues[number]));
     } else if (!options.status || options.status === 'all') {
-      if (!options.type || options.type === 'lead') {
+      if (includesLeadScope) {
         conditions.push(ne(contacts.status, 'disqualified'));
         conditions.push(ne(contacts.status, 'lost'));
       }
@@ -207,7 +217,7 @@ export function buildContactConditions(contractorId: string, options: ContactFil
   // exclude contacts with only archived or aged leads.
   // This gating applies whenever aged or archived are explicitly set, or when in lead scope
   // (even with includeAll, which only skips status filtering, not archived/aged gating).
-  const isLeadScope = (options.type === 'lead' || !options.type);
+  const isLeadScope = includesLeadScope;
   const hasExplicitAgedOrArchived = options.aged !== undefined || options.archived !== undefined;
   const gateArchived = isLeadScope && (hasExplicitAgedOrArchived || !bypassPipelineGates);
   if (gateArchived) {
@@ -369,13 +379,16 @@ async function getContactsCount(contractorId: string, options: ContactFilterOpti
   return Number(result[0]?.count || 0);
 }
 
-async function getContactsStatusCounts(contractorId: string, options: Pick<ContactFilterOptions, 'search' | 'type' | 'assignedTo' | 'dateFrom' | 'dateTo' | 'archived' | 'aged'> = {}): Promise<{ all: number; new: number; contacted: number; scheduled: number; disqualified: number; lost: number }> {
+async function getContactsStatusCounts(contractorId: string, options: Pick<ContactFilterOptions, 'search' | 'type' | 'types' | 'assignedTo' | 'dateFrom' | 'dateTo' | 'archived' | 'aged'> = {}): Promise<{ all: number; new: number; contacted: number; scheduled: number; disqualified: number; lost: number }> {
   // skipStatusFilter=true: status counts query enumerates ALL statuses in its
   // SELECT (including disqualified), so pre-filtering by status would zero-out
   // the disqualified CASE count and make the "all" total inconsistent.
   const baseConditions = buildContactConditions(contractorId, options, true);
 
-  const isLeadType = !options.type || options.type === 'lead';
+  const effectiveTypes = options.types && options.types.length > 0
+    ? options.types
+    : (options.type ? [options.type] : []);
+  const isLeadType = effectiveTypes.length === 0 || effectiveTypes.includes('lead');
   const result = await db.select({
     all: isLeadType
       ? sql<number>`COUNT(CASE WHEN ${contacts.status} NOT IN ('disqualified','lost') THEN 1 END)`

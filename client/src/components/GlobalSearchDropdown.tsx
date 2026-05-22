@@ -83,25 +83,14 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
   });
 
   // Contacts section: non-lead types only (customers + inactive), so we don't
-   // duplicate the Leads section above. Fetch both in one round trip per type
-   // since the paginated endpoint takes a single `type` filter; cap to 5 each
-   // and merge client-side, dedup'd by id.
-  const { data: customersData, isLoading: customersLoading } = useQuery<PaginatedResponse<Contact>>({
-    queryKey: ["/api/contacts/paginated", { search: debouncedQuery, limit: 5, type: "customer" }],
+  // duplicate the Leads section above. The paginated endpoint accepts a
+  // comma-separated `type` list, so both types ride on a single request and
+  // are filtered server-side (the wire payload stays at 5 rows, not 10).
+  const { data: contactsData, isLoading: contactsLoading } = useQuery<PaginatedResponse<Contact>>({
+    queryKey: ["/api/contacts/paginated", { search: debouncedQuery, limit: 5, type: "customer,inactive" }],
     queryFn: () =>
       fetch(
-        `/api/contacts/paginated?search=${encodeURIComponent(debouncedQuery)}&limit=5&type=customer`,
-        { credentials: "include" }
-      ).then((r) => r.json()),
-    enabled,
-    staleTime: 10_000,
-  });
-
-  const { data: inactiveData, isLoading: inactiveLoading } = useQuery<PaginatedResponse<Contact>>({
-    queryKey: ["/api/contacts/paginated", { search: debouncedQuery, limit: 5, type: "inactive" }],
-    queryFn: () =>
-      fetch(
-        `/api/contacts/paginated?search=${encodeURIComponent(debouncedQuery)}&limit=5&type=inactive`,
+        `/api/contacts/paginated?search=${encodeURIComponent(debouncedQuery)}&limit=5&type=${encodeURIComponent("customer,inactive")}`,
         { credentials: "include" }
       ).then((r) => r.json()),
     enabled,
@@ -133,18 +122,8 @@ export function GlobalSearchDropdown({ onSearch }: GlobalSearchDropdownProps) {
   const leads = leadsData?.data ?? [];
   const jobs = jobsData?.data ?? [];
   const estimateItems = estimatesData?.data ?? [];
-  const contactItems = useMemo(() => {
-    const seen = new Set<string>();
-    const merged: Contact[] = [];
-    for (const c of [...(customersData?.data ?? []), ...(inactiveData?.data ?? [])]) {
-      if (seen.has(c.id)) continue;
-      seen.add(c.id);
-      merged.push(c);
-    }
-    return merged;
-  }, [customersData, inactiveData]);
+  const contactItems = contactsData?.data ?? [];
 
-  const contactsLoading = customersLoading || inactiveLoading;
   const anyLoading = leadsLoading || jobsLoading || estimatesLoading || contactsLoading;
 
   const visibleLeads = leads.slice(0, 3);

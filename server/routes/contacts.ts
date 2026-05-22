@@ -63,11 +63,25 @@ export function registerContactRoutes(app: Express): void {
       res.status(400).json({ message: "Invalid 'limit' parameter: must be a number" });
       return;
     }
+    // `type` accepts a single value (e.g. `customer`) or a comma-separated
+    // list (e.g. `customer,inactive`). The multi-value form is collapsed to
+    // `types` so the storage layer emits a `contacts.type IN (...)` predicate
+    // instead of forcing the caller to issue one request per type.
+    const VALID_TYPES = ['lead', 'customer', 'inactive'] as const;
+    type ContactType = typeof VALID_TYPES[number];
+    const typeRaw = type as string | undefined;
+    const parsedTypes = (typeRaw ?? '')
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t): t is ContactType => (VALID_TYPES as readonly string[]).includes(t));
+    const singleType = parsedTypes.length === 1 ? parsedTypes[0] : undefined;
+    const multiTypes = parsedTypes.length > 1 ? parsedTypes : undefined;
     const options = {
       cursor: cursor as string | undefined,
       offset: parsedOffset,
       limit: parsedLimit,
-      type: type as 'lead' | 'customer' | 'inactive' | undefined,
+      type: singleType,
+      types: multiTypes,
       status: status as string | undefined,
       search: search as string | undefined,
       includeAll: includeAll === "true",

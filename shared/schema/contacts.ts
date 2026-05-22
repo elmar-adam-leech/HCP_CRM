@@ -150,6 +150,11 @@ export interface ContactFilterOptions {
   offset?: number;
   limit?: number;
   type?: 'lead' | 'customer' | 'inactive';
+  // Multi-type filter: when provided (non-empty), takes precedence over `type`
+  // and produces a `contacts.type IN (...)` predicate. Lets a single request
+  // ask for e.g. customers + inactive at once (used by the global header
+  // search Contacts section to avoid issuing two requests per keystroke).
+  types?: Array<'lead' | 'customer' | 'inactive'>;
   status?: string;
   search?: string;
   includeAll?: boolean;

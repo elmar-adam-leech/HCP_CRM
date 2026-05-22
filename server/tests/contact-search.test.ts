@@ -116,4 +116,42 @@ describe('buildContactConditions — pipeline-gate bypass on text search', () =>
     const { sql, params } = compile(buildContactConditions(TENANT, { type: 'customer' }));
     expect(hasDisqualifiedExclusion(sql, params)).toBe(false);
   });
+
+  it('multi-type (customer + inactive) emits a single IN predicate, not separate equality checks', () => {
+    const { sql, params } = compile(buildContactConditions(TENANT, {
+      types: ['customer', 'inactive'],
+      search: 'Robin',
+    }));
+    expect(sql).toMatch(/"type" in \(/i);
+    expect(params).toContain('customer');
+    expect(params).toContain('inactive');
+    // not a lead-only scope, so the lead-only disqualified guard must NOT appear
+    expect(hasDisqualifiedExclusion(sql, params)).toBe(false);
+  });
+
+  it('multi-type that includes lead still applies the lead-scope disqualified guard', () => {
+    const { sql, params } = compile(buildContactConditions(TENANT, {
+      types: ['lead', 'customer'],
+    }));
+    expect(hasDisqualifiedExclusion(sql, params)).toBe(true);
+  });
+
+  it('single-element types array collapses to an equality predicate', () => {
+    const { sql, params } = compile(buildContactConditions(TENANT, {
+      types: ['customer'],
+    }));
+    expect(sql).toMatch(/"type" = \$/);
+    expect(params).toContain('customer');
+  });
+
+  it('types takes precedence over the legacy single `type` field', () => {
+    const { sql, params } = compile(buildContactConditions(TENANT, {
+      type: 'lead',
+      types: ['customer', 'inactive'],
+    }));
+    // legacy `type=lead` must be ignored when `types` is present
+    expect(params).not.toContain('lead');
+    expect(params).toContain('customer');
+    expect(params).toContain('inactive');
+  });
 });
