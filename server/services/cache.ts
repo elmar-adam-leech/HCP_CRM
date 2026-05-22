@@ -1,99 +1,88 @@
-import memoizee from 'memoizee';
 import { storage } from '../storage';
 import { CredentialService } from '../credential-service';
+import { memoizeAsync } from '../utils/lru-ttl-cache';
 
 /**
  * Cache Service
- * 
+ *
  * Provides in-memory caching for frequently accessed data to reduce database load.
- * Uses memoizee for automatic cache expiration and size limits.
+ * Backed by a tiny in-repo LRU+TTL helper (see server/utils/lru-ttl-cache.ts) —
+ * replaces the previous `memoizee` dependency (task #774).
  */
 
 // Cache user contractor relationship (permissions) for 5 minutes
 // This is frequently accessed on every authenticated request
-export const getUserContractorCached = memoizee(
+export const getUserContractorCached = memoizeAsync(
   async (userId: string, contractorId: string) => {
     return storage.getUserContractor(userId, contractorId);
   },
   {
-    promise: true,
     maxAge: 5 * 60 * 1000, // 5 minutes
-    max: 1000, // Max 1000 entries
-    preFetch: true, // Refresh before expiry
-    normalizer: (args) => `${args[0]}-${args[1]}`, // Create unique cache key
-  }
+    max: 1000,
+    normalizer: (args) => `${args[0]}-${args[1]}`,
+  },
 );
 
 // Cache user's contractors list for 5 minutes
-export const getUserContractorsCached = memoizee(
+export const getUserContractorsCached = memoizeAsync(
   async (userId: string) => {
     return storage.getUserContractors(userId);
   },
   {
-    promise: true,
-    maxAge: 5 * 60 * 1000, // 5 minutes
+    maxAge: 5 * 60 * 1000,
     max: 500,
-    preFetch: true,
-  }
+  },
 );
 
 // Cache contractor settings for 10 minutes (changes infrequently)
-export const getContractorCached = memoizee(
+export const getContractorCached = memoizeAsync(
   async (contractorId: string) => {
     return storage.getContractor(contractorId);
   },
   {
-    promise: true,
-    maxAge: 10 * 60 * 1000, // 10 minutes
+    maxAge: 10 * 60 * 1000,
     max: 500,
-    preFetch: true,
-  }
+  },
 );
 
 // Cache terminology settings for 15 minutes (changes very infrequently)
-export const getTerminologySettingsCached = memoizee(
+export const getTerminologySettingsCached = memoizeAsync(
   async (contractorId: string) => {
     return storage.getTerminologySettings(contractorId);
   },
   {
-    promise: true,
-    maxAge: 15 * 60 * 1000, // 15 minutes
+    maxAge: 15 * 60 * 1000,
     max: 500,
-    preFetch: true,
-  }
+  },
 );
 
 // Cache business targets for 10 minutes
-export const getBusinessTargetsCached = memoizee(
+export const getBusinessTargetsCached = memoizeAsync(
   async (contractorId: string) => {
     return storage.getBusinessTargets(contractorId);
   },
   {
-    promise: true,
-    maxAge: 10 * 60 * 1000, // 10 minutes
+    maxAge: 10 * 60 * 1000,
     max: 500,
-    preFetch: true,
-  }
+  },
 );
 
 // Cache user details for 3 minutes
-export const getUserCached = memoizee(
+export const getUserCached = memoizeAsync(
   async (userId: string) => {
     return storage.getUser(userId);
   },
   {
-    promise: true,
-    maxAge: 3 * 60 * 1000, // 3 minutes
+    maxAge: 3 * 60 * 1000,
     max: 1000,
-    preFetch: true,
-  }
+  },
 );
 
 // Cache the supplemental user fields surfaced by /api/auth/me (60s TTL).
 // These fields change on rare user actions (gmail connect/disconnect, dialpad
 // number update). Mutation handlers MUST call invalidateUserCache(userId) to
 // avoid stale auth payloads.
-export const getUserSupplementalCached = memoizee(
+export const getUserSupplementalCached = memoizeAsync(
   async (userId: string) => {
     const user = await storage.getUser(userId);
     if (!user) return null;
@@ -125,16 +114,15 @@ export const getUserSupplementalCached = memoizee(
     };
   },
   {
-    promise: true,
-    maxAge: 60 * 1000, // 60 seconds
+    maxAge: 60 * 1000,
     max: 2000,
-  }
+  },
 );
 
 // Cache the enabled-integrations list per contractor (60s TTL).
 // /api/auth/me only needs `length > 0`, but other call sites read the rows.
 // Invalidated on enable/disable via invalidateContractorCache.
-export const getEnabledIntegrationsCached = memoizee(
+export const getEnabledIntegrationsCached = memoizeAsync(
   async (contractorId: string) => {
     try {
       return await storage.getEnabledIntegrations(contractorId);
@@ -143,16 +131,15 @@ export const getEnabledIntegrationsCached = memoizee(
     }
   },
   {
-    promise: true,
-    maxAge: 60 * 1000, // 60 seconds
+    maxAge: 60 * 1000,
     max: 1000,
-  }
+  },
 );
 
 // Cache the joined user-contractors-with-details payload returned by
 // GET /api/user/contractors. Mutation paths (add/remove/switch) MUST call
 // invalidateUserCache(userId) so the dropdown reflects new memberships.
-export const getUserContractorsWithDetailsCached = memoizee(
+export const getUserContractorsWithDetailsCached = memoizeAsync(
   async (userId: string) => {
     const memberships = await storage.getUserContractors(userId);
     if (memberships.length === 0) return [];
@@ -161,10 +148,9 @@ export const getUserContractorsWithDetailsCached = memoizee(
     return memberships.map((uc) => ({ ...uc, contractor: contractorMap.get(uc.contractorId) }));
   },
   {
-    promise: true,
-    maxAge: 60 * 1000, // 60 seconds
+    maxAge: 60 * 1000,
     max: 1000,
-  }
+  },
 );
 
 /**
@@ -237,16 +223,15 @@ export const invalidateContractorCache = (contractorId: string) => cacheInvalida
 // the key; it is not required and would quadruple the effective cache size.
 // If workflowIds are ever changed to non-unique scoped IDs, the key MUST be
 // updated to `${contractorId}:${workflowId}` to preserve multi-tenant isolation.
-export const getWorkflowStepsCached = memoizee(
+export const getWorkflowStepsCached = memoizeAsync(
   async (workflowId: string) => {
     return storage.getWorkflowSteps(workflowId);
   },
   {
-    promise: true,
-    maxAge: 5 * 60 * 1000, // 5 minutes
+    maxAge: 5 * 60 * 1000,
     max: 500,
     normalizer: (args) => args[0],
-  }
+  },
 );
 
 // Invalidate a workflow's step cache when steps are created, updated, or deleted.
@@ -258,16 +243,15 @@ export const invalidateWorkflowStepsCache = (workflowId: string) => {
 // Cache isIntegrationEnabled for 30 seconds.
 // This check runs on every contact creation and sync tick but the underlying
 // setting almost never changes in the middle of a request cycle.
-export const isIntegrationEnabledCached = memoizee(
+export const isIntegrationEnabledCached = memoizeAsync(
   async (contractorId: string, integrationName: string) => {
     return storage.isIntegrationEnabled(contractorId, integrationName);
   },
   {
-    promise: true,
-    maxAge: 30 * 1000, // 30 seconds
+    maxAge: 30 * 1000,
     max: 500,
     normalizer: (args) => `${args[0]}-${args[1]}`,
-  }
+  },
 );
 
 // Invalidate the integration-enabled cache when an integration is toggled on/off.
@@ -279,16 +263,15 @@ export const invalidateIntegrationEnabledCache = (contractorId: string, integrat
 // Cache keys are scoped by contractorId to preserve multi-tenant isolation.
 // Write operations (updateContact, deleteContact) must call the corresponding
 // invalidation helper below to avoid serving stale data.
-export const getContactCached = memoizee(
+export const getContactCached = memoizeAsync(
   async (id: string, contractorId: string) => {
     return storage.getContact(id, contractorId);
   },
   {
-    promise: true,
-    maxAge: 60 * 1000, // 60 seconds
+    maxAge: 60 * 1000,
     max: 2000,
     normalizer: (args) => `${args[0]}-${args[1]}`,
-  }
+  },
 );
 
 // Cache credential lookups for the HCP webhook hot path (60-second TTL).
@@ -296,16 +279,15 @@ export const getContactCached = memoizee(
 // the DB on every incoming webhook request.
 // Cache keys are scoped by contractorId + service + key to preserve
 // multi-tenant isolation.
-export const getCredentialCached = memoizee(
+export const getCredentialCached = memoizeAsync(
   async (contractorId: string, service: string, key: string): Promise<string | null> => {
     return CredentialService.getCredential(contractorId, service, key);
   },
   {
-    promise: true,
-    maxAge: 60 * 1000, // 60 seconds
+    maxAge: 60 * 1000,
     max: 200,
     normalizer: (args) => `${args[0]}-${args[1]}-${args[2]}`,
-  }
+  },
 );
 
 // Invalidate a specific credential from the cache (call when a credential is updated or deleted).

@@ -48,7 +48,6 @@ export default defineConfig({
           if (/[\\/]node_modules[\\/]@dnd-kit[\\/]/.test(id)) return "dnd-vendor";
           if (/[\\/]node_modules[\\/](react-day-picker|vaul|cmdk)[\\/]/.test(id)) return "overlay-vendor";
           if (/[\\/]node_modules[\\/](zod|drizzle-orm|drizzle-zod)[\\/]/.test(id)) return "zod-vendor";
-          if (/[\\/]node_modules[\\/]lodash([._-]|[\\/])/.test(id)) return "lodash-vendor";
           // lucide-react is intentionally excluded from the catch-all so
           // rollup can split icons into per-entry chunks. Otherwise the
           // marketing entry would have to load every lucide icon used

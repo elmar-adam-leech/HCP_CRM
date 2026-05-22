@@ -1,5 +1,4 @@
 import type { Request } from 'express';
-import _ from 'lodash';
 import { db } from '../db';
 import { auditLogs } from '@shared/schema';
 import { logger } from './logger';
@@ -29,6 +28,35 @@ function isAuditLogParams(obj: unknown): obj is AuditLogParams {
     typeof (obj as AuditLogParams).contractorId === 'string' &&
     typeof (obj as AuditLogParams).action === 'string'
   );
+}
+
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!deepEqual(a[i], b[i])) return false;
+    return true;
+  }
+  if (Array.isArray(b)) return false;
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const aKeys = Object.keys(ao);
+  if (aKeys.length !== Object.keys(bo).length) return false;
+  for (const k of aKeys) {
+    if (!Object.prototype.hasOwnProperty.call(bo, k)) return false;
+    if (!deepEqual(ao[k], bo[k])) return false;
+  }
+  return true;
+}
+
+function pickKeys(obj: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of keys) {
+    if (Object.prototype.hasOwnProperty.call(obj, k)) out[k] = obj[k];
+  }
+  return out;
 }
 
 export async function auditLog(
@@ -64,12 +92,11 @@ export async function auditLog(
     let afterDiff: Record<string, unknown> | undefined | null;
 
     if (params.before && params.after) {
-      const changedKeys = _.union(Object.keys(params.before), Object.keys(params.after)).filter(
-        (k: string) => !_.isEqual(params.before![k], params.after![k])
-      );
+      const allKeys = Array.from(new Set([...Object.keys(params.before), ...Object.keys(params.after)]));
+      const changedKeys = allKeys.filter((k) => !deepEqual(params.before![k], params.after![k]));
       if (changedKeys.length > 0) {
-        beforeDiff = _.pick(params.before, changedKeys);
-        afterDiff = _.pick(params.after, changedKeys);
+        beforeDiff = pickKeys(params.before, changedKeys);
+        afterDiff = pickKeys(params.after, changedKeys);
       }
     } else {
       beforeDiff = params.before;

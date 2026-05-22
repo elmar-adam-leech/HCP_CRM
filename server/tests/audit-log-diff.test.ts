@@ -1,17 +1,44 @@
 import { describe, it, expect } from 'vitest';
-import _ from 'lodash';
+
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!deepEqual(a[i], b[i])) return false;
+    return true;
+  }
+  if (Array.isArray(b)) return false;
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const aKeys = Object.keys(ao);
+  if (aKeys.length !== Object.keys(bo).length) return false;
+  for (const k of aKeys) {
+    if (!Object.prototype.hasOwnProperty.call(bo, k)) return false;
+    if (!deepEqual(ao[k], bo[k])) return false;
+  }
+  return true;
+}
+
+function pickKeys(obj: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of keys) {
+    if (Object.prototype.hasOwnProperty.call(obj, k)) out[k] = obj[k];
+  }
+  return out;
+}
 
 function computeDiff(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
 ) {
-  const changedKeys = _.union(Object.keys(before), Object.keys(after)).filter(
-    (k) => !_.isEqual(before[k], after[k]),
-  );
+  const allKeys = Array.from(new Set([...Object.keys(before), ...Object.keys(after)]));
+  const changedKeys = allKeys.filter((k) => !deepEqual(before[k], after[k]));
   if (changedKeys.length === 0) return null;
   return {
-    before: _.pick(before, changedKeys),
-    after: _.pick(after, changedKeys),
+    before: pickKeys(before, changedKeys),
+    after: pickKeys(after, changedKeys),
   };
 }
 
