@@ -12,8 +12,8 @@
  * Also exports `processFacebookLead` — the shared lead processing function used by
  * the webhook handler, the manual sync endpoint, and this poller.
  */
-import axios from 'axios';
 import { CredentialService } from '../credential-service';
+import { httpJson } from '../utils/http';
 import { facebookService } from '../services/facebook-service';
 import { ingestLead, type IngestLeadResult } from '../services/lead-ingestion';
 import { logger } from '../utils/logger';
@@ -108,7 +108,7 @@ export async function processFacebookLead(
   let formName = opts.formName ?? '';
   if (!formName && formId && opts.pageAccessToken) {
     try {
-      const formRes = await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/${formId}`, {
+      const formRes = await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/${formId}`, {
         params: { fields: 'name', access_token: opts.pageAccessToken },
         timeout: 5000,
       });
@@ -268,7 +268,7 @@ export async function syncFacebookLeads(tenantId: string): Promise<void> {
 
   // Fetch the list of lead forms — try page token first, fall back to user token on 403.
   const fetchForms = async (token: string) =>
-    axios.get(`https://graph.facebook.com/${FB_API_VERSION}/${pageId}/leadgen_forms`, {
+    httpJson(`https://graph.facebook.com/${FB_API_VERSION}/${pageId}/leadgen_forms`, {
       params: { fields: 'id,name', access_token: token, limit: 100 },
       timeout: 10000,
     });
@@ -312,7 +312,7 @@ export async function syncFacebookLeads(tenantId: string): Promise<void> {
     while (hasMore) {
       let leadsRes: any;
       try {
-        leadsRes = await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/${form.id}/leads`, {
+        leadsRes = await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/${form.id}/leads`, {
           params: {
             fields: 'field_data,ad_id,ad_name,form_id,created_time',
             access_token: effectiveToken,

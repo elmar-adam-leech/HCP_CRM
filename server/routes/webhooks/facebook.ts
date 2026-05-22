@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from 'express';
 import crypto from 'crypto';
-import axios from 'axios';
 import { CredentialService } from '../../credential-service';
+import { httpJson } from '../../utils/http';
 import { asyncHandler } from '../../utils/async-handler';
 import { logger } from '../../utils/logger';
 import { db } from '../../db';
@@ -125,7 +125,7 @@ async function processLeadgenEvent(pageId: string, leadgenId: string): Promise<v
 
     const { contractorId, pageAccessToken } = allPageIdCreds;
 
-    const leadRes = await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/${leadgenId}`, {
+    const leadRes = await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/${leadgenId}`, {
       params: {
         fields: 'field_data,ad_id,ad_name,form_id,created_time',
         access_token: pageAccessToken,

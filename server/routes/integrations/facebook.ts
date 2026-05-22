@@ -1,7 +1,7 @@
 import type { Express, Request, Response, NextFunction, RequestHandler } from 'express';
 import crypto from 'crypto';
-import axios from 'axios';
 import { type AuthedRequest } from '../../auth-service';
+import { httpJson } from '../../utils/http';
 import { CredentialService } from '../../credential-service';
 import { asyncHandler } from '../../utils/async-handler';
 import { logger } from '../../utils/logger';
@@ -63,10 +63,11 @@ async function registerAppWebhook(baseUrl: string): Promise<void> {
   const appAccessToken = `${appId}|${appSecret}`;
   const callbackUrl = `${baseUrl}/api/webhooks/facebook`;
 
-  await axios.post(
+  await httpJson(
     `https://graph.facebook.com/${FB_API_VERSION}/${appId}/subscriptions`,
-    {},
     {
+      method: 'POST',
+      body: {},
       params: {
         object: 'page',
         callback_url: callbackUrl,
@@ -157,12 +158,12 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
       // Step 1: Exchange code for short-lived user access token
       let shortToken: string;
       try {
-        const shortTokenRes = await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/oauth/access_token`, {
+        const shortTokenRes = await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/oauth/access_token`, {
           params: {
             client_id: process.env.FACEBOOK_APP_ID,
             client_secret: process.env.FACEBOOK_APP_SECRET,
             redirect_uri: callbackUrl,
-            code,
+            code: String(code),
           },
           timeout: 10000,
         });
@@ -179,7 +180,7 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
       let longToken: string;
       let userTokenExpiresAt: string | null = null;
       try {
-        const longTokenRes = await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/oauth/access_token`, {
+        const longTokenRes = await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/oauth/access_token`, {
           params: {
             grant_type: 'fb_exchange_token',
             client_id: process.env.FACEBOOK_APP_ID,
@@ -205,7 +206,7 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
       // Use short-lived token for /me/accounts — more reliable for page permissions than long-lived token
       let pages: FbPage[];
       try {
-        const pagesRes = await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/me/accounts`, {
+        const pagesRes = await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/me/accounts`, {
           params: { access_token: shortToken, fields: 'id,name,access_token' },
           timeout: 10000,
         });
@@ -223,7 +224,7 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
       if (pages.length === 0) {
         log.info(`[callback] Step 3b: /me/accounts returned 0 pages — trying Business Manager API for contractor ${contractorId}`);
         try {
-          const bizRes = await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/me/businesses`, {
+          const bizRes = await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/me/businesses`, {
             params: { access_token: longToken, fields: 'id,name' },
             timeout: 10000,
           });
@@ -232,7 +233,7 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
 
           for (const biz of businesses) {
             try {
-              const bizPagesRes = await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/${biz.id}/owned_pages`, {
+              const bizPagesRes = await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/${biz.id}/owned_pages`, {
                 params: { access_token: longToken, fields: 'id,name,access_token' },
                 timeout: 10000,
               });
@@ -262,7 +263,7 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
       // produces a token that inherits all OAuth-granted permissions.
       let pageToken: string = page.access_token || '';
       try {
-        const pageTokenRes = await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/${page.id}`, {
+        const pageTokenRes = await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/${page.id}`, {
           params: { fields: 'id,name,access_token', access_token: longToken },
           timeout: 10000,
         });
@@ -314,10 +315,11 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
       let webhookOutcome: 'ok' | 'missing_verify_token' | 'subscribe_failed' = 'ok';
       try {
         if (process.env.FACEBOOK_VERIFY_TOKEN) {
-          await axios.post(
+          await httpJson(
             `https://graph.facebook.com/${FB_API_VERSION}/${page.id}/subscribed_apps`,
-            {},
             {
+              method: 'POST',
+              body: {},
               params: { subscribed_fields: 'leadgen', access_token: pageToken },
               timeout: 10000,
             }
@@ -370,7 +372,8 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
 
       if (pageId && pageAccessToken) {
         try {
-          await axios.delete(`https://graph.facebook.com/${FB_API_VERSION}/${pageId}/subscribed_apps`, {
+          await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/${pageId}/subscribed_apps`, {
+            method: 'DELETE',
             params: { access_token: pageAccessToken },
             timeout: 10000,
           });
@@ -411,10 +414,11 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
     }
 
     try {
-      await axios.post(
+      await httpJson(
         `https://graph.facebook.com/${FB_API_VERSION}/${pageId}/subscribed_apps`,
-        {},
         {
+          method: 'POST',
+          body: {},
           params: { subscribed_fields: 'leadgen', access_token: pageAccessToken },
           timeout: 10000,
         }
@@ -479,7 +483,7 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
     let webhookSubscribed: boolean | null = null;
     if (pageId && pageAccessToken && webhookVerifyTokenSet) {
       try {
-        const subRes = await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/${pageId}/subscribed_apps`, {
+        const subRes = await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/${pageId}/subscribed_apps`, {
           params: { access_token: pageAccessToken },
           timeout: 10000,
         });
@@ -499,7 +503,7 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
     if (fbAppId && fbAppSecret) {
       try {
         const appAccessToken = `${fbAppId}|${fbAppSecret}`;
-        const appSubRes = await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/${fbAppId}/subscriptions`, {
+        const appSubRes = await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/${fbAppId}/subscriptions`, {
           params: { access_token: appAccessToken },
           timeout: 10000,
         });
@@ -604,7 +608,7 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
     }
 
     const fetchForms = async (token: string) =>
-      axios.get(`https://graph.facebook.com/${FB_API_VERSION}/${pageId}/leadgen_forms`, {
+      httpJson(`https://graph.facebook.com/${FB_API_VERSION}/${pageId}/leadgen_forms`, {
         params: { fields: 'id,name,questions', access_token: token },
         timeout: 10000,
       });
@@ -655,7 +659,7 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
     }
 
     const fetchForms = async (token: string) =>
-      axios.get(`https://graph.facebook.com/${FB_API_VERSION}/${pageId}/leadgen_forms`, {
+      httpJson(`https://graph.facebook.com/${FB_API_VERSION}/${pageId}/leadgen_forms`, {
         params: { fields: 'id,name', access_token: token },
         timeout: 10000,
       });
@@ -742,7 +746,7 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
     }
 
     const fetchLeadgenForms = async (token: string) =>
-      axios.get(`https://graph.facebook.com/${FB_API_VERSION}/${pageId}/leadgen_forms`, {
+      httpJson(`https://graph.facebook.com/${FB_API_VERSION}/${pageId}/leadgen_forms`, {
         params: { fields: 'id,name', access_token: token },
         timeout: 10000,
       });
@@ -796,7 +800,7 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
         let hasMore = true;
 
         while (hasMore) {
-          const leadsRes: any = await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/${form.id}/leads`, {
+          const leadsRes: any = await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/${form.id}/leads`, {
             params: {
               fields: 'field_data,ad_id,ad_name,form_id,created_time',
               access_token: effectiveToken,
@@ -892,7 +896,7 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
     const appSecret = process.env.FACEBOOK_APP_SECRET;
     if (appId && appSecret) {
       try {
-        const debugRes = await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/debug_token`, {
+        const debugRes = await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/debug_token`, {
           params: {
             input_token: pageAccessToken,
             access_token: `${appId}|${appSecret}`,
@@ -913,7 +917,7 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
 
     // Test page token against leadgen_forms
     try {
-      const r = await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/${pageId}/leadgen_forms`, {
+      const r = await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/${pageId}/leadgen_forms`, {
         params: { fields: 'id,name', limit: 1, access_token: pageAccessToken },
         timeout: 10000,
       });
@@ -927,7 +931,7 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
     // Validate user token is still alive (if stored)
     if (userAccessToken) {
       try {
-        await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/me`, {
+        await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/me`, {
           params: { fields: 'id', access_token: userAccessToken },
           timeout: 10000,
         });
@@ -943,7 +947,7 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
     // Check webhook subscription status
     result.webhookVerifyTokenSet = !!process.env.FACEBOOK_VERIFY_TOKEN;
     try {
-      const subRes = await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/${pageId}/subscribed_apps`, {
+      const subRes = await httpJson(`https://graph.facebook.com/${FB_API_VERSION}/${pageId}/subscribed_apps`, {
         params: { access_token: pageAccessToken },
         timeout: 10000,
       });

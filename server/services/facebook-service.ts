@@ -1,6 +1,6 @@
 import crypto from 'crypto';
-import axios from 'axios';
 import { CredentialService } from '../credential-service';
+import { httpJson } from '../utils/http';
 import { logger } from '../utils/logger';
 import type { Contact } from '@shared/schema';
 import type { Lead } from '@shared/schema';
@@ -75,10 +75,11 @@ async function sendConversionEvent(
       ],
     };
 
-    await axios.post(
+    await httpJson(
       `https://graph.facebook.com/${FB_API_VERSION}/${datasetId}/events`,
-      payload,
       {
+        method: 'POST',
+        body: payload,
         params: { access_token: accessToken },
         timeout: 10000,
       }

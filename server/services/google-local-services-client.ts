@@ -17,7 +17,7 @@
  * `resolveGlsCredentials`). Tenants may bring their own OAuth client + Google
  * Ads developer token; otherwise the platform-level credentials are used.
  */
-import axios, { AxiosError } from 'axios';
+import { httpJson, type HttpError } from '../utils/http';
 import { logger } from '../utils/logger';
 import type { GlsCredentials } from './google-local-services-credentials';
 
@@ -140,7 +140,7 @@ async function withRetry<T>(label: string, fn: () => Promise<T>, maxAttempts = 3
       return await fn();
     } catch (err) {
       lastErr = err;
-      const ax = err as AxiosError;
+      const ax = err as HttpError;
       const status = ax?.response?.status;
       const transient = !status || status >= 500 || status === 429;
       if (!transient || attempt >= maxAttempts) break;
@@ -167,13 +167,17 @@ export const googleLocalServicesClient = {
   }> {
     const { clientId, clientSecret } = requireOauth(creds);
 
-    const res = await axios.post(GOOGLE_TOKEN_URL, new URLSearchParams({
-      code,
-      client_id: clientId,
-      client_secret: clientSecret,
-      redirect_uri: redirectUri,
-      grant_type: 'authorization_code',
-    }), { timeout: 15000 });
+    const res = await httpJson(GOOGLE_TOKEN_URL, {
+      method: 'POST',
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
+      }),
+      timeout: 15000,
+    });
 
     const refresh = res.data?.refresh_token as string | undefined;
     if (!refresh) {
@@ -199,12 +203,16 @@ export const googleLocalServicesClient = {
     const cached = tokenCache.get(key);
     if (cached && cached.expiresAt > Date.now() + 60_000) return cached.accessToken;
 
-    const res = await axios.post(GOOGLE_TOKEN_URL, new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
-      grant_type: 'refresh_token',
-    }), { timeout: 15000 });
+    const res = await httpJson(GOOGLE_TOKEN_URL, {
+      method: 'POST',
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        grant_type: 'refresh_token',
+      }),
+      timeout: 15000,
+    });
 
     const accessToken = res.data?.access_token as string | undefined;
     if (!accessToken) throw new Error('Google did not return an access_token from refresh exchange');
@@ -242,16 +250,20 @@ export const googleLocalServicesClient = {
       return { ok: false, reason: 'OAuth client_id and client_secret are required.', field: 'credentials' };
     }
     try {
-      await axios.post(GOOGLE_TOKEN_URL, new URLSearchParams({
-        client_id: creds.clientId,
-        client_secret: creds.clientSecret,
-        refresh_token: 'invalid-probe-token',
-        grant_type: 'refresh_token',
-      }), { timeout: 10000 });
+      await httpJson(GOOGLE_TOKEN_URL, {
+        method: 'POST',
+        body: new URLSearchParams({
+          client_id: creds.clientId,
+          client_secret: creds.clientSecret,
+          refresh_token: 'invalid-probe-token',
+          grant_type: 'refresh_token',
+        }),
+        timeout: 10000,
+      });
       // Unexpected 200 — treat as ok.
       return { ok: true };
     } catch (err) {
-      const ax = err as AxiosError<any>;
+      const ax = err as HttpError;
       const status = ax?.response?.status;
       const data = ax?.response?.data;
       const errorCode = data?.error;
@@ -319,14 +331,14 @@ export const googleLocalServicesClient = {
       `start_date_year:${start.getUTCFullYear()};start_date_month:${start.getUTCMonth() + 1};start_date_day:${start.getUTCDate()};` +
       `end_date_year:${today.getUTCFullYear()};end_date_month:${today.getUTCMonth() + 1};end_date_day:${today.getUTCDate()}`;
     try {
-      await axios.get(`${GLS_BASE_URL}/accountReports:search`, {
+      await httpJson(`${GLS_BASE_URL}/accountReports:search`, {
         params: { query, pageSize: 1 },
         headers: buildHeaders(accessToken, creds.developerToken),
         timeout: 10000,
       });
       return { ok: true };
     } catch (err) {
-      const ax = err as AxiosError<any>;
+      const ax = err as HttpError;
       const status = ax?.response?.status;
       const apiMsg = ax?.response?.data?.error?.message
         || (typeof ax?.response?.data === 'string' ? ax?.response?.data : undefined)
@@ -365,11 +377,11 @@ export const googleLocalServicesClient = {
    */
   async revokeRefreshToken(refreshToken: string, clientId?: string): Promise<void> {
     try {
-      await axios.post(
-        'https://oauth2.googleapis.com/revoke',
-        new URLSearchParams({ token: refreshToken }),
-        { timeout: 10000 }
-      );
+      await httpJson('https://oauth2.googleapis.com/revoke', {
+        method: 'POST',
+        body: new URLSearchParams({ token: refreshToken }),
+        timeout: 10000,
+      });
     } catch (err: any) {
       log.warn(`[revoke] Failed to revoke Google refresh token (non-fatal): ${err?.message || err}`);
     }
@@ -398,7 +410,7 @@ export const googleLocalServicesClient = {
       `end_date_year:${today.getUTCFullYear()};end_date_month:${today.getUTCMonth() + 1};end_date_day:${today.getUTCDate()}`;
 
     const data: any = await withRetry('listAccounts', async () => {
-      const res = await axios.get(`${GLS_BASE_URL}/accountReports:search`, {
+      const res = await httpJson(`${GLS_BASE_URL}/accountReports:search`, {
         params: { query, pageSize: 100 },
         headers: buildHeaders(accessToken, creds.developerToken),
         timeout: 15000,
@@ -456,7 +468,9 @@ export const googleLocalServicesClient = {
 
     try {
       const data = await withRetry('disputeLead', async () => {
-        const res = await axios.post(url, body, {
+        const res = await httpJson(url, {
+          method: 'POST',
+          body,
           headers: buildHeaders(accessToken, creds.developerToken),
           timeout: 15000,
         });
@@ -464,7 +478,7 @@ export const googleLocalServicesClient = {
       });
       return { status: 'submitted', response: (data ?? {}) as Record<string, unknown> };
     } catch (err) {
-      const ax = err as AxiosError<any>;
+      const ax = err as HttpError;
       const status = ax?.response?.status;
       // Google returns 409 (conflict) when the lead is already in a disputed
       // state. Treat that as a benign no-op so the CRM can still record local
@@ -505,7 +519,7 @@ export const googleLocalServicesClient = {
       if (pageToken) params.pageToken = pageToken;
 
       const data: any = await withRetry('fetchDetailedLeads', async () => {
-        const res = await axios.get(`${GLS_BASE_URL}/detailedLeadReports:search`, {
+        const res = await httpJson(`${GLS_BASE_URL}/detailedLeadReports:search`, {
           params,
           headers: buildHeaders(accessToken, creds.developerToken),
           timeout: 20000,
