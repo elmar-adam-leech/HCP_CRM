@@ -253,6 +253,13 @@ export function registerContactRoutes(app: Express): void {
         ) coaching ON true
         WHERE c.contractor_id = ${contractorId}
           AND c.follow_up_date IS NOT NULL
+          -- Drop contacts that have already been booked. markContactScheduled()
+          -- in server/services/contact-status.ts flips contacts.status to
+          -- 'scheduled' on booking but intentionally leaves leads.status
+          -- alone, so without this predicate a scheduled contact whose lead
+          -- is still 'new'/'contacted' keeps reappearing in Follow-Ups
+          -- (task #785).
+          AND c.status <> 'scheduled'
           -- Only surface contacts whose newest open lead is still in a
           -- "following up" state. Excludes qualified/converted/disqualified/
           -- lost leads as well as any aged or archived lead row (task #761).
@@ -299,6 +306,10 @@ export function registerContactRoutes(app: Express): void {
         ) coaching ON true
         WHERE e.contractor_id = ${contractorId}
           AND e.follow_up_date IS NOT NULL
+          -- Drop estimates whose contact has already been booked
+          -- (task #785). IS DISTINCT FROM treats a missing/NULL contact as
+          -- not-scheduled so estimates without a contact link still appear.
+          AND ct.status IS DISTINCT FROM 'scheduled'
           -- Only surface estimates that still need a rep follow-up.
           -- Excludes scheduled/approved/rejected (task #761).
           AND e.status IN ('in_progress', 'sent')
@@ -327,6 +338,9 @@ export function registerContactRoutes(app: Express): void {
         LEFT JOIN contacts ct ON ct.id = j.contact_id
         WHERE j.contractor_id = ${contractorId}
           AND j.follow_up_date IS NOT NULL
+          -- Drop jobs whose contact has already been booked (task #785).
+          -- IS DISTINCT FROM keeps jobs with no linked contact (ct NULL).
+          AND ct.status IS DISTINCT FROM 'scheduled'
       ),
       filtered AS (
         SELECT * FROM all_followups
