@@ -38,7 +38,10 @@ import { useLeadActions } from "@/hooks/useLeadActions";
 import { LeadModals } from "@/components/LeadModals";
 import type { LeadActiveModal } from "@/types/leadTypes";
 
-const LEAD_STATUSES = ["new", "following up", "scheduled", "disqualified", "lost"] as const;
+// Values match the `contact_status` pgEnum in shared/schema/enums.ts so the
+// server can filter on them directly. "contacted" is displayed as "Following up"
+// in the UI (see leadStatusOptions below).
+const LEAD_STATUSES = ["new", "contacted", "scheduled", "disqualified", "lost"] as const;
 
 type LeadViewMode = "active" | "archived" | "aged";
 
@@ -104,7 +107,10 @@ export default function Leads({ externalSearch = "" }: { externalSearch?: string
   const currentUserId = currentUserData?.user?.id;
 
   const leadStatusOptions = useMemo(
-    () => LEAD_STATUSES.map((s) => ({ value: s, label: formatStatusLabel(s) })),
+    () => LEAD_STATUSES.map((s) => ({
+      value: s,
+      label: s === "contacted" ? "Following up" : formatStatusLabel(s),
+    })),
     []
   );
   const leadUserOptions = useMemo(
@@ -119,6 +125,15 @@ export default function Leads({ externalSearch = "" }: { externalSearch?: string
   useWebSocketInvalidation(CONTACT_WS_INVALIDATIONS);
 
   useAddModalFromUrl(() => setAddContactModal(true));
+
+  // Migrate legacy saved filter value: the chip was previously stored as
+  // "following up" (not a valid contact_status enum), which made first paint
+  // fail for returning users. Coerce to the canonical "contacted" value once.
+  useEffect(() => {
+    if (filterStatus === "following up") {
+      setFilterStatus("contacted");
+    }
+  }, [filterStatus, setFilterStatus]);
 
   const {
     leads,
@@ -335,6 +350,7 @@ export default function Leads({ externalSearch = "" }: { externalSearch?: string
               activeStatus={filterStatus}
               counts={statusCounts}
               onStatusChange={setFilterStatus}
+              formatLabel={(s) => (s === "contacted" ? "Following up" : formatStatusLabel(s))}
               extraFilters={currentUserId && (
                 <Badge
                   variant={advancedFilters.assignedTo === currentUserId ? "default" : "outline"}
