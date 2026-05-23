@@ -39,7 +39,7 @@ import { LeadModals } from "@/components/LeadModals";
 import type { LeadActiveModal } from "@/types/leadTypes";
 
 // Values match the `contact_status` pgEnum in shared/schema/enums.ts so the
-// server can filter on them directly. "contacted" is displayed as "Following up"
+// server can filter on them directly. "contacted" is displayed as "Following Up"
 // in the UI (see leadStatusOptions below).
 const LEAD_STATUSES = ["new", "contacted", "scheduled", "disqualified", "lost"] as const;
 
@@ -109,7 +109,7 @@ export default function Leads({ externalSearch = "" }: { externalSearch?: string
   const leadStatusOptions = useMemo(
     () => LEAD_STATUSES.map((s) => ({
       value: s,
-      label: s === "contacted" ? "Following up" : formatStatusLabel(s),
+      label: s === "contacted" ? "Following Up" : formatStatusLabel(s),
     })),
     []
   );
@@ -127,7 +127,7 @@ export default function Leads({ externalSearch = "" }: { externalSearch?: string
   useAddModalFromUrl(() => setAddContactModal(true));
 
   // Migrate legacy saved filter value: the chip was previously stored as
-  // "following up" (not a valid contact_status enum), which made first paint
+  // "following Up" (not a valid contact_status enum), which made first paint
   // fail for returning users. Coerce to the canonical "contacted" value once.
   useEffect(() => {
     if (filterStatus === "following up") {
@@ -350,7 +350,7 @@ export default function Leads({ externalSearch = "" }: { externalSearch?: string
               activeStatus={filterStatus}
               counts={statusCounts}
               onStatusChange={setFilterStatus}
-              formatLabel={(s) => (s === "contacted" ? "Following up" : formatStatusLabel(s))}
+              formatLabel={(s) => (s === "contacted" ? "Following Up" : formatStatusLabel(s))}
               extraFilters={currentUserId && (
                 <Badge
                   variant={advancedFilters.assignedTo === currentUserId ? "default" : "outline"}
