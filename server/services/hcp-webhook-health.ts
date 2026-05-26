@@ -26,9 +26,83 @@ const REJECTION_SPIKE_COUNT = 10;
 // Hard ceiling on a single per-contractor health check. The DB queries are
 // each expected to run in well under a second after the composite index
 // from migration 0034; if the whole tick takes longer than this we assume
-// the DB or pool is unhealthy and surface that as a `health-check-failure`
-// incident instead of letting the timer silently hang for the next tick.
+// the DB or pool is unhealthy and short-circuit instead of letting the
+// timer silently hang for the next tick.
 const HEALTH_CHECK_TIMEOUT_MS = 30_000;
+
+// Tighter per-query timeout used inside checkContractorHealth. A single
+// slow query (DB connect timeout, statement_timeout race, etc.) should
+// fail fast so the rest of the loop can keep moving. 8s is well above
+// the p99 of these queries after the composite index but well below the
+// outer ceiling, leaving headroom for the legitimate-but-slow case.
+const PER_QUERY_TIMEOUT_MS = 8_000;
+
+// Task #788 — when the per-contractor health check fails because the DB
+// itself is unreachable (Neon pool acquire timeout, connection refused,
+// statement timeout, etc.), we DO NOT open a `health-check-failure`
+// incident or send an admin alert: the user-visible "HCP webhook is
+// down" notification was a false alarm caused by shared infrastructure
+// flakiness, not by HCP. Instead we (a) remember the contractor is in
+// the "checker degraded" state so the admin UI can surface it honestly,
+// and (b) emit a single rate-limited warn line per contractor per
+// cooldown window so ops still see the degradation in logs.
+const DB_UNREACHABLE_DEGRADED_WINDOW_MS = 15 * 60 * 1000; // active flag survives 15 min
+const DB_UNREACHABLE_WARN_COOLDOWN_MS = 60 * 60 * 1000;   // 1 warn line per hour per contractor
+const lastDbUnreachableAt = new Map<string, number>();
+const lastDbUnreachableWarnAt = new Map<string, number>();
+
+/**
+ * Recognise the failure modes that mean "the database is not answering"
+ * rather than "the checker logic itself threw". These all show up
+ * identically from the application's perspective: an Error whose message
+ * matches one of the well-known driver / pool / timeout strings.
+ *
+ * Keeping this as a simple string-match keeps the classifier
+ * dependency-free and resilient to driver upgrades that re-spell error
+ * shapes but keep the human-readable messages stable.
+ */
+function isDbUnreachableError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  if (!msg) return false;
+  return (
+    // pg-pool acquire timeout (Neon serverless WebSocket compute-resume race
+    // also lands here).
+    /timeout exceeded when trying to connect/i.test(msg) ||
+    // Our own withTimeout() wrappers — both the outer 30s ceiling and the
+    // tighter per-query 8s. Treat any health-check timeout as DB-unreachable
+    // because the only legitimate-but-slow path here is the DB.
+    /timed out after \d+ms/i.test(msg) ||
+    // statement_timeout fired server-side.
+    /canceling statement due to statement timeout/i.test(msg) ||
+    // Postgres terminated the connection mid-query.
+    /(connection terminated|terminating connection|server closed the connection)/i.test(msg) ||
+    // OS-level connectivity errors when the pool tries to (re)establish.
+    /(ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE)/i.test(msg) ||
+    // Neon-side specific: compute scale-down + WebSocket close.
+    /(WebSocket was closed|fetch failed|socket hang up)/i.test(msg)
+  );
+}
+
+/**
+ * Was this contractor's health checker recently degraded by a DB
+ * connectivity failure? Used by the admin UI to surface honest status
+ * ("health checker degraded — database connectivity") instead of
+ * implying the HCP webhook itself is down.
+ */
+export function isCheckerDegradedByDb(contractorId: string): boolean {
+  const at = lastDbUnreachableAt.get(contractorId);
+  if (!at) return false;
+  return Date.now() - at < DB_UNREACHABLE_DEGRADED_WINDOW_MS;
+}
+
+/**
+ * Test-only reset. Internal map state would otherwise leak across
+ * vitest files.
+ */
+export function __resetDbDegradedStateForTests(): void {
+  lastDbUnreachableAt.clear();
+  lastDbUnreachableWarnAt.clear();
+}
 
 // Subscription probe is rate-limited to once per hour per contractor — the
 // HCP API is not free and the listing rarely changes.
@@ -330,13 +404,36 @@ export async function checkHcpWebhookHealth(): Promise<void> {
           HEALTH_CHECK_TIMEOUT_MS,
           `checkContractorHealth(${contractorId})`,
         );
-        // Successful pass — close any open `health-check-failure` incident
-        // (the previous tick failed but we recovered). Best-effort: a DB
-        // failure here is just logged so it doesn't mask the success.
+        // Successful pass — clear any DB-degraded marker and close any
+        // open `health-check-failure` incident (the previous tick failed
+        // but we recovered). Best-effort: a DB failure here is just
+        // logged so it doesn't mask the success.
+        lastDbUnreachableAt.delete(contractorId);
         await closeOpenIncident(contractorId, KIND_HEALTH_CHECK_FAILURE).catch(err =>
           log.warn(`Failed to close health-check-failure incident for ${contractorId}: ${formatDbError(err)}`)
         );
       } catch (err) {
+        // Task #788 — classify before alerting. A Neon connect timeout /
+        // pool acquire timeout / connection-terminated is shared
+        // infrastructure flakiness, NOT an HCP webhook problem; opening a
+        // `health-check-failure` incident on it produces a false "HCP
+        // webhook is down" alert that users keep seeing. Suppress the
+        // incident path entirely for that class and emit a single
+        // rate-limited warn line per contractor per cooldown window so
+        // ops still see the degradation.
+        if (isDbUnreachableError(err)) {
+          lastDbUnreachableAt.set(contractorId, Date.now());
+          const lastWarn = lastDbUnreachableWarnAt.get(contractorId) ?? 0;
+          if (Date.now() - lastWarn >= DB_UNREACHABLE_WARN_COOLDOWN_MS) {
+            lastDbUnreachableWarnAt.set(contractorId, Date.now());
+            log.warn(
+              `HCP webhook health checker degraded for contractor ${contractorId} — database unreachable; ` +
+              `suppressing 'health-check-failure' alert (next warn in ${Math.round(DB_UNREACHABLE_WARN_COOLDOWN_MS / 60000)}min). ` +
+              `Underlying: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
+          continue;
+        }
         log.error(`Error checking webhook health for contractor ${contractorId}: ${formatDbError(err)}`);
         await openHealthCheckFailureIncident(contractorId, err).catch(notifyErr =>
           log.error(`Failed to record health-check-failure incident for ${contractorId}: ${formatDbError(notifyErr)}`)
@@ -366,7 +463,13 @@ async function openHealthCheckFailureIncident(contractorId: string, originalErr:
     incident = opened.incident;
     created = opened.created;
   } catch (err) {
-    log.error(`Cannot open health-check-failure incident (db itself is failing) for ${contractorId}`, err);
+    // Task #788 — collapse to a single structured warn so the logs stop
+    // drowning every 5 minutes per contractor. The pool is down; there's
+    // nothing actionable beyond the one-line acknowledgement and we'll
+    // re-classify on the next tick.
+    log.warn(
+      `Skipping health-check-failure incident write for ${contractorId} — incident DB write itself failed (${err instanceof Error ? err.message : String(err)})`
+    );
     return;
   }
   // Already paged successfully on a prior tick — nothing to do. We
@@ -473,20 +576,27 @@ async function checkContractorHealth(contractorId: string): Promise<void> {
     log.warn(`Subscription probe (proactive) failed for ${contractorId}: ${formatDbError(err)}`);
   }
 
-  const [latestEventResult, rejectionSpike, openStalenessIncident, openRejectionIncident] = await Promise.all([
-    db.select({ createdAt: webhookEvents.createdAt })
-      .from(webhookEvents)
-      .where(and(
-        eq(webhookEvents.contractorId, contractorId),
-        eq(webhookEvents.service, SERVICE_HCP),
-        ne(webhookEvents.eventType, 'rejection'),
-      ))
-      .orderBy(desc(webhookEvents.createdAt))
-      .limit(1),
-    checkRejectionSpike(contractorId),
-    getOpenIncident(contractorId, KIND_STALENESS),
-    getOpenIncident(contractorId, KIND_REJECTION),
-  ]);
+  // Task #788 — apply a tighter per-query timeout so a single slow query
+  // fails fast (and gets classified as DB-unreachable by the outer
+  // handler) instead of holding the whole per-contractor budget.
+  const [latestEventResult, rejectionSpike, openStalenessIncident, openRejectionIncident] = await withTimeout(
+    () => Promise.all([
+      db.select({ createdAt: webhookEvents.createdAt })
+        .from(webhookEvents)
+        .where(and(
+          eq(webhookEvents.contractorId, contractorId),
+          eq(webhookEvents.service, SERVICE_HCP),
+          ne(webhookEvents.eventType, 'rejection'),
+        ))
+        .orderBy(desc(webhookEvents.createdAt))
+        .limit(1),
+      checkRejectionSpike(contractorId),
+      getOpenIncident(contractorId, KIND_STALENESS),
+      getOpenIncident(contractorId, KIND_REJECTION),
+    ]),
+    PER_QUERY_TIMEOUT_MS,
+    `checkContractorHealth(${contractorId}) primary queries`,
+  );
 
   const lastEventAt = latestEventResult[0]?.createdAt ?? null;
   const now = new Date();
@@ -870,6 +980,7 @@ export async function getWebhookStatus(contractorId: string): Promise<{
   lastEventAt: Date | null;
   status: 'healthy' | 'warning' | 'disabled';
   statusReason?: string;
+  checkerDegraded: boolean;
   serverStartedAt: Date;
   rejectionCount24h: number;
   lastRejectionReason: string | null;
@@ -932,10 +1043,20 @@ export async function getWebhookStatus(contractorId: string): Promise<{
     }
   }
 
+  // Task #788 — if the checker is currently degraded because the DB pool
+  // can't service its own queries, surface that honestly to the admin UI
+  // instead of letting the staleness heuristic imply "HCP webhook is
+  // down". The flag is advisory only and does not override `status`.
+  const checkerDegraded = isCheckerDegradedByDb(contractorId);
+  if (checkerDegraded && !statusReason) {
+    statusReason = 'checker_degraded_db';
+  }
+
   return {
     lastEventAt,
     status,
     statusReason,
+    checkerDegraded,
     serverStartedAt,
     rejectionCount24h,
     lastRejectionReason: rejectionSpikeResult.lastRejectionReason,

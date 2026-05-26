@@ -77,6 +77,7 @@ export function HousecallProCard() {
     lastEventAt: string | null;
     status: 'healthy' | 'warning' | 'disabled';
     statusReason?: string;
+    checkerDegraded?: boolean;
     serverStartedAt: string;
     rejectionCount24h: number;
     lastRejectionReason: string | null;
@@ -529,6 +530,15 @@ export function HousecallProCard() {
                     </Button>
                   )}
                 </div>
+
+                {webhookStatus.checkerDegraded && (
+                  <Alert variant="default" data-testid="alert-hcp-checker-degraded">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertDescription className="text-xs">
+                      Health checker degraded (database connectivity). The webhook itself may be fine — automatic alerts are paused until the application database stabilizes.
+                    </AlertDescription>
+                  </Alert>
+                )}
 
                 {(webhookStatus.status === 'warning' || webhookStatus.status === 'disabled') && webhookConfig && (
                   <Alert variant={webhookStatus.status === 'disabled' ? 'destructive' : 'default'}>
