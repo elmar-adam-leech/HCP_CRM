@@ -34,13 +34,15 @@ export function applyTemplateSubstitution(
   result = result.replace(/\{\{contact\.address\}\}/g, variables.contactAddress ?? "");
   result = result.replace(/\{\{contact\.id\}\}/g, variables.contactId ?? "");
 
-  // Resolve {{booking_link}} if we have enough information, otherwise show a placeholder
+  // Resolve {{booking_link}} only via the short bookingCode (?c=<code>) form.
+  // Legacy ?contactId=<uuid> fallback was retired (task #776/#792): possession
+  // of an internal UUID is not proof of identity and those links never
+  // expire. If a short code is not available at preview time, show a
+  // placeholder — the server-side substitution path will fill in the real
+  // short-code URL when the message is actually sent.
   if (result.includes('{{booking_link}}')) {
     if (variables.bookingBaseUrl && variables.bookingCode) {
       const bookingUrl = `${variables.bookingBaseUrl}?c=${variables.bookingCode}`;
-      result = result.replace(/\{\{booking_link\}\}/g, bookingUrl);
-    } else if (variables.bookingBaseUrl && variables.contactId) {
-      const bookingUrl = `${variables.bookingBaseUrl}?contactId=${variables.contactId}`;
       result = result.replace(/\{\{booking_link\}\}/g, bookingUrl);
     } else {
       result = result.replace(/\{\{booking_link\}\}/g, '[booking link]');

@@ -766,6 +766,80 @@ export function registerSettingsRoutes(app: Express): void {
     res.json({ success: true });
   }));
 
+  // Task #792 — admin-only scan that lists saved templates and workflow
+  // steps still containing legacy hand-typed booking URL params
+  // (`?contact=` / `?contactId=`). The expected fix is to swap them for
+  // `{{booking_link}}`, which always renders a short-code `?c=<code>` URL.
+  // Returned shape is intentionally small (id, label, kind, snippet) so the
+  // admin UI can render a one-time notice + "open in editor" link.
+  app.get(
+    "/api/settings/legacy-booking-links",
+    requireAdmin,
+    asyncHandler(async (req, res) => {
+      const { templates, workflowSteps, workflows } = await import("@shared/schema");
+      const { db } = await import("../db");
+      const { eq, and, or, ilike } = await import("drizzle-orm");
+      const contractorId = req.user.contractorId;
+
+      const LEGACY_PATTERN = /[?&](?:contact|contactId)=/i;
+
+      const [tmplRows, stepRows] = await Promise.all([
+        db
+          .select({ id: templates.id, title: templates.title, content: templates.content })
+          .from(templates)
+          .where(
+            and(
+              eq(templates.contractorId, contractorId),
+              or(ilike(templates.content, "%?contact=%"), ilike(templates.content, "%?contactId=%")),
+            ),
+          ),
+        db
+          .select({
+            id: workflowSteps.id,
+            workflowId: workflowSteps.workflowId,
+            actionConfig: workflowSteps.actionConfig,
+            workflowName: workflows.name,
+          })
+          .from(workflowSteps)
+          .innerJoin(workflows, eq(workflowSteps.workflowId, workflows.id))
+          .where(
+            and(
+              eq(workflows.contractorId, contractorId),
+              or(
+                ilike(workflowSteps.actionConfig, "%?contact=%"),
+                ilike(workflowSteps.actionConfig, "%?contactId=%"),
+              ),
+            ),
+          ),
+      ]);
+
+      const offendingTemplates = tmplRows
+        .filter((t) => LEGACY_PATTERN.test(t.content ?? ""))
+        .map((t) => ({
+          id: t.id,
+          kind: "template" as const,
+          label: t.title,
+          snippet: (t.content ?? "").slice(0, 200),
+        }));
+
+      const offendingSteps = stepRows
+        .filter((s) => LEGACY_PATTERN.test(s.actionConfig ?? ""))
+        .map((s) => ({
+          id: s.id,
+          kind: "workflow_step" as const,
+          label: s.workflowName ?? "Workflow",
+          workflowId: s.workflowId,
+          snippet: (s.actionConfig ?? "").slice(0, 200),
+        }));
+
+      res.json({
+        count: offendingTemplates.length + offendingSteps.length,
+        templates: offendingTemplates,
+        workflowSteps: offendingSteps,
+      });
+    }),
+  );
+
   app.get("/api/public/privacy-notice/:slug", asyncHandler(async (req, res) => {
     const contractor = await storage.getContractorBySlug(req.params.slug);
     if (!contractor) {

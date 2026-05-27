@@ -60,7 +60,7 @@ const ENTITY_VARIABLE_GROUPS: Record<string, VariableGroup[]> = {
         { key: 'tags', label: 'Tags', type: 'array', example: 'VIP, repeat' },
         { key: 'followUpDate', label: 'Follow-up Date', type: 'date', example: '2025-02-01' },
         { key: 'createdAt', label: 'Created Date', type: 'date', example: '2025-01-15' },
-        { key: 'booking_link', label: 'Booking Link', type: 'string', example: 'https://yoursite.com/book/my-company?contact=abc-123' },
+        { key: 'booking_link', label: 'Booking Link', type: 'string', example: 'https://yoursite.com/book/my-company?c=ab12cd34' },
       ],
     },
   ],
@@ -79,7 +79,7 @@ const ENTITY_VARIABLE_GROUPS: Record<string, VariableGroup[]> = {
         { key: 'followUpDate', label: 'Follow-up Date', type: 'date', example: '2025-01-20' },
         { key: 'contactId', label: 'Contact ID', type: 'string', example: 'contact-789' },
         { key: 'createdAt', label: 'Created Date', type: 'date', example: '2025-01-15' },
-        { key: 'booking_link', label: 'Booking Link', type: 'string', example: 'https://yoursite.com/book/my-company?contact=contact-789' },
+        { key: 'booking_link', label: 'Booking Link', type: 'string', example: 'https://yoursite.com/book/my-company?c=ab12cd34' },
       ],
     },
     {
@@ -121,7 +121,7 @@ const ENTITY_VARIABLE_GROUPS: Record<string, VariableGroup[]> = {
         { key: 'contactId', label: 'Contact ID', type: 'string', example: 'contact-789' },
         { key: 'estimateId', label: 'Estimate ID', type: 'string', example: 'estimate-456' },
         { key: 'createdAt', label: 'Created Date', type: 'date', example: '2025-01-15' },
-        { key: 'booking_link', label: 'Booking Link', type: 'string', example: 'https://yoursite.com/book/my-company?contact=contact-789' },
+        { key: 'booking_link', label: 'Booking Link', type: 'string', example: 'https://yoursite.com/book/my-company?c=ab12cd34' },
       ],
     },
     {

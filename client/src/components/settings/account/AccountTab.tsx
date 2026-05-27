@@ -6,10 +6,12 @@ import { AiSchedulingAgentCard } from "./AiSchedulingAgentCard";
 import { TeamManagementCard } from "./TeamManagementCard";
 import { TerminologyCard } from "./TerminologyCard";
 import { CompanyBrandingCard } from "./CompanyBrandingCard";
+import { LegacyBookingLinksNotice } from "./LegacyBookingLinksNotice";
 
 export function AccountTab() {
   return (
     <div className="space-y-6">
+      <LegacyBookingLinksNotice />
       <CompanyBrandingCard />
       <AccountInfoCard />
       <InstallAppCard />

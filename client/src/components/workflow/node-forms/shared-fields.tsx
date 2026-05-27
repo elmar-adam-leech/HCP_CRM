@@ -93,7 +93,31 @@ export function VariableTextareaField({ label, fieldName, textareaRef, entityTyp
         <VariablePicker entityType={entityType} onSelect={onVariableSelect} />
       </div>
       <Textarea ref={textareaRef} id={fieldName} value={value} onChange={onChange} placeholder={placeholder} rows={rows} data-testid={testId} />
+      <LegacyBookingLinkWarning value={value} />
     </div>
+  );
+}
+
+/**
+ * Task #792 — save-time warning shown in SMS/email workflow step bodies when
+ * the admin has hand-typed a legacy `?contact=<uuid>` or `?contactId=<uuid>`
+ * booking link instead of using the `{{booking_link}}` variable. Legacy URLs
+ * always create a duplicate contact on submit (the server can't trust the raw
+ * UUID), so we surface a non-blocking notice prompting the admin to swap it.
+ */
+export function LegacyBookingLinkWarning({ value }: { value: string }) {
+  if (!value) return null;
+  if (!/[?&](?:contact|contactId)=/.test(value)) return null;
+  return (
+    <p
+      className="text-xs text-destructive"
+      data-testid={`warning-legacy-booking-link`}
+    >
+      This message contains a legacy booking link (<code>?contact=</code> or <code>?contactId=</code>).
+      Those links create a duplicate contact when the customer submits the form.
+      Replace the hard-coded URL with <code>{'{{booking_link}}'}</code> so the
+      system can insert a fresh short-code link per recipient.
+    </p>
   );
 }
 

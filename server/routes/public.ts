@@ -405,37 +405,77 @@ export function registerPublicRoutes(app: Express): void {
     const emails = email ? [email] : [];
     const phones = phone ? [phone] : [];
     
-    // Check for existing contact by email or phone.
-    // IMPORTANT: An email or phone match alone does not prove the caller
-    // controls that identity. An attacker who knows a victim's phone or email
-    // could otherwise attach bookings and trigger status/workflow transitions
-    // on the victim's CRM record, and redirect automated communications to
-    // themselves by overwriting stored contact fields.
+    // Contact resolution order (authoritative → fallback):
+    //   1. Valid bookingCode token → reuse the token's contact regardless of
+    //      submitted email/phone. Token possession proves the caller was
+    //      given a pre-populated booking link for that exact record; the
+    //      identifiers they typed into the form do not override that. This
+    //      also means a request that carries a valid token for contact A but
+    //      types email/phone for contact B still books against A — the
+    //      submitted identifiers are NEVER allowed to redirect the booking
+    //      to a different contact than the token holds.
+    //   2. No token + submitted email AND phone BOTH appear on the same
+    //      stored contact → reuse that contact. Both identifiers together
+    //      are strong enough evidence of ownership for the booking flow.
+    //   3. Anything weaker (no token + only one identifier matches, or no
+    //      match at all) → create a fresh contact so no status transitions,
+    //      workflow side-effects, or field mutations are applied to any
+    //      pre-existing CRM record. (Security guardrail from task #776.)
     //
-    // We only reuse an existing contact when the request carries a signed
-    // booking token (bookingCode) that resolves to the same contact — this
-    // proves the caller was given a pre-populated booking link for that record.
-    //
-    // Without a verified token, we create a new contact from the submitted
-    // data. This isolates the new booking from the existing record entirely:
-    // no status transitions, no workflow events, and no field mutations are
-    // applied to the pre-existing contact.
-    const existingContactId = await storage.findMatchingContact(contractor.id, emails, phones);
-
-    // Verify ownership via bookingCode only. The legacy raw-UUID contactId
-    // parameter has been retired: possession of an internal UUID is not proof
-    // of identity and those links never expire (see task #776 fix).
+    // The previous implementation gated the token check on findMatchingContact
+    // returning the same id, which meant a token for contact A could be
+    // silently discarded when the submitted identifiers matched contact B.
+    // That left the request to fall through to createContact (or, under task
+    // #792's first draft, to the email+phone fallback against B), routing
+    // status/workflow side effects to the wrong contact. The token now wins
+    // outright.
     let tokenContact: Awaited<ReturnType<typeof storage.getContactByBookingCode>> | null = null;
-    if (existingContactId && bookingCode) {
+    if (bookingCode) {
       tokenContact = (await storage.getContactByBookingCode(bookingCode as string, contractor.id)) ?? null;
     }
-    const callerOwnsContact = !!tokenContact && tokenContact.id === existingContactId;
+
+    // Email+phone fallback is only consulted when there is no valid token.
+    let bothIdentifiersMatchContactId: string | null = null;
+    if (!tokenContact && email && phone) {
+      const submittedEmailLower = String(email).toLowerCase();
+      const submittedPhoneDigits = String(phone).replace(/\D/g, '');
+      const submittedPhoneNorm = submittedPhoneDigits.length > 10
+        ? submittedPhoneDigits.slice(-10)
+        : submittedPhoneDigits;
+      if (submittedPhoneNorm.length > 0) {
+        const candidateId = await storage.findMatchingContact(contractor.id, emails, phones);
+        if (candidateId) {
+          const existing = await storage.getContact(candidateId, contractor.id);
+          if (existing) {
+            const emailMatch = (existing.emails ?? []).some(
+              (e) => typeof e === 'string' && e.toLowerCase() === submittedEmailLower,
+            );
+            const phoneMatch = (existing.phones ?? []).some((p) => {
+              if (typeof p !== 'string') return false;
+              const d = p.replace(/\D/g, '');
+              if (d.length === 0) return false;
+              const n = d.length > 10 ? d.slice(-10) : d;
+              return n === submittedPhoneNorm;
+            });
+            if (emailMatch && phoneMatch) {
+              bothIdentifiersMatchContactId = candidateId;
+            }
+          }
+        }
+      }
+    }
+
+    const reuseContactId: string | null =
+      tokenContact ? tokenContact.id : bothIdentifiersMatchContactId;
+    const matchedVia: 'token' | 'email+phone' | 'none' =
+      tokenContact ? 'token' : bothIdentifiersMatchContactId ? 'email+phone' : 'none';
 
     let contactId: string;
     let createdNewContact = false;
-    if (existingContactId && callerOwnsContact) {
-      // Caller holds a valid booking token for this exact contact.
-      contactId = existingContactId;
+    if (reuseContactId) {
+      // Caller either holds a valid booking token for this exact contact, or
+      // both submitted identifiers (email AND phone) match the stored contact.
+      contactId = reuseContactId;
 
       // The caller proved ownership of this contact via a valid booking
       // token, and they just typed a fresh address into the form for THIS
@@ -466,8 +506,8 @@ export function registerPublicRoutes(app: Express): void {
         if (parsed.state) addressFields.state = parsed.state;
         if (parsed.zip) addressFields.zip = parsed.zip;
 
-        await storage.updateContact(existingContactId, { ...addressFields }, contractor.id);
-        broadcastToContractor(contractor.id, { type: 'contact_updated', contactId: existingContactId });
+        await storage.updateContact(reuseContactId, { ...addressFields }, contractor.id);
+        broadcastToContractor(contractor.id, { type: 'contact_updated', contactId: reuseContactId });
       }
     } else {
       // Either no match was found, or the match was found but the caller could
@@ -646,6 +686,31 @@ export function registerPublicRoutes(app: Express): void {
         };
       }
     }
+
+    // Task #792 — structured outcome log so production can audit whether a
+    // booking submission reused an existing contact (via token vs.
+    // email+phone) or created a fresh one. `createdNewLead` is an alias for
+    // `createdNewContact` because in the public booking flow a newly-created
+    // contact IS the lead (contact.type = 'lead'); we surface both names so
+    // log consumers don't have to know that. `estimatePath` records whether
+    // the booking went through HCP (which internally picks convertLead →
+    // createEstimate based on whether the contact already has an HCP lead
+    // id; see server/scheduling/hcp-estimate.ts) or stayed CRM-only. The
+    // exact HCP convertLead-vs-createEstimate choice is not exposed by
+    // BookingResult, but `hcpEstimateId` proves the HCP path ran.
+    log.info('[PublicBooking] submit', {
+      contractorId: contractor.id,
+      slug,
+      matchedVia,
+      hadBookingCode: !!bookingCode,
+      createdNewContact,
+      createdNewLead: createdNewContact,
+      contactId,
+      bookingId: result.bookingId,
+      hcpEstimateId: result.housecallProEventId ?? null,
+      estimatePath: result.housecallProEventId ? 'hcp' : 'crm-only',
+      assignedSalespersonId: result.assignedSalespersonId ?? null,
+    });
 
     res.json({
       success: true,

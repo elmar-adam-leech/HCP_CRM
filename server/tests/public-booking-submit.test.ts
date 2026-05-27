@@ -18,6 +18,7 @@ const {
   markContactScheduledMock,
   createActivityMock,
   logConsentMock,
+  logInfoSpy,
   storageMock,
 } = vi.hoisted(() => ({
   broadcastSpy: vi.fn(),
@@ -25,6 +26,7 @@ const {
   markContactScheduledMock: vi.fn().mockResolvedValue(undefined),
   createActivityMock: vi.fn().mockResolvedValue(undefined),
   logConsentMock: vi.fn().mockResolvedValue(undefined),
+  logInfoSpy: vi.fn(),
   storageMock: {
     getContractorBySlug: vi.fn(),
     getContact: vi.fn(),
@@ -34,6 +36,15 @@ const {
     updateContact: vi.fn(),
     deleteContact: vi.fn(),
   },
+}));
+
+vi.mock('../utils/logger', () => ({
+  logger: () => ({
+    info: (...args: unknown[]) => logInfoSpy(...args),
+    warn: () => {},
+    error: () => {},
+    debug: () => {},
+  }),
 }));
 
 vi.mock('../websocket', () => ({
@@ -173,6 +184,12 @@ describe('POST /api/public/book/:slug — duplicate-contact prevention', () => {
       address: '123 Maple St, Springfield, IL 62701',
       street: '123 Maple St',
     });
+    bookAppointmentMock.mockResolvedValueOnce({
+      success: true,
+      bookingId: 'booking-1',
+      housecallProEventId: 'hcp-est-42',
+      assignedSalespersonId: 'sp-7',
+    });
     const app = makeApp();
     const r = await postBook(app, { ...baseBody, bookingCode: 'short-code-xyz' });
     expect(r.status).toBe(200);
@@ -180,20 +197,75 @@ describe('POST /api/public/book/:slug — duplicate-contact prevention', () => {
     expect(storageMock.createContact).not.toHaveBeenCalled();
     expect(bookAppointmentMock).toHaveBeenCalledTimes(1);
     expect(bookAppointmentMock.mock.calls[0][1].contactId).toBe('existing-1');
+
+    // Task #792 structured outcome log — pin the full payload shape so
+    // production telemetry consumers (matchedVia / createdNewLead /
+    // estimatePath / hcpEstimateId / assignedSalespersonId) stay stable.
+    const submitLog = logInfoSpy.mock.calls.find(
+      (c) => typeof c[0] === 'string' && c[0].includes('[PublicBooking] submit'),
+    );
+    expect(submitLog).toBeDefined();
+    expect(submitLog?.[1]).toMatchObject({
+      matchedVia: 'token',
+      hadBookingCode: true,
+      createdNewContact: false,
+      createdNewLead: false,
+      contactId: 'existing-1',
+      bookingId: 'booking-1',
+      hcpEstimateId: 'hcp-est-42',
+      estimatePath: 'hcp',
+      assignedSalespersonId: 'sp-7',
+    });
   });
 
-  it('(b) legacy ?contactId=<uuid> link reuses the existing matched contact', async () => {
-    storageMock.findMatchingContact.mockResolvedValue('existing-1');
-    // No bookingCode lookup hits — legacy path is via getContact(uuid).
-    storageMock.getContactByBookingCode.mockResolvedValue(undefined);
-    storageMock.getContact.mockResolvedValue({
-      id: 'existing-1',
+  it('(a2) valid token for contact A + submitted identifiers of contact B still books against A', async () => {
+    // Token authority: the bookingCode resolves to contact-A. The submitted
+    // email+phone happen to match a DIFFERENT stored contact (contact-B).
+    // The booking MUST attach to contact-A; the submitted identifiers are
+    // never allowed to redirect the booking to contact-B, and no new
+    // contact is created.
+    storageMock.getContactByBookingCode.mockResolvedValue({
+      id: 'contact-A',
       name: 'Reema Saeed',
       address: '123 Maple St, Springfield, IL 62701',
       street: '123 Maple St',
     });
+    // If consulted (it should not be when a token is present), this would
+    // point at contact-B — proving via the assertions below that the
+    // email+phone fallback path never runs.
+    storageMock.findMatchingContact.mockResolvedValue('contact-B');
+    storageMock.getContact.mockResolvedValue({
+      id: 'contact-B',
+      name: 'Someone Else',
+      emails: ['reema@example.com'],
+      phones: ['+1 (555) 111-2222'],
+    });
     const app = makeApp();
-    const r = await postBook(app, { ...baseBody, contactId: 'existing-1' });
+    const r = await postBook(app, { ...baseBody, bookingCode: 'short-code-xyz' });
+    expect(r.status).toBe(200);
+    expect(r.body.booking.contactId).toBe('contact-A');
+    expect(storageMock.createContact).not.toHaveBeenCalled();
+    expect(storageMock.findMatchingContact).not.toHaveBeenCalled();
+    expect(storageMock.getContact).not.toHaveBeenCalled();
+    expect(bookAppointmentMock.mock.calls[0][1].contactId).toBe('contact-A');
+  });
+
+  it('(b) no token + both email AND phone match the same stored contact reuses it (task #792)', async () => {
+    // Without a short-code token, the email+phone fallback kicks in: the
+    // matched contact carries BOTH submitted identifiers, so we reuse rather
+    // than duplicate.
+    storageMock.findMatchingContact.mockResolvedValue('existing-1');
+    storageMock.getContactByBookingCode.mockResolvedValue(undefined);
+    storageMock.getContact.mockResolvedValue({
+      id: 'existing-1',
+      name: 'Reema Saeed',
+      emails: ['reema@example.com'],
+      phones: ['+1 (555) 111-2222'],
+      address: '123 Maple St, Springfield, IL 62701',
+      street: '123 Maple St',
+    });
+    const app = makeApp();
+    const r = await postBook(app, { ...baseBody });
     expect(r.status).toBe(200);
     expect(r.body.booking.contactId).toBe('existing-1');
     expect(storageMock.createContact).not.toHaveBeenCalled();
@@ -201,8 +273,20 @@ describe('POST /api/public/book/:slug — duplicate-contact prevention', () => {
     expect(bookAppointmentMock.mock.calls[0][1].contactId).toBe('existing-1');
   });
 
-  it('(c) no link + matching email/phone still creates a fresh contact (security guardrail)', async () => {
+  it('(c) no link + ONLY email matches (phone does not) still creates a fresh contact (security guardrail)', async () => {
+    // Single-identifier match must NOT reuse the contact — that would let an
+    // attacker who knows just the email attach bookings/status changes to a
+    // victim's record. Stored contact has a different phone than submitted.
     storageMock.findMatchingContact.mockResolvedValue('existing-1');
+    storageMock.getContactByBookingCode.mockResolvedValue(undefined);
+    storageMock.getContact.mockResolvedValue({
+      id: 'existing-1',
+      name: 'Reema Saeed',
+      emails: ['reema@example.com'],
+      phones: ['+1 (555) 999-0000'], // different phone
+      address: '123 Maple St, Springfield, IL 62701',
+      street: '123 Maple St',
+    });
     storageMock.createContact.mockResolvedValue({ id: 'new-2', name: 'Reema Saeed' });
     const app = makeApp();
     const r = await postBook(app, { ...baseBody });
@@ -210,7 +294,25 @@ describe('POST /api/public/book/:slug — duplicate-contact prevention', () => {
     expect(r.body.booking.contactId).toBe('new-2');
     expect(storageMock.createContact).toHaveBeenCalledTimes(1);
     expect(storageMock.getContactByBookingCode).not.toHaveBeenCalled();
-    expect(storageMock.getContact).not.toHaveBeenCalled();
+  });
+
+  it('(c2) no link + matched contact has no overlap on either identifier still creates a fresh contact', async () => {
+    // findMatchingContact returns an id (e.g. a fuzzy hit) but the fetched
+    // contact has neither the submitted email nor the submitted phone —
+    // never reuse.
+    storageMock.findMatchingContact.mockResolvedValue('existing-1');
+    storageMock.getContact.mockResolvedValue({
+      id: 'existing-1',
+      name: 'Someone Else',
+      emails: ['other@example.com'],
+      phones: ['+1 (555) 999-0000'],
+    });
+    storageMock.createContact.mockResolvedValue({ id: 'new-3', name: 'Reema Saeed' });
+    const app = makeApp();
+    const r = await postBook(app, { ...baseBody });
+    expect(r.status).toBe(200);
+    expect(r.body.booking.contactId).toBe('new-3');
+    expect(storageMock.createContact).toHaveBeenCalledTimes(1);
   });
 
   it('(d) booking failure after fresh-contact creation rolls back the orphan contact', async () => {

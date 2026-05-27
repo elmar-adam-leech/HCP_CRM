@@ -450,6 +450,39 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       description: 'contacts.booking_code unique index (for fast short-code lookups)',
     },
     {
+      // Task #792 — backfill booking_code for any contact rows still missing
+      // one so the workflow/SMS booking-link emitters can always produce a
+      // ?c=<code> URL and never fall back to the legacy ?contactId=<uuid>
+      // form. Idempotent: only touches rows where booking_code IS NULL, and
+      // re-running is a no-op once every row has a code. Uses an md5-hex
+      // first-8-chars code with a bounded per-row retry loop in case the
+      // unique index rejects a randomly-generated collision.
+      sql: `DO $$
+        DECLARE
+          r RECORD;
+          new_code text;
+          attempt int;
+        BEGIN
+          FOR r IN SELECT id FROM contacts WHERE booking_code IS NULL LOOP
+            attempt := 0;
+            LOOP
+              new_code := substr(md5(random()::text || r.id::text || attempt::text || clock_timestamp()::text), 1, 8);
+              BEGIN
+                UPDATE contacts SET booking_code = new_code WHERE id = r.id;
+                EXIT;
+              EXCEPTION WHEN unique_violation THEN
+                attempt := attempt + 1;
+                IF attempt > 5 THEN
+                  RAISE NOTICE 'Could not assign booking_code for contact % after 5 attempts', r.id;
+                  EXIT;
+                END IF;
+              END;
+            END LOOP;
+          END LOOP;
+        END $$`,
+      description: 'contacts.booking_code backfill for legacy rows missing a short code (task #792)',
+    },
+    {
       sql: `DO $$ DECLARE dup_count integer; BEGIN
         IF NOT EXISTS (
           SELECT 1 FROM pg_indexes WHERE indexname = 'estimates_unique_external_idx'
