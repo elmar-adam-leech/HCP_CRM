@@ -13,6 +13,7 @@ import { broadcastToContractor } from "../websocket";
 import { providerService } from "../providers/provider-service";
 
 import { logger } from '../utils/logger';
+import { getPublicBaseUrl } from "../utils/public-base-url";
 
 const log = logger('MessagingRoutes');
 
@@ -46,8 +47,8 @@ export function registerMessagingRoutes(app: Express): void {
       try {
         const contractor = await storage.getContractor(req.user.contractorId);
         if (contractor?.bookingSlug) {
-          const domain = process.env.REPLIT_DOMAINS?.split(',')[0] || '';
-          if (domain && resolvedContactId) {
+          const origin = getPublicBaseUrl();
+          if (origin && resolvedContactId) {
             let contact = await storage.getContact(resolvedContactId, req.user.contractorId);
             if (contact) {
               // Lazily generate bookingCode for existing contacts that don't have one
@@ -57,7 +58,7 @@ export function registerMessagingRoutes(app: Express): void {
                 contact = await storage.updateContact(contact.id, { bookingCode: newCode }, req.user.contractorId) ?? contact;
               }
               if (contact.bookingCode) {
-                const bookingUrl = `https://${domain}/book/${contractor.bookingSlug}?c=${contact.bookingCode}`;
+                const bookingUrl = `${origin}/book/${contractor.bookingSlug}?c=${contact.bookingCode}`;
                 messageContent = messageContent.replace(/\{\{booking_link\}\}/g, bookingUrl);
               } else {
                 // bookingCode generation failed — omit the link rather than

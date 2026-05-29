@@ -1,5 +1,6 @@
 import { storage } from "../storage";
 import { extractVariablesFromEntity } from "../utils/workflow/variable-extractor";
+import { getPublicBaseUrl } from "../utils/public-base-url";
 import type { ExecutionContext } from "./types";
 
 /**
@@ -30,9 +31,9 @@ export async function buildExecutionContext(params: {
   try {
     const contractor = await storage.getContractor(contractorId);
     if (contractor?.bookingSlug) {
-      const domain = process.env.REPLIT_DOMAINS?.split(',')[0] || '';
-      if (domain) {
-        bookingBaseUrl = `https://${domain}/book/${contractor.bookingSlug}`;
+      const origin = getPublicBaseUrl();
+      if (origin) {
+        bookingBaseUrl = `${origin}/book/${contractor.bookingSlug}`;
       }
       contractorSlugForBooking = contractor.bookingSlug;
     }

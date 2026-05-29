@@ -3,6 +3,7 @@ import { storage } from "../storage";
 import { requireManagerOrAdmin, requireAdmin } from "../auth-service";
 import { asyncHandler } from "../utils/async-handler";
 import { parseBody } from "../utils/validate-body";
+import { getPublicBaseUrl } from "../utils/public-base-url";
 import { z } from "zod";
 import { cacheInvalidation } from "../services/cache";
 import { broadcastToContractor } from "../websocket";
@@ -480,10 +481,9 @@ export function registerSettingsRoutes(app: Express): void {
       res.status(404).json({ message: "Contractor not found" });
       return;
     }
-    const protocol = req.protocol;
-    const host = req.get('host');
+    const origin = getPublicBaseUrl() || `${req.protocol}://${req.get('host')}`;
     const bookingUrl = contractor.bookingSlug
-      ? `${protocol}://${host}/book/${contractor.bookingSlug}`
+      ? `${origin}/book/${contractor.bookingSlug}`
       : null;
     res.json({
       bookingSlug: contractor.bookingSlug || null,
@@ -541,10 +541,9 @@ export function registerSettingsRoutes(app: Express): void {
       return;
     }
 
-    const protocol = req.protocol;
-    const host = req.get('host');
+    const origin = getPublicBaseUrl() || `${req.protocol}://${req.get('host')}`;
     const bookingUrl = bookingSlug
-      ? `${protocol}://${host}/book/${bookingSlug}`
+      ? `${origin}/book/${bookingSlug}`
       : null;
 
     res.json({
