@@ -24,6 +24,9 @@ const getContactByExternalId = vi.fn();
 const getContactByPhone = vi.fn();
 const createContact = vi.fn();
 const createEstimate = vi.fn();
+const findMatchingContact = vi.fn();
+const getContact = vi.fn();
+const updateContact = vi.fn();
 
 vi.mock('../storage', () => ({
   storage: {
@@ -35,6 +38,9 @@ vi.mock('../storage', () => ({
     getContactByPhone: (...args: any[]) => getContactByPhone(...args),
     createContact: (...args: any[]) => createContact(...args),
     createEstimate: (...args: any[]) => createEstimate(...args),
+    findMatchingContact: (...args: any[]) => findMatchingContact(...args),
+    getContact: (...args: any[]) => getContact(...args),
+    updateContact: (...args: any[]) => updateContact(...args),
   },
 }));
 vi.mock('../db', () => ({ db: { update: () => ({ set: () => ({ where: vi.fn() }) }) } }));
@@ -336,6 +342,83 @@ describe('webhook merge with manual override', () => {
     expect(created.externalSource).toBe('housecall-pro');
     expect(created.phones).toEqual([]);
     // And the estimate is still created (no longer silently dropped).
+    expect(createEstimate).toHaveBeenCalledTimes(1);
+  });
+
+  // ---- Task #798: estimate.created email fallback keeps an email-only lead a lead ----
+
+  it('estimate.created: matches an existing email-only lead and links it instead of creating a customer/active contact', async () => {
+    getEstimateByHousecallProEstimateId.mockResolvedValue(undefined);
+    // No HCP customer-id match, and the customer block has no phone to match on.
+    getContactByExternalId.mockResolvedValue(undefined);
+    getContactByPhone.mockResolvedValue(undefined);
+    // Email fallback resolves to an existing lead.
+    findMatchingContact.mockResolvedValue('existing-lead-1');
+    getContact.mockResolvedValue({ id: 'existing-lead-1', name: 'Emaily Ellen', type: 'lead', status: 'new' });
+    updateContact.mockResolvedValue({ id: 'existing-lead-1', name: 'Emaily Ellen', type: 'lead', status: 'new' });
+    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp_email', work_status: 'unscheduled' } });
+    createEstimate.mockResolvedValue({ id: 'local_est_email', status: 'sent' });
+
+    await handleEstimateEvent(
+      CONTRACTOR,
+      'estimate.created',
+      {
+        id: 'hcp_email',
+        customer_id: 'cust_email',
+        customer: {
+          id: 'cust_email',
+          first_name: 'Emaily',
+          last_name: 'Ellen',
+          email: 'ellen@example.com',
+        },
+        total_amount: 50000,
+      } as any,
+      undefined,
+    );
+
+    // Email lookup was attempted with the customer's email.
+    expect(findMatchingContact).toHaveBeenCalledWith(CONTRACTOR, ['ellen@example.com'], undefined);
+    // Existing lead linked to the HCP customer ID — NOT re-created as a customer.
+    expect(createContact).not.toHaveBeenCalled();
+    expect(updateContact).toHaveBeenCalledTimes(1);
+    const [linkedId, patch] = updateContact.mock.calls[0];
+    expect(linkedId).toBe('existing-lead-1');
+    expect(patch.housecallProCustomerId).toBe('cust_email');
+    expect(patch.externalId).toBe('cust_email');
+    expect(patch.externalSource).toBe('housecall-pro');
+    // The estimate is still created against the linked contact.
+    expect(createEstimate).toHaveBeenCalledTimes(1);
+  });
+
+  it('estimate.created: falls back to creating a contact when no email match exists', async () => {
+    getEstimateByHousecallProEstimateId.mockResolvedValue(undefined);
+    getContactByExternalId.mockResolvedValue(undefined);
+    getContactByPhone.mockResolvedValue(undefined);
+    findMatchingContact.mockResolvedValue(undefined);
+    createContact.mockResolvedValue({ id: 'new-contact-2', name: 'Nomatch Nancy' });
+    getEstimate.mockResolvedValue({ success: true, data: { id: 'hcp_nomatch', work_status: 'unscheduled' } });
+    createEstimate.mockResolvedValue({ id: 'local_est_nomatch', status: 'sent' });
+
+    await handleEstimateEvent(
+      CONTRACTOR,
+      'estimate.created',
+      {
+        id: 'hcp_nomatch',
+        customer_id: 'cust_nomatch',
+        customer: {
+          id: 'cust_nomatch',
+          first_name: 'Nomatch',
+          last_name: 'Nancy',
+          email: 'nancy@example.com',
+        },
+        total_amount: 50000,
+      } as any,
+      undefined,
+    );
+
+    expect(findMatchingContact).toHaveBeenCalledWith(CONTRACTOR, ['nancy@example.com'], undefined);
+    expect(updateContact).not.toHaveBeenCalled();
+    expect(createContact).toHaveBeenCalledTimes(1);
     expect(createEstimate).toHaveBeenCalledTimes(1);
   });
 

@@ -54,9 +54,23 @@ export async function handleCustomerEvent(
             ? await storage.getContactByPhone(customerPhone, contractorId)
             : undefined;
 
+          // Task #798: fall back to an email match before creating a new
+          // customer/active contact. Email-only leads have no phone to match
+          // on, so the phone-only path previously re-created them as
+          // `customer`/`active`, dropping them out of the Leads pipeline.
+          if (!resolvedContact && data.email) {
+            const emailMatchId = await storage.findMatchingContact(contractorId, [data.email], undefined);
+            if (emailMatchId) {
+              resolvedContact = await storage.getContact(emailMatchId, contractorId);
+              if (resolvedContact) {
+                log.info(`customer.created: email match found for HCP customer ${data.id} → contact ${resolvedContact.id}`);
+              }
+            }
+          }
+
           if (resolvedContact) {
-            // Phone match found — link this HCP customer ID to the existing contact.
-            log.info(`customer.created: phone match found for HCP customer ${data.id} → contact ${resolvedContact.id}, updating housecallProCustomerId`);
+            // Phone or email match found — link this HCP customer ID to the existing contact.
+            log.info(`customer.created: existing contact matched for HCP customer ${data.id} → contact ${resolvedContact.id}, updating housecallProCustomerId`);
             const incomingSource = (typeof data.lead_source === 'string' && data.lead_source.trim() !== '')
               ? data.lead_source.trim()
               : null;

@@ -103,6 +103,32 @@ function computeNormalizedPhone(phones: string[] | null | undefined): string | n
 }
 
 /**
+ * Lead-status invariant (task #798).
+ *
+ * A `lead`-type contact must never be persisted with a customer-only status
+ * (`active` / `inactive`). Those statuses are not part of the leads pipeline
+ * (new → contacted → scheduled → disqualified → lost), so a lead that lands on
+ * one silently disappears from every Leads filter, tab, and Kanban column.
+ *
+ * This happens when a manually-entered lead is round-tripped through Housecall
+ * Pro (push → webhook/sync → contact materialised as `customer`/`active`).
+ * `createContact` / `updateContact` are the single shared write path for every
+ * caller, so coercing here guarantees no path can flip a lead to `active`.
+ *
+ * Coercion rule: `scheduled` when the lead is already booked, otherwise `new`.
+ * Genuine customers (`type: 'customer'`) are untouched and keep `active`.
+ */
+function coerceLeadStatus<T extends string | null | undefined>(
+  status: T,
+  isScheduled: boolean | null | undefined,
+): T | 'scheduled' | 'new' {
+  if (status === 'active' || status === 'inactive') {
+    return isScheduled ? 'scheduled' : 'new';
+  }
+  return status;
+}
+
+/**
  * Escape LIKE/ILIKE metacharacters in a user-supplied search string.
  * Without escaping, a `%` in the query matches every row and `_` matches any
  * single character — both cause unexpectedly broad result sets.
@@ -482,8 +508,15 @@ async function createContact(contact: Omit<InsertContact, 'contractorId'>, contr
   const normalizedPhones = contact.phones ? normalizePhoneArrayForStorage(contact.phones) : [];
   const bookingCode = contact.bookingCode ?? generateBookingCode();
   const now = new Date();
+  // Lead-status invariant (task #798): a lead-type contact can never carry a
+  // customer-only status. We have the full insert payload here so a direct
+  // coercion is enough.
+  const guardedStatus = contact.type === 'lead'
+    ? coerceLeadStatus(contact.status, contact.isScheduled)
+    : contact.status;
   const normalizedContact = {
     ...contact,
+    status: guardedStatus,
     phones: normalizedPhones,
     normalizedPhone: computeNormalizedPhone(normalizedPhones),
     bookingCode,
@@ -494,9 +527,54 @@ async function createContact(contact: Omit<InsertContact, 'contractorId'>, contr
 }
 
 async function updateContact(id: string, contact: UpdateContact, contractorId: string): Promise<Contact | undefined> {
-  const normalizedPhones = contact.phones ? normalizePhoneArrayForStorage(contact.phones) : undefined;
+  let patch: UpdateContact = contact;
+
+  // Lead-status invariant (task #798): enforce on the shared write path so no
+  // caller (manual entry, HCP webhooks, sync, workflows) can flip a lead onto a
+  // customer-only status. The existing row is only read when the patch is
+  // actually setting a bad status or the lead type — both rare — so ordinary
+  // updates pay no extra query.
+  const settingBadStatus = patch.status === 'active' || patch.status === 'inactive';
+  const settingLeadType = patch.type === 'lead';
+  if (settingBadStatus || settingLeadType) {
+    let effType = patch.type;
+    let effStatus = patch.status;
+    let fetched = false;
+    let fetchedScheduled: boolean | null | undefined;
+    if (effType === undefined || effStatus === undefined) {
+      const [row] = await db
+        .select({ type: contacts.type, status: contacts.status, isScheduled: contacts.isScheduled })
+        .from(contacts)
+        .where(and(eq(contacts.id, id), eq(contacts.contractorId, contractorId)))
+        .limit(1);
+      fetched = true;
+      if (row) {
+        if (effType === undefined) effType = row.type;
+        if (effStatus === undefined) effStatus = row.status;
+        fetchedScheduled = row.isScheduled;
+      }
+    }
+    if (effType === 'lead' && (effStatus === 'active' || effStatus === 'inactive')) {
+      let scheduled = patch.isScheduled;
+      if (scheduled === undefined) {
+        if (!fetched) {
+          const [row] = await db
+            .select({ isScheduled: contacts.isScheduled })
+            .from(contacts)
+            .where(and(eq(contacts.id, id), eq(contacts.contractorId, contractorId)))
+            .limit(1);
+          scheduled = row?.isScheduled ?? false;
+        } else {
+          scheduled = fetchedScheduled ?? false;
+        }
+      }
+      patch = { ...patch, status: scheduled ? 'scheduled' : 'new' };
+    }
+  }
+
+  const normalizedPhones = patch.phones ? normalizePhoneArrayForStorage(patch.phones) : undefined;
   const normalizedContact = {
-    ...contact,
+    ...patch,
     ...(normalizedPhones !== undefined && {
       phones: normalizedPhones,
       normalizedPhone: computeNormalizedPhone(normalizedPhones),

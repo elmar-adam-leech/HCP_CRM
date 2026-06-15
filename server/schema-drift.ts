@@ -1322,6 +1322,51 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `ALTER TABLE users ADD COLUMN IF NOT EXISTS passkey_prompt_dismissed_at timestamp`,
       description: 'users.passkey_prompt_dismissed_at (task #738: per-user dismissal of post-login passkey enrollment prompt)',
     },
+    // ---- Task #798: un-stick leads that were promoted to a customer-only status ----
+    // A manually-entered lead pushed to Housecall Pro could be round-tripped
+    // back as type=customer / status=active, which is not a valid leads-pipeline
+    // status — so the lead vanished from every Leads filter, tab, and Kanban
+    // column. The forward-looking guard in storage.createContact/updateContact
+    // prevents new occurrences; this one-time, idempotent backfill repairs the
+    // existing stuck rows.
+    //
+    // Targets only contacts that still have an OPEN (non-archived, non-terminal)
+    // lead row — i.e. work the contractor still considers an active lead. It
+    // resets them to type=lead and a sensible pipeline status: `scheduled` when
+    // the contact is booked (is_scheduled, or has a scheduled estimate/job),
+    // otherwise `new`. Genuine customers (no lead row, or only
+    // converted/lost/disqualified leads) are left untouched and keep `active`.
+    // Re-running is a no-op once every matching row has been fixed.
+    {
+      sql: `UPDATE contacts c
+            SET type = 'lead',
+                status = CASE
+                  WHEN c.is_scheduled THEN 'scheduled'
+                  WHEN EXISTS (
+                    SELECT 1 FROM estimates e
+                    WHERE e.contact_id = c.id
+                      AND e.contractor_id = c.contractor_id
+                      AND e.scheduled_start IS NOT NULL
+                  ) THEN 'scheduled'
+                  WHEN EXISTS (
+                    SELECT 1 FROM jobs j
+                    WHERE j.contact_id = c.id
+                      AND j.contractor_id = c.contractor_id
+                      AND j.scheduled_date IS NOT NULL
+                  ) THEN 'scheduled'
+                  ELSE 'new'
+                END,
+                updated_at = now()
+            WHERE c.status IN ('active', 'inactive')
+              AND EXISTS (
+                SELECT 1 FROM leads l
+                WHERE l.contact_id = c.id
+                  AND l.contractor_id = c.contractor_id
+                  AND l.archived = false
+                  AND l.status NOT IN ('converted', 'lost', 'disqualified')
+              )`,
+      description: 'backfill: reset leads stuck on customer-only status (active/inactive) back into the pipeline (task #798)',
+    },
   ];
 
 export async function applyColumnMigrations(

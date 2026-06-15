@@ -131,6 +131,29 @@ export async function handleEstimateEvent(
             contact = phoneMatch;
           }
         }
+        // Task #798: before fabricating a new customer/active contact, try an
+        // email match. Email-only leads (no phone on the local record) were
+        // previously unmatched by the phone-only fallback above and got
+        // re-created as `customer`/`active`, vanishing from the Leads pipeline.
+        // Linking the HCP customer ID onto the existing lead keeps it a lead.
+        if (!contact) {
+          const estimateCustomerEmail = data.customer?.email;
+          if (estimateCustomerEmail) {
+            const emailMatchId = await storage.findMatchingContact(contractorId, [estimateCustomerEmail], undefined);
+            if (emailMatchId) {
+              const emailMatch = await storage.getContact(emailMatchId, contractorId);
+              if (emailMatch) {
+                log.info(`estimate.created: email fallback matched contact ${emailMatch.id} for HCP customer ${customerId}, estimate ${data.id}`);
+                await storage.updateContact(emailMatch.id, {
+                  housecallProCustomerId: customerId,
+                  externalId: customerId,
+                  externalSource: 'housecall-pro',
+                }, contractorId);
+                contact = emailMatch;
+              }
+            }
+          }
+        }
         // Task #748: if we still have no contact (either no phone on the
         // payload, or no phone match), create one from the estimate's
         // customer block — symmetric with the jobs handler. Previously
