@@ -92,6 +92,32 @@ export class SyncScheduler {
     log.info('Starting sync scheduler...');
     this.isRunning = true;
 
+    await this.recoverSchedules();
+
+    // Run immediately on startup, then schedule the next wake adaptively.
+    this._tick();
+  }
+
+  /**
+   * Run a single scheduler pass: recover any missing schedules, then process
+   * all currently-due syncs once. Used by the standalone worker entrypoint
+   * (server/worker.ts) so background syncs can run on a Replit Scheduled
+   * Deployment instead of an always-on in-app timer. Does NOT arm the adaptive
+   * self-scheduling timer — it resolves once the due syncs have been processed.
+   */
+  async runOnce(): Promise<void> {
+    await this.recoverSchedules();
+    await this.checkDueSyncs();
+  }
+
+  /**
+   * Defensive schedule recovery: ensure every active integration has a sync
+   * schedule row, self-healing missing rows after migrations, restarts, or any
+   * other data loss. Shared by start() (in-app adaptive scheduler) and
+   * runOnce() (scheduled-deployment worker) so both perform identical recovery
+   * before checking for due syncs.
+   */
+  private async recoverSchedules(): Promise<void> {
     // Defensive schedule recovery: ensure every active lead-capture inbox has a sync schedule.
     // This self-heals missing rows after migrations, restarts, or any other data loss.
     try {
@@ -158,9 +184,6 @@ export class SyncScheduler {
     } catch (err) {
       log.error(`[schedule-recovery] Failed to recover ${GLS_SERVICE} schedules on startup: ${formatDbError(err)}`);
     }
-
-    // Run immediately on startup, then schedule the next wake adaptively.
-    this._tick();
   }
 
   /**

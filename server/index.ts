@@ -299,6 +299,15 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
     log(`Zombie recovery error: ${err instanceof Error ? err.message : String(err)}`)
   );
 
+  // Task #802: periodic background jobs run EITHER on these in-app timers
+  // (the default, preserving historical behavior) OR on standalone Replit
+  // Scheduled Deployments (server/worker.ts). Set RUN_IN_APP_JOBS=false on the
+  // web app once the scheduled deployments are live so the Autoscale web app
+  // can scale to zero when idle. WebSocket real-time and live request-driven
+  // work (webhook ingestion, manual syncs, workflow triggers) always run
+  // in-app regardless of this flag.
+  const RUN_IN_APP_JOBS = process.env.RUN_IN_APP_JOBS !== "false";
+  if (RUN_IN_APP_JOBS) {
   // Start poller to resume suspended workflow executions (delay/wait_until steps)
   log("Starting suspended workflow execution poller...");
   workflowEngine.startSuspendedPoller();
@@ -339,6 +348,9 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   // interval by the webhook handlers after each insert.
   log("Starting Dialpad event poller...");
   dialpadEventPoller.start();
+  } else {
+    log("In-app background jobs disabled (RUN_IN_APP_JOBS=false) — periodic jobs expected to run via Replit Scheduled Deployments (server/worker.ts)");
+  }
 
   // ─── Background timer registry ────────────────────────────────────────────
   // Shutdown ownership model — two tiers:
@@ -370,16 +382,20 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   const timerRegistry: (NodeJS.Timeout | NodeJS.Timer)[] = [];
 
   const adSpendSyncJob = new AdSpendSyncJob();
-  adSpendSyncJob.start();
-  log("AdSpendSyncJob registered (runs every 6 h)");
+  if (RUN_IN_APP_JOBS) {
+    adSpendSyncJob.start();
+    log("AdSpendSyncJob registered (runs every 6 h)");
+  }
 
   // Sales-process cron: adaptive self-scheduling poller for due auto-mode
   // tasks (sleeps until the next task is due, capped at 5 min; nudged on
   // materialization).
   step('import sales-process-cron');
   const { salesProcessCron } = await import("./services/sales-process-cron");
-  salesProcessCron.start();
-  log("SalesProcessCron registered (adaptive scheduling)");
+  if (RUN_IN_APP_JOBS) {
+    salesProcessCron.start();
+    log("SalesProcessCron registered (adaptive scheduling)");
+  }
 
 
   step('registerRoutes');

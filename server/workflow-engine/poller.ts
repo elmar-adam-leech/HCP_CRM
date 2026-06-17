@@ -80,22 +80,10 @@ export class SuspendedExecutionPoller {
       try {
         const due = await storage.getSuspendedExecutions();
         foundDue = due.length > 0;
-        for (const execution of due) {
-          // Atomically claim the execution by transitioning suspended → running.
-          // If two poll cycles overlap (e.g., the previous tick's callback was
-          // slow and a new tick already fired), only ONE of them will receive a
-          // non-undefined result here. The loser silently skips, preventing
-          // double-execution of the same workflow.
-          const claimed = await storage.claimSuspendedExecution(execution.id, execution.contractorId);
-          if (!claimed) {
-            log.info(`Poller: execution ${execution.id} already claimed by another cycle — skipping`);
-            continue;
-          }
-          log.info(`Poller: claimed and resuming execution ${execution.id} (was due ${execution.resumeAt?.toISOString()})`);
-          this._resumeCallback(execution.id, execution.contractorId).catch(err => {
-            log.error(`Poller: error resuming execution ${execution.id}: ${formatDbError(err)}`);
-          });
-        }
+        // Resumes are kicked off fire-and-forget here to preserve the adaptive
+        // poller's original non-blocking timing (the returned promises are
+        // intentionally not awaited on this path).
+        await this._claimAndResumeAll(due);
       } catch (err) {
         log.error(`Suspended execution poller error: ${formatDbError(err)}`);
       }
@@ -111,5 +99,49 @@ export class SuspendedExecutionPoller {
       // race where stop() is called while the async poll body above was awaiting.
       this._schedulePoll();
     }, this._pollerBackoffMs);
+  }
+
+  /**
+   * Claim each due execution (atomic suspended → running transition) and kick
+   * off its resume callback. Returns the resume promises so callers that need
+   * to wait for completion (the one-shot worker via pollOnce) can await them;
+   * the in-app adaptive poller ignores them to keep its original
+   * fire-and-forget timing.
+   *
+   * The atomic claim makes overlap safe: if two cycles (or a scheduled-job run
+   * and an in-app tick) see the same row, only ONE receives a non-undefined
+   * result and resumes it; the loser skips, preventing double-execution.
+   */
+  private async _claimAndResumeAll(
+    due: Awaited<ReturnType<typeof storage.getSuspendedExecutions>>,
+  ): Promise<Promise<void>[]> {
+    const resumes: Promise<void>[] = [];
+    for (const execution of due) {
+      const claimed = await storage.claimSuspendedExecution(execution.id, execution.contractorId);
+      if (!claimed) {
+        log.info(`Poller: execution ${execution.id} already claimed by another cycle — skipping`);
+        continue;
+      }
+      log.info(`Poller: claimed and resuming execution ${execution.id} (was due ${execution.resumeAt?.toISOString()})`);
+      resumes.push(
+        this._resumeCallback(execution.id, execution.contractorId).catch(err => {
+          log.error(`Poller: error resuming execution ${execution.id}: ${formatDbError(err)}`);
+        }),
+      );
+    }
+    return resumes;
+  }
+
+  /**
+   * Run a single poll pass and AWAIT every resume before returning. Used by the
+   * standalone worker entrypoint (server/worker.ts) so suspended workflows can
+   * be resumed from a Replit Scheduled Deployment instead of an always-on
+   * in-app timer. Returns the number of due executions found.
+   */
+  async pollOnce(): Promise<number> {
+    const due = await storage.getSuspendedExecutions();
+    const resumes = await this._claimAndResumeAll(due);
+    await Promise.allSettled(resumes);
+    return due.length;
   }
 }

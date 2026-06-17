@@ -183,6 +183,54 @@ Future scans should:
   state, but a missing auth check would let an unauthenticated caller
   spam-clear the prompt for arbitrary users.
 
+## Task #802 — background jobs on Replit Scheduled Deployments
+
+To let the Autoscale web app scale to zero when idle, every periodic
+background job (sync, sales cadence, suspended-workflow resume, Dialpad
+event recovery, webhook/call health checks, ad-spend pull, message cleanup,
+daily maintenance) can now run as a standalone Replit Scheduled Deployment
+via `server/worker.ts` instead of (or in addition to) the always-on in-app
+timers. Behavior is gated by the `RUN_IN_APP_JOBS` env var on the web app
+(default — unset or any value other than `"false"` — keeps the historical
+in-app timers; `"false"` disables them so only the scheduled deployments
+run).
+
+Trust-boundary and abuse considerations:
+
+- **No new network attack surface.** The worker is a CLI process started by
+  the platform scheduler, not an HTTP listener. It exposes no routes and
+  accepts no external input; its only inputs are the job name(s) on argv and
+  the same database/integration credentials the web app already holds. It
+  does not weaken any existing authn/authz boundary.
+- **Same trust level as the web app.** The worker shares the server codebase
+  and runs every job at full server privilege, exactly as the in-app timers
+  did. It performs the same tenant-scoped queries and the same outbound
+  integration calls; no job gains broader data access by moving to the
+  worker.
+- **Overlap safety (integrity).** Because a long-running invocation can
+  overlap the next scheduled tick — or an in-app timer during the migration
+  window — every worker job runs under a Postgres session advisory lock
+  (`server/jobs/job-lock.ts`). Only one holder of a given job name runs at a
+  time across all processes/machines sharing the database. This composes
+  with (does not replace) each job's existing idempotency: atomic row claims
+  (`claimSuspendedExecution`, `claimDueAutoTasks`), HCP echo suppression,
+  and per-(contractor,service,kind) alert throttling. A lock held elsewhere
+  causes the invocation to skip, not to double-process.
+- **DoS / resource bounds.** The worker never runs DDL (the web app still
+  owns schema migrations on boot, avoiding a migration race), closes its DB
+  pool and exits when done, and is bounded by a `WORKER_JOB_TIMEOUT_MS`
+  watchdog (default 10 min) that force-exits a wedged job so a scheduled
+  deployment cannot stay pinned open. The sales drain loop is bounded
+  (max batches) and each external call retains its existing timeouts.
+- **No secrets in argv/logs.** Job selection is by non-secret job name only;
+  credentials continue to come from the environment/credential service, and
+  the worker logs job names and durations, not payloads or secrets.
+
+Future scans should treat `server/worker.ts` as a privileged server
+entrypoint equivalent to the in-app job timers, and should verify any newly
+added job is wrapped in `withJobLock` and preserves its idempotency
+guarantees before being scheduled.
+
 ## 2026-04-22 Refresh Notes
 
 - Treat JWT role and integration-permission claims as high-risk scan anchors until token issuance and refresh are fully derived from `user_contractors`, not legacy `users` columns or stale JWT snapshots.

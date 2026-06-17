@@ -414,6 +414,16 @@ export class WorkflowEngine {
   }
 
   /**
+   * Run a single suspended-execution poll pass and await all resumes. Used by
+   * the worker entrypoint (server/worker.ts) so suspended workflows can be
+   * resumed from a Replit Scheduled Deployment instead of an always-on in-app
+   * timer. Returns the number of due executions found.
+   */
+  async runSuspendedPollOnce(): Promise<number> {
+    return this._poller.pollOnce();
+  }
+
+  /**
    * Nudge the poller to run immediately (resets backoff to minimum).
    * Call this after queuing a new workflow execution so delayed steps are picked up promptly.
    */
