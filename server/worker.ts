@@ -10,7 +10,12 @@
  *
  * Usage (set as the Scheduled Deployment run command):
  *
- *   NODE_ENV=production npx tsx server/worker.ts <job[,job...]>
+ *   NODE_ENV=production node dist/worker.js <job[,job...]>
+ *
+ * The entrypoint is bundled to dist/worker.js by `npm run build:worker`
+ * (esbuild, mirroring the web-app build), so production runs compiled JS
+ * instead of transpiling via tsx on every invocation. In dev you can still
+ * run `npx tsx server/worker.ts <jobs>`.
  *
  * Jobs of the same cadence can be grouped into one scheduled deployment by
  * passing a comma-separated list, e.g. `sync,sales,workflows`. Each job in the
