@@ -13,6 +13,7 @@ import { broadcastToContractor } from "../../websocket";
 import { CredentialService } from "../../credential-service";
 import { validateWebhookAuth } from "../../utils/webhook-auth";
 import { enqueueDialpadEvent } from "../../jobs/dialpad-event-worker";
+import { dialpadEventPoller } from "../../jobs/dialpad-event-poller";
 
 const log = logger('DialpadSmsWebhook');
 
@@ -450,6 +451,11 @@ export function registerDialpadSmsWebhookRoutes(app: Express): void {
             ? processSmsDeliveryFailure(payload, contractorId, webhookEventId)
             : processSmsMessageEvent(payload, contractorId, webhookEventId),
       });
+
+      // Snap the recovery poller back to a fast interval (and refresh its
+      // integration-presence gate) so it backstops this row promptly if the
+      // in-memory worker above never runs.
+      dialpadEventPoller.nudge();
     } catch (error) {
       log.error('Error accepting SMS webhook:', error);
       if (!res.headersSent) {

@@ -1,5 +1,4 @@
 import { storage } from "../storage";
-import { BackgroundJob } from "./background-job";
 import { providerService } from "../providers/provider-service";
 import { gmailService } from "../gmail-service";
 import { db } from "../db";
@@ -9,9 +8,15 @@ import { logger } from "../utils/logger";
 
 const log = logger("SalesProcessCron");
 
-const TICK_MS = 60_000;
 const BATCH_LIMIT = 25;
 const MAX_ATTEMPTS = 5;
+// Adaptive scheduling bounds. The cron sleeps until the next auto task is
+// actually due (capped at MAX_SLEEP_MS) instead of waking on a fixed interval,
+// and drains quickly (MIN_SLEEP_MS) when a full batch suggests more work is
+// waiting. A `nudge()` from task materialization snaps it back to MIN_SLEEP_MS
+// so freshly-created follow-ups still fire promptly.
+const MIN_SLEEP_MS = 5_000;
+const MAX_SLEEP_MS = 5 * 60_000;
 // Exponential backoff in minutes after each failed attempt: 1, 2, 4, 8, 16.
 // Used to delay the next retry by pushing dueAt forward when a soft-failure
 // occurs. The cron will only re-claim a row whose dueAt <= now.
@@ -253,16 +258,97 @@ export async function runDueAutoTasksOnce(
   return { claimed: claimed.length, sent, failed, skipped };
 }
 
-export class SalesProcessCron extends BackgroundJob {
-  constructor(intervalMs: number = TICK_MS) {
-    super(intervalMs);
+/**
+ * Adaptive, self-scheduling cron for due auto-mode sales-process tasks.
+ *
+ * Instead of waking every 60 s around the clock, each tick computes how long to
+ * sleep before the next task is actually due (capped at MAX_SLEEP_MS) and arms a
+ * single `setTimeout`. When there is nothing pending it sleeps the full cap;
+ * when a tick claims a full batch it drains quickly; and `nudge()` (called when
+ * new auto tasks are materialized) snaps the next tick back to MIN_SLEEP_MS so
+ * follow-ups still fire on time. Behaviour is unchanged from the caller's
+ * perspective — only the wake cadence is leaner.
+ */
+export class SalesProcessCron {
+  private timer: NodeJS.Timeout | null = null;
+  private running = false;
+  private ticking = false;
+  private nudged = false;
+
+  start(): void {
+    if (this.running) return;
+    this.running = true;
+    // First pass shortly after boot to drain anything that came due while down.
+    this.schedule(MIN_SLEEP_MS);
   }
 
-  protected async runOnce(): Promise<void> {
-    const summary = await runDueAutoTasksOnce({ limit: BATCH_LIMIT });
-    if (summary.claimed > 0) {
-      log.info(`Sales-process tick: claimed=${summary.claimed} sent=${summary.sent} failed=${summary.failed} retry=${summary.skipped}`);
+  stop(): void {
+    this.running = false;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
     }
+  }
+
+  /**
+   * Reset the schedule to fire soon. Called when new auto tasks are created so
+   * a freshly-materialized follow-up does not wait out the current sleep.
+   */
+  nudge(): void {
+    if (!this.running) return;
+    if (this.ticking) {
+      // A tick is in flight; let its reschedule honor the nudge instead of
+      // racing it with a second timer.
+      this.nudged = true;
+      return;
+    }
+    this.schedule(MIN_SLEEP_MS);
+  }
+
+  private schedule(delayMs: number): void {
+    if (!this.running) return;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      void this.tick();
+    }, delayMs);
+    if (typeof this.timer.unref === "function") this.timer.unref();
+  }
+
+  private async tick(): Promise<void> {
+    if (!this.running) return;
+    this.ticking = true;
+    this.nudged = false;
+    let nextDelay = MAX_SLEEP_MS;
+    try {
+      const summary = await runDueAutoTasksOnce({ limit: BATCH_LIMIT });
+      if (summary.claimed > 0) {
+        log.info(`Sales-process tick: claimed=${summary.claimed} sent=${summary.sent} failed=${summary.failed} retry=${summary.skipped}`);
+      }
+      if (summary.claimed >= BATCH_LIMIT) {
+        // Full batch — more rows are likely already due; drain quickly.
+        nextDelay = MIN_SLEEP_MS;
+      } else {
+        nextDelay = await this.computeSleepUntilNextDue();
+      }
+    } catch (err) {
+      log.warn("Sales-process tick failed", { err });
+      nextDelay = MAX_SLEEP_MS;
+    } finally {
+      this.ticking = false;
+      if (this.nudged) {
+        this.nudged = false;
+        nextDelay = MIN_SLEEP_MS;
+      }
+      this.schedule(nextDelay);
+    }
+  }
+
+  private async computeSleepUntilNextDue(): Promise<number> {
+    const next = await storage.getNextDueAutoTaskAt();
+    if (!next) return MAX_SLEEP_MS;
+    const delta = next.getTime() - Date.now();
+    if (delta <= 0) return MIN_SLEEP_MS;
+    return Math.min(Math.max(delta, MIN_SLEEP_MS), MAX_SLEEP_MS);
   }
 }
 

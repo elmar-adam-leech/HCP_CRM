@@ -614,6 +614,7 @@ export interface IStorage {
   skipPendingTasksForLead: typeof salesProcessMethods.skipPendingTasksForLead;
   skipPendingTasksForEstimate: typeof salesProcessMethods.skipPendingTasksForEstimate;
   claimDueAutoTasks: typeof salesProcessMethods.claimDueAutoTasks;
+  getNextDueAutoTaskAt: typeof salesProcessMethods.getNextDueAutoTaskAt;
 
   // Media spend (task #696 — manual ad-spend for ROI by Source report)
   listMediaSpend: typeof mediaSpendMethods.listMediaSpend;

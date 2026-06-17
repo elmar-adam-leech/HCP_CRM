@@ -9,6 +9,7 @@ import type {
   SalesProcessTaskInstance,
 } from "@shared/schema";
 import { logger } from "../utils/logger";
+import { salesProcessCron } from "./sales-process-cron";
 
 /** Drizzle transaction handle, narrowed to what we need (insert/select/update). */
 export type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -122,6 +123,11 @@ export async function materializeForEntity(
   const inserted = await storage.bulkInsertTaskInstances(rows, tx);
   for (const inst of inserted) {
     log.info(`sales_process instance_created tenantId=${inst.contractorId} entity=${inst.leadId ? `lead:${inst.leadId}` : `estimate:${inst.estimateId}`} processId=${process.id} stepId=${inst.stepId} instanceId=${inst.id} actionType=${inst.actionType} mode=${inst.mode} dueAt=${inst.dueAt.toISOString()} reason=${reason}`);
+  }
+  // Snap the adaptive cron back to a fast interval so a newly-created auto
+  // follow-up fires on time instead of waiting out the current sleep.
+  if (inserted.some((inst) => inst.mode === "auto")) {
+    salesProcessCron.nudge();
   }
   return inserted.length;
 }

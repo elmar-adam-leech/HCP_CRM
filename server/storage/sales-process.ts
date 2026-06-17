@@ -914,6 +914,21 @@ async function claimDueAutoTasks(
   return rows.rows as unknown as SalesProcessTaskInstance[];
 }
 
+/**
+ * Earliest dueAt among pending auto-mode task instances, across all tenants, or
+ * null when none are pending. Used by SalesProcessCron to sleep adaptively
+ * until the next task is actually due instead of polling on a fixed interval.
+ */
+async function getNextDueAutoTaskAt(): Promise<Date | null> {
+  const result = await db.execute<{ next_due: string | null }>(sql`
+    SELECT MIN(due_at) AS next_due
+    FROM sales_process_task_instances
+    WHERE status = 'pending' AND mode = 'auto'
+  `);
+  const raw = result.rows[0]?.next_due ?? null;
+  return raw ? new Date(raw) : null;
+}
+
 export const salesProcessMethods = {
   getOrCreateSalesProcess,
   getSalesProcessSteps,
@@ -949,4 +964,5 @@ export const salesProcessMethods = {
   skipPendingTasksForLead,
   skipPendingTasksForEstimate,
   claimDueAutoTasks,
+  getNextDueAutoTaskAt,
 };

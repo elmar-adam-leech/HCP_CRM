@@ -13,6 +13,7 @@ import {
   notifyWebhookIncidentOpened,
   ALERT_THROTTLE_WINDOW_MS as SHARED_ALERT_THROTTLE_WINDOW_MS,
 } from "./webhook-incident-notifier";
+import { hasAnyEnabledIntegration } from "./integration-presence";
 
 const log = logger('HcpWebhookHealth');
 
@@ -378,6 +379,11 @@ async function runManualBackfillBackground(contractorId: string): Promise<void> 
 // ---------- Health check ----------
 
 export async function checkHcpWebhookHealth(): Promise<void> {
+  // Cheap cached gate: skip the per-tenant scan entirely when no contractor
+  // has Housecall Pro enabled.
+  if (!(await hasAnyEnabledIntegration('housecall-pro'))) {
+    return;
+  }
   try {
     const enabledIntegrations = await db.select()
       .from(contractorIntegrations)

@@ -5,6 +5,7 @@ import { logger } from "../utils/logger";
 import { formatDbError } from "../utils/db-error";
 import { sendDialpadIncidentEmail, type DialpadIncidentKind } from "./dialpad-incident-email";
 import { notifyWebhookIncidentOpened } from "./webhook-incident-notifier";
+import { hasAnyEnabledIntegration } from "./integration-presence";
 
 const log = logger('DialpadCallHealth');
 
@@ -188,6 +189,11 @@ async function reportContractorIncident(
 }
 
 export async function checkDialpadCallHealth(): Promise<void> {
+  // Cheap cached gate: skip the per-tenant scan entirely when no contractor
+  // has Dialpad enabled.
+  if (!(await hasAnyEnabledIntegration('dialpad'))) {
+    return;
+  }
   try {
     const enabledIntegrations = await db
       .select({ contractorId: contractorIntegrations.contractorId })
@@ -312,6 +318,12 @@ export async function checkDialpadCallHealth(): Promise<void> {
  *     events in the last 24h.
  */
 export async function checkDialpadBacklog(): Promise<void> {
+  // Cheap cached gate: with no Dialpad-enabled contractor the poller never
+  // queries (so it cannot accumulate failures) and there can be no backlog —
+  // skip the whole check.
+  if (!(await hasAnyEnabledIntegration('dialpad'))) {
+    return;
+  }
   // 1. Surface poller failures even when the failing query line scrolled away.
   // The poller is process-wide (not per-contractor), so we page every
   // contractor that has Dialpad enabled — a poller outage affects them all.

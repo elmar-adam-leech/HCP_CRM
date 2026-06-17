@@ -120,17 +120,26 @@ export function getAuthCacheStats(): {
 }
 
 /**
- * Periodic sweeper that drops expired entries. Returns the interval handle
- * so it can be added to `timerRegistry` in `server/index.ts` for graceful
- * shutdown.
+ * Drop every expired entry in one pass. The cache also self-expires on read
+ * (see `getCachedValidation`) and is bounded to `MAX_ENTRIES` by FIFO eviction,
+ * so this sweep is purely a memory-reclamation step for entries that expired
+ * but were never read again. Safe to run infrequently (now folded into the
+ * single daily maintenance pass in `server/services/maintenance-job.ts`).
+ */
+export function pruneExpiredAuthCacheEntries(): void {
+  const now = Date.now();
+  for (const [jti, entry] of cache) {
+    if (entry.validUntil <= now) cache.delete(jti);
+  }
+}
+
+/**
+ * Periodic sweeper that drops expired entries. Returns the interval handle so
+ * it can be tracked for graceful shutdown. Retained for tests and ad-hoc use;
+ * production now reclaims expired entries via the daily maintenance pass.
  */
 export function startAuthCacheSweeper(intervalMs: number = 60_000): NodeJS.Timeout {
-  const handle = setInterval(() => {
-    const now = Date.now();
-    for (const [jti, entry] of cache) {
-      if (entry.validUntil <= now) cache.delete(jti);
-    }
-  }, intervalMs);
+  const handle = setInterval(pruneExpiredAuthCacheEntries, intervalMs);
   // Don't keep the event loop alive on this timer alone.
   if (typeof handle.unref === 'function') handle.unref();
   return handle;

@@ -12,6 +12,7 @@ import { broadcastToContractor } from "../../websocket";
 import { CredentialService } from "../../credential-service";
 import type { DialpadCallEvent, DialpadCallOutcome, DialpadRecordingDetail } from "../../dialpad/types";
 import { enqueueDialpadEvent } from "../../jobs/dialpad-event-worker";
+import { dialpadEventPoller } from "../../jobs/dialpad-event-poller";
 import { getCallDetails } from "../../dialpad/messaging";
 
 const log = logger('DialpadCallsWebhook');
@@ -699,6 +700,11 @@ export function registerDialpadCallsWebhookRoutes(app: Express): void {
         description: `dialpad-call ${eventType} ${webhookEventId}`,
         handler: () => processDialpadCallEvent(payload, contractorId, webhookEventId),
       });
+
+      // Snap the recovery poller back to a fast interval (and refresh its
+      // integration-presence gate) so it backstops this row promptly if the
+      // in-memory worker above never runs.
+      dialpadEventPoller.nudge();
     } catch (error) {
       log.error('Error accepting call webhook:', error);
       if (!res.headersSent) {

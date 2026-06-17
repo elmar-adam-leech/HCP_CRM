@@ -1,4 +1,3 @@
-import cron from "node-cron";
 import { db } from "../db";
 import { sql } from "drizzle-orm";
 import { logger } from "../utils/logger";
@@ -9,7 +8,13 @@ const log = logger('RetentionJob');
 
 const GLOBAL_FALLBACK_MONTHS = 84;
 
-async function runRetentionCheck(): Promise<void> {
+/**
+ * Flag contacts that are past their tenant's data-retention window. Invoked
+ * once per day from the consolidated maintenance pass
+ * (`server/services/maintenance-job.ts`), which preserves the original 3 AM UTC
+ * off-peak schedule.
+ */
+export async function runRetentionCheck(): Promise<void> {
   log.info('Running data retention check...');
 
   try {
@@ -84,12 +89,3 @@ async function runRetentionCheck(): Promise<void> {
   }
 }
 
-export function startRetentionJob(): void {
-  cron.schedule('0 3 * * *', () => {
-    runRetentionCheck().catch(err => log.error(`Retention job error: ${formatDbError(err)}`));
-  }, {
-    timezone: 'UTC',
-  });
-
-  log.info('Data retention job scheduled (daily at 3 AM UTC)');
-}

@@ -3,8 +3,11 @@ import { webhookEvents } from "@shared/schema";
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { logger } from "../utils/logger";
 import { formatDbError } from "../utils/db-error";
-import { BackgroundJob } from "../services/background-job";
 import { recordPollerOutcome } from "../services/dialpad-call-health";
+import {
+  hasAnyEnabledIntegration,
+  invalidateIntegrationPresence,
+} from "../services/integration-presence";
 import {
   enqueueDialpadEvent,
   isDialpadEventInFlight,
@@ -31,20 +34,28 @@ const log = logger("DialpadEventPoller");
  * single in-flight job to wedge — the row would otherwise sit unprocessed
  * forever (Dialpad does not retry already-acked events).
  *
- * This poller scans every `POLL_INTERVAL_MS` for unprocessed Dialpad rows
- * using the partial index `webhook_events_unprocessed_idx` (WHERE
- * processed = false), so the query stays cheap as the table grows. Rows
- * already in flight in this process are skipped via
- * `isDialpadEventInFlight`. Rows whose in-flight stamp has expired (TTL in
- * the worker) are reclaimed and re-enqueued — both call and SMS handlers
- * are idempotent, so re-processing is safe.
+ * This poller scans for unprocessed Dialpad rows using the partial index
+ * `webhook_events_unprocessed_idx` (WHERE processed = false), so the query
+ * stays cheap as the table grows. Rows already in flight in this process are
+ * skipped via `isDialpadEventInFlight`. Rows whose in-flight stamp has expired
+ * (TTL in the worker) are reclaimed and re-enqueued — both call and SMS
+ * handlers are idempotent, so re-processing is safe.
  *
- * Replaces the previous boot-only recovery scan. The poller's first tick
- * runs `RUN_IMMEDIATELY_AFTER_MS` after start so recovery happens promptly
- * after a restart instead of waiting a full poll interval.
+ * Adaptive scheduling
+ * -------------------
+ * Rather than waking every 15 s around the clock, the poller self-schedules a
+ * single `setTimeout`: it polls at MIN_POLL_MS while it keeps finding work,
+ * and backs off geometrically toward MAX_POLL_MS while idle. A cheap cached
+ * `hasAnyEnabledIntegration('dialpad')` gate short-circuits the DB query when
+ * no contractor has Dialpad enabled (there can be no dialpad webhook_events in
+ * that case). The webhook handlers call `nudge()` after inserting a row, which
+ * invalidates the gate and snaps the next poll back to MIN_POLL_MS so recovery
+ * stays prompt. The first tick runs `RUN_IMMEDIATELY_AFTER_MS` after start so
+ * post-restart recovery does not wait a full interval.
  */
 
-const POLL_INTERVAL_MS = 15_000;
+const MIN_POLL_MS = 15_000;
+const MAX_POLL_MS = 5 * 60_000;
 const RUN_IMMEDIATELY_AFTER_MS = 1_000;
 const MAX_ROWS_PER_TICK = 100;
 
@@ -55,37 +66,95 @@ interface UnprocessedRow {
   payload: string;
 }
 
-export class DialpadEventPoller extends BackgroundJob {
-  private initialRunHandle: NodeJS.Timeout | null = null;
-
-  constructor() {
-    super(POLL_INTERVAL_MS);
-  }
+export class DialpadEventPoller {
+  private timer: NodeJS.Timeout | null = null;
+  private running = false;
+  private ticking = false;
+  private nudged = false;
+  private currentDelay = MIN_POLL_MS;
 
   start(): void {
-    super.start();
-    // Kick off the first scan promptly so post-restart recovery does not
-    // wait a full interval. Errors are logged but never thrown. The handle
-    // is tracked so stop() can cancel it during a rapid shutdown window.
-    this.initialRunHandle = setTimeout(() => {
-      this.initialRunHandle = null;
-      this.runOnce().catch((err) => {
-        log.error(
-          `Initial poll failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
-    }, RUN_IMMEDIATELY_AFTER_MS);
+    if (this.running) return;
+    this.running = true;
+    this.currentDelay = MIN_POLL_MS;
+    // Kick off the first scan promptly so post-restart recovery does not wait
+    // a full interval.
+    this.schedule(RUN_IMMEDIATELY_AFTER_MS);
   }
 
   stop(): void {
-    if (this.initialRunHandle !== null) {
-      clearTimeout(this.initialRunHandle);
-      this.initialRunHandle = null;
+    this.running = false;
+    if (this.timer !== null) {
+      clearTimeout(this.timer);
+      this.timer = null;
     }
-    super.stop();
   }
 
-  protected async runOnce(): Promise<void> {
+  /**
+   * Reset the schedule to poll soon. Called by the Dialpad webhook handlers
+   * after they insert a `webhook_events` row so recovery does not wait out the
+   * current (possibly backed-off) sleep. Also invalidates the integration-
+   * presence gate so a freshly-enabled Dialpad integration is picked up at
+   * once instead of after the cache TTL.
+   */
+  nudge(): void {
+    if (!this.running) return;
+    invalidateIntegrationPresence("dialpad");
+    this.currentDelay = MIN_POLL_MS;
+    if (this.ticking) {
+      this.nudged = true;
+      return;
+    }
+    this.schedule(MIN_POLL_MS);
+  }
+
+  private schedule(delayMs: number): void {
+    if (!this.running) return;
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      void this.tick();
+    }, delayMs);
+    if (typeof this.timer.unref === "function") this.timer.unref();
+  }
+
+  private async tick(): Promise<void> {
+    if (!this.running) return;
+    this.ticking = true;
+    this.nudged = false;
+    let foundWork = false;
+    try {
+      foundWork = await this.runOnce();
+    } catch (err) {
+      log.error(`Poll tick failed: ${formatDbError(err)}`);
+    } finally {
+      this.ticking = false;
+      let nextDelay: number;
+      if (this.nudged) {
+        this.nudged = false;
+        nextDelay = MIN_POLL_MS;
+      } else if (foundWork) {
+        // Still draining — poll again at the fast interval.
+        nextDelay = MIN_POLL_MS;
+      } else {
+        // Idle — back off geometrically toward the cap.
+        nextDelay = Math.min(this.currentDelay * 2, MAX_POLL_MS);
+      }
+      this.currentDelay = nextDelay;
+      this.schedule(nextDelay);
+    }
+  }
+
+  /**
+   * Runs a single recovery scan. Returns true when at least one row was
+   * enqueued, so the scheduler knows to keep polling fast.
+   */
+  async runOnce(): Promise<boolean> {
+    // Cheap cached gate: if no contractor has Dialpad enabled there can be no
+    // dialpad webhook_events to recover, so skip the indexed query entirely.
+    if (!(await hasAnyEnabledIntegration("dialpad"))) {
+      return false;
+    }
+
     let rows: UnprocessedRow[];
     try {
       rows = await db
@@ -115,12 +184,12 @@ export class DialpadEventPoller extends BackgroundJob {
         `Failed to query unprocessed dialpad webhook events: ${formatDbError(err)}`,
       );
       recordPollerOutcome(false);
-      return;
+      return false;
     }
 
     recordPollerOutcome(true);
 
-    if (rows.length === 0) return;
+    if (rows.length === 0) return false;
 
     let enqueued = 0;
     let skippedInFlight = 0;
@@ -195,8 +264,16 @@ export class DialpadEventPoller extends BackgroundJob {
         `Poll: enqueued=${enqueued}, skipped_in_flight=${skippedInFlight}, failed=${failed} (scanned=${rows.length})`,
       );
     }
+
+    return enqueued > 0;
   }
 }
+
+/**
+ * Process-wide singleton. The webhook handlers import this to `nudge()` after
+ * inserting a row, and `index.ts` starts/stops it during boot/shutdown.
+ */
+export const dialpadEventPoller = new DialpadEventPoller();
 
 async function markPollerFailure(id: string, reason: string): Promise<void> {
   try {

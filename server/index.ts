@@ -7,22 +7,15 @@ import { setupVite, serveStatic, log } from "./vite";
 import { providerService } from "./providers/provider-service";
 import { syncScheduler } from "./sync-scheduler";
 import { messageCleanupService } from "./services/message-cleanup";
-import { AuthService } from "./auth-service";
-import { startAuthCacheSweeper } from "./services/auth-cache";
 import { workflowEngine } from "./workflow-engine";
 import { initDb, db, pool } from "./db";
 import { startHcpWebhookHealthCheck, stopHcpWebhookHealthCheck } from "./services/hcp-webhook-health";
 import { startDialpadCallHealthCheck, stopDialpadCallHealthCheck } from "./services/dialpad-call-health";
-import { startRetentionJob } from "./services/retention-job";
-import { DialpadEventPoller } from "./jobs/dialpad-event-poller";
+import { startMaintenanceJob, stopMaintenanceJob } from "./services/maintenance-job";
+import { dialpadEventPoller } from "./jobs/dialpad-event-poller";
 import { stopWebSocket } from "./websocket";
-import { GmailOAuthCleanupJob } from "./services/gmail-oauth-cleanup-job";
-import { RateLimitCleanupJob } from "./services/rate-limit-cleanup-job";
-import { SpamAuditCleanupJob } from "./services/spam-audit-cleanup-job";
-import { RefreshTokenCleanupJob } from "./services/refresh-token-cleanup-job";
 import { AdSpendSyncJob } from "./services/ad-spend-sync-job";
-import { webhookEvents } from "@shared/schema";
-import { and, eq, lt, or, isNotNull, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { CredentialService } from "./credential-service";
 import { recordRequest, normalizePath } from "./services/latency-stats";
 
@@ -329,17 +322,22 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   log("Starting Dialpad call health checker...");
   await startDialpadCallHealthCheck();
 
-  // Start the data retention job (runs daily at 3 AM UTC)
-  log("Starting data retention job...");
-  startRetentionJob();
+  // Consolidated daily maintenance pass (runs once at 3 AM UTC). Folds the
+  // former auth-cache sweep, rate-limit prune, gmail-oauth-state cleanup,
+  // refresh-token cleanup, revoked-token cleanup, spam-audit prune,
+  // webhook-events 30-day cleanup and data-retention check into a single
+  // off-peak wake-up instead of a fistful of independent always-on timers.
+  log("Starting daily maintenance job...");
+  startMaintenanceJob();
 
-  // Database-backed poller for Dialpad webhook events. Continuously scans
+  // Adaptive, self-scheduling poller for Dialpad webhook events. Scans
   // `webhook_events` for unprocessed Dialpad rows (using the partial index
   // `webhook_events_unprocessed_idx`) and feeds them into the in-process
-  // worker queue. This both replaces the old boot-only recovery scan AND
-  // picks up events that wedged mid-processing — no restart required.
+  // worker queue. It polls fast while draining work, backs off toward a
+  // 5-minute cap while idle, short-circuits via a cached integration-presence
+  // gate when no contractor uses Dialpad, and is nudged back to a fast
+  // interval by the webhook handlers after each insert.
   log("Starting Dialpad event poller...");
-  const dialpadEventPoller = new DialpadEventPoller();
   dialpadEventPoller.start();
 
   // ─── Background timer registry ────────────────────────────────────────────
@@ -349,10 +347,12 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   //     Each job is instantiated below, started via job.start(), and stopped
   //     during shutdown via job.stop(). The interval handle lives inside the
   //     class; no external handle is needed. Current jobs:
-  //       • GmailOAuthCleanupJob    — deletes expired oauth_states rows (1 h)
-  //       • RateLimitCleanupJob     — prunes expired rate-limit buckets (1 min)
-  //       • SpamAuditCleanupJob     — prunes old spam_audit_log rows (24 h)
-  //       • RefreshTokenCleanupJob  — deletes expired refresh_tokens rows (24 h)
+  //       • AdSpendSyncJob          — pulls ad-spend for ROI report (6 h)
+  //     The former per-cleanup BackgroundJobs (GmailOAuthCleanup,
+  //     RateLimitCleanup, SpamAuditCleanup, RefreshTokenCleanup) plus the
+  //     old auth-cache / revoked-tokens / webhook-events inline timers are now
+  //     folded into the single daily maintenance pass (startMaintenanceJob)
+  //     to avoid keeping an idle instance busy around the clock.
   //     Rule: ANY new periodic server job MUST extend BackgroundJob and be
   //     registered here. Do NOT add bare module-level setInterval calls.
   //
@@ -369,60 +369,17 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
   //     NOT added to timerRegistry to avoid double-clear.
   const timerRegistry: (NodeJS.Timeout | NodeJS.Timer)[] = [];
 
-  const gmailOAuthCleanupJob = new GmailOAuthCleanupJob();
-  gmailOAuthCleanupJob.start();
-
-  const rateLimitCleanupJob = new RateLimitCleanupJob();
-  rateLimitCleanupJob.start();
-
-  const spamAuditCleanupJob = new SpamAuditCleanupJob();
-  spamAuditCleanupJob.start();
-  log("SpamAuditCleanupJob registered (runs every 24 h)");
-
-  const refreshTokenCleanupJob = new RefreshTokenCleanupJob();
-  refreshTokenCleanupJob.start();
-  log("RefreshTokenCleanupJob registered (runs every 24 h)");
-
   const adSpendSyncJob = new AdSpendSyncJob();
   adSpendSyncJob.start();
   log("AdSpendSyncJob registered (runs every 6 h)");
 
-  // Sales-process cron: poll for due auto-mode tasks and dispatch them.
+  // Sales-process cron: adaptive self-scheduling poller for due auto-mode
+  // tasks (sleeps until the next task is due, capped at 5 min; nudged on
+  // materialization).
   step('import sales-process-cron');
   const { salesProcessCron } = await import("./services/sales-process-cron");
   salesProcessCron.start();
-  log("SalesProcessCron registered (runs every 60s)");
-
-  // Periodic sweep of the in-process JWT validation cache (drops expired entries).
-  timerRegistry.push(startAuthCacheSweeper(60 * 1000));
-
-  // Hourly cleanup of expired revoked_tokens rows (prevents unbounded table growth)
-  timerRegistry.push(setInterval(() => {
-    AuthService.cleanupExpiredRevokedTokens().catch(err =>
-      log(`[revoked_tokens cleanup] error: ${err instanceof Error ? err.message : String(err)}`)
-    );
-  }, 60 * 60 * 1000));
-
-  // Nightly cleanup of terminal webhook_events older than 30 days. A row is
-  // terminal when it either succeeded (processed=true) or permanently failed
-  // (failed_at IS NOT NULL). Pending rows (processed=false AND failed_at IS
-  // NULL) are deliberately retained so the poller can keep retrying them.
-  timerRegistry.push(setInterval(async () => {
-    try {
-      const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-      await db.delete(webhookEvents).where(
-        and(
-          or(
-            eq(webhookEvents.processed, true),
-            isNotNull(webhookEvents.failedAt),
-          ),
-          lt(webhookEvents.createdAt, cutoff),
-        ),
-      );
-    } catch (err) {
-      log(`[webhook_events cleanup] error: ${err}`);
-    }
-  }, 24 * 60 * 60 * 1000));
+  log("SalesProcessCron registered (adaptive scheduling)");
 
 
   step('registerRoutes');
@@ -533,10 +490,7 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
       timerRegistry.length = 0;
 
       // 4. Stop background services (order mirrors reverse-startup for safety)
-      gmailOAuthCleanupJob.stop();
-      rateLimitCleanupJob.stop();
-      spamAuditCleanupJob.stop();
-      refreshTokenCleanupJob.stop();
+      stopMaintenanceJob();
       adSpendSyncJob.stop();
       salesProcessCron.stop();
       dialpadEventPoller.stop();
