@@ -384,8 +384,8 @@ async function getContactsPaginated(contractorId: string, options: ContactFilter
   const [contactsData, total] = await Promise.all([
     db.select({
       ...CONTACT_FIELDS,
-      assignedToUserId: sql<string | null>`(SELECT l.assigned_to_user_id FROM leads l WHERE l.contact_id = "contacts"."id" AND l.contractor_id = ${contractorId} ORDER BY l.created_at DESC LIMIT 1)`,
-      assignedToUserName: sql<string | null>`(SELECT u.name FROM leads l JOIN users u ON l.assigned_to_user_id = u.id WHERE l.contact_id = "contacts"."id" AND l.contractor_id = ${contractorId} ORDER BY l.created_at DESC LIMIT 1)`,
+      assignedToUserId: sql<string | null>`(SELECT l.assigned_to_user_id FROM leads l WHERE l.contact_id = "contacts"."id" AND l.contractor_id = ${contractorId} ORDER BY l.created_at DESC, l.id DESC LIMIT 1)`,
+      assignedToUserName: sql<string | null>`(SELECT u.name FROM leads l JOIN users u ON l.assigned_to_user_id = u.id WHERE l.contact_id = "contacts"."id" AND l.contractor_id = ${contractorId} ORDER BY l.created_at DESC, l.id DESC LIMIT 1)`,
       // Derived pipeline stage from the most-recent open lead (task #805) so
       // the Leads list/kanban display matches the tab the row was filtered into.
       effectiveStage: effectiveStageSql(contractorId),
@@ -675,7 +675,7 @@ async function markLeadContacted(contactId: string, contractorId: string, userId
         SELECT l.id FROM leads l
         WHERE l.contact_id = ${contactId} AND l.contractor_id = ${contractorId}
           AND l.archived = false AND l.status IN ('new', 'contacted', 'qualified')
-        ORDER BY l.created_at DESC LIMIT 1
+        ORDER BY l.created_at DESC, l.id DESC LIMIT 1
       )`,
     ));
 }
@@ -700,7 +700,7 @@ async function updateLeadStageForContact(contactId: string, contractorId: string
         SELECT l.id FROM leads l
         WHERE l.contact_id = ${contactId} AND l.contractor_id = ${contractorId}
           AND l.archived = false AND l.status <> 'converted'
-        ORDER BY l.created_at DESC LIMIT 1
+        ORDER BY l.created_at DESC, l.id DESC LIMIT 1
       )`,
     ));
 }

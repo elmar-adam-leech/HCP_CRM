@@ -30,14 +30,14 @@ export function effectiveStageSql(contractorId: string): SQL<string> {
         SELECT ls.status FROM leads ls
         WHERE ls.contact_id = "contacts"."id" AND ls.contractor_id = ${contractorId}
           AND ls.archived = false AND ls.status IN ('new', 'contacted', 'qualified')
-        ORDER BY ls.created_at DESC LIMIT 1
+        ORDER BY ls.created_at DESC, ls.id DESC LIMIT 1
       ) IS NULL THEN
         COALESCE(
           (
             SELECT ls2.status::text FROM leads ls2
             WHERE ls2.contact_id = "contacts"."id" AND ls2.contractor_id = ${contractorId}
               AND ls2.status IN ('disqualified', 'lost')
-            ORDER BY ls2.created_at DESC LIMIT 1
+            ORDER BY ls2.created_at DESC, ls2.id DESC LIMIT 1
           ),
           "contacts"."status"::text
         )
@@ -46,7 +46,7 @@ export function effectiveStageSql(contractorId: string): SQL<string> {
         SELECT ls.status::text FROM leads ls
         WHERE ls.contact_id = "contacts"."id" AND ls.contractor_id = ${contractorId}
           AND ls.archived = false AND ls.status IN ('new', 'contacted', 'qualified')
-        ORDER BY ls.created_at DESC LIMIT 1
+        ORDER BY ls.created_at DESC, ls.id DESC LIMIT 1
       ) IN ('contacted', 'qualified') THEN 'contacted'
       ELSE 'new'
     END
