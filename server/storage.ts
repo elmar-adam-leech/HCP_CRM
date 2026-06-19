@@ -192,6 +192,8 @@ export interface IStorage {
   bulkCreateContacts(contacts: Array<Omit<InsertContact, 'contractorId'>>, contractorId: string): Promise<{ inserted: number }>;
   updateContact(id: string, contact: UpdateContact, contractorId: string): Promise<Contact | undefined>;
   markContactContacted(contactId: string, contractorId: string, userId: string, contactedAt?: Date): Promise<Contact | undefined>;
+  markLeadContacted(contactId: string, contractorId: string, userId: string, contactedAt?: Date): Promise<void>;
+  updateLeadStageForContact(contactId: string, contractorId: string, status: string): Promise<void>;
   deleteContact(id: string, contractorId: string): Promise<boolean>;
   unlinkOrphanedEmailActivities(contactId: string, currentEmails: string[], contractorId: string): Promise<void>;
   findMatchingContact(contractorId: string, emails?: string[], phones?: string[]): Promise<string | null>;

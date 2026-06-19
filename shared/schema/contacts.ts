@@ -109,6 +109,9 @@ export type Contact = typeof contacts.$inferSelect & {
   anyLeadAged?: boolean;
   autoDisputed?: boolean;
   autoDisputeFailed?: boolean;
+  // Task #805: pipeline stage derived from the most-recent open lead + booking
+  // state, not the raw `status` column. Present on lead-scoped list rows.
+  effectiveStage?: string;
 };
 
 // Lightweight DTO for contact lists and pagination.
@@ -138,6 +141,8 @@ export const contactSummarySchema = z.object({
   anyLeadAged: z.boolean().optional(),
   autoDisputed: z.boolean().optional(),
   autoDisputeFailed: z.boolean().optional(),
+  // Task #805: derived pipeline stage (see Contact type).
+  effectiveStage: z.string().optional(),
 });
 export type ContactSummary = z.infer<typeof contactSummarySchema>;
 

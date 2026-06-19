@@ -234,7 +234,10 @@ export function LeadKanbanBoard({
     const organized = createEmptyColumns();
 
     leads.forEach((lead) => {
-      const column = organized.find((col) => col.status === lead.status);
+      // Task #805: place the row by its derived effective stage (most-recent
+      // open lead + booking), falling back to raw status for non-lead surfaces.
+      const stage = lead.effectiveStage ?? lead.status;
+      const column = organized.find((col) => col.status === stage);
       if (column) {
         column.leads.push(lead);
       }
@@ -312,7 +315,8 @@ export function LeadKanbanBoard({
 
     if (newColumn) {
       const lead = leads.find((l) => l.id === activeLeadId);
-      if (lead && lead.status !== newColumn.status) {
+      const currentStage = lead ? (lead.effectiveStage ?? lead.status) : undefined;
+      if (lead && currentStage !== newColumn.status) {
         onStatusChange(activeLeadId, newColumn.status);
       }
     }

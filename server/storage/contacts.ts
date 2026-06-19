@@ -8,6 +8,7 @@ import {
   hcpExcludedCustomers,
 } from "@shared/schema";
 import { generateBookingCode } from "../utils/booking-token";
+import { effectiveStageSql } from "./lead-stage";
 import { db } from "../db";
 import { deduplicateContacts } from "../services/contact-deduper";
 import { getDashboardMetrics, getMetricsAggregates } from "../services/dashboard-metrics";
@@ -189,11 +190,25 @@ export function buildContactConditions(contractorId: string, options: ContactFil
     conditions.push(inArray(contacts.type, effectiveTypes));
   }
 
+  // For lead-only scope, pipeline state is the DERIVED "effective stage" from
+  // the contact's most-recent open lead (task #805), not the raw
+  // `contacts.status`. Other scopes (customers / mixed header search) keep the
+  // raw status filter since they have no lead pipeline derivation.
+  const isLeadOnlyScope = effectiveTypes.length === 1 && effectiveTypes[0] === 'lead';
+  const stageExpr = isLeadOnlyScope ? effectiveStageSql(contractorId) : null;
+
   if (!skipStatusFilter && !bypassPipelineGates) {
     if (options.status && options.status !== 'all') {
-      conditions.push(eq(contacts.status, options.status as typeof contactStatusEnum.enumValues[number]));
+      if (stageExpr) {
+        conditions.push(sql`${stageExpr} = ${options.status}`);
+      } else {
+        conditions.push(eq(contacts.status, options.status as typeof contactStatusEnum.enumValues[number]));
+      }
     } else if (!options.status || options.status === 'all') {
-      if (includesLeadScope) {
+      if (stageExpr) {
+        // Default active view: derived stage is one of the active tabs.
+        conditions.push(sql`${stageExpr} IN ('new', 'contacted', 'scheduled')`);
+      } else if (includesLeadScope) {
         conditions.push(ne(contacts.status, 'disqualified'));
         conditions.push(ne(contacts.status, 'lost'));
       }
@@ -201,7 +216,11 @@ export function buildContactConditions(contractorId: string, options: ContactFil
   } else if (!skipStatusFilter && bypassPipelineGates && options.status && options.status !== 'all') {
     // An explicit status filter must always pin results to that status,
     // even when pipeline-gate bypass is active for search mode.
-    conditions.push(eq(contacts.status, options.status as typeof contactStatusEnum.enumValues[number]));
+    if (stageExpr) {
+      conditions.push(sql`${stageExpr} = ${options.status}`);
+    } else {
+      conditions.push(eq(contacts.status, options.status as typeof contactStatusEnum.enumValues[number]));
+    }
   }
 
   if (options.search) {
@@ -367,6 +386,9 @@ async function getContactsPaginated(contractorId: string, options: ContactFilter
       ...CONTACT_FIELDS,
       assignedToUserId: sql<string | null>`(SELECT l.assigned_to_user_id FROM leads l WHERE l.contact_id = "contacts"."id" AND l.contractor_id = ${contractorId} ORDER BY l.created_at DESC LIMIT 1)`,
       assignedToUserName: sql<string | null>`(SELECT u.name FROM leads l JOIN users u ON l.assigned_to_user_id = u.id WHERE l.contact_id = "contacts"."id" AND l.contractor_id = ${contractorId} ORDER BY l.created_at DESC LIMIT 1)`,
+      // Derived pipeline stage from the most-recent open lead (task #805) so
+      // the Leads list/kanban display matches the tab the row was filtered into.
+      effectiveStage: effectiveStageSql(contractorId),
     })
     .from(contacts)
     .where(and(...conditions))
@@ -415,15 +437,20 @@ async function getContactsStatusCounts(contractorId: string, options: Pick<Conta
     ? options.types
     : (options.type ? [options.type] : []);
   const isLeadType = effectiveTypes.length === 0 || effectiveTypes.includes('lead');
+  // For lead-only scope, count by the DERIVED effective stage (task #805) so the
+  // tab numbers match the rows the list query filters into. Other scopes keep
+  // counting the raw contacts.status.
+  const isLeadOnlyScope = effectiveTypes.length === 1 && effectiveTypes[0] === 'lead';
+  const stageCol = isLeadOnlyScope ? effectiveStageSql(contractorId) : contacts.status;
   const result = await db.select({
     all: isLeadType
-      ? sql<number>`COUNT(CASE WHEN ${contacts.status} NOT IN ('disqualified','lost') THEN 1 END)`
+      ? sql<number>`COUNT(CASE WHEN ${stageCol} IN ('new','contacted','scheduled') THEN 1 END)`
       : count(),
-    new: sql<number>`COUNT(CASE WHEN ${contacts.status} = 'new' THEN 1 END)`,
-    contacted: sql<number>`COUNT(CASE WHEN ${contacts.status} = 'contacted' THEN 1 END)`,
-    scheduled: sql<number>`COUNT(CASE WHEN ${contacts.status} = 'scheduled' THEN 1 END)`,
-    disqualified: sql<number>`COUNT(CASE WHEN ${contacts.status} = 'disqualified' THEN 1 END)`,
-    lost: sql<number>`COUNT(CASE WHEN ${contacts.status} = 'lost' THEN 1 END)`,
+    new: sql<number>`COUNT(CASE WHEN ${stageCol} = 'new' THEN 1 END)`,
+    contacted: sql<number>`COUNT(CASE WHEN ${stageCol} = 'contacted' THEN 1 END)`,
+    scheduled: sql<number>`COUNT(CASE WHEN ${stageCol} = 'scheduled' THEN 1 END)`,
+    disqualified: sql<number>`COUNT(CASE WHEN ${stageCol} = 'disqualified' THEN 1 END)`,
+    lost: sql<number>`COUNT(CASE WHEN ${stageCol} = 'lost' THEN 1 END)`,
   }).from(contacts).where(and(...baseConditions));
 
   const counts = result[0];
@@ -618,6 +645,64 @@ async function markContactContacted(contactId: string, contractorId: string, use
 
   cacheInvalidation.invalidateContact(contactId, contractorId);
   return result;
+}
+
+/**
+ * Task #805 — record first contact on the contact's most-recent OPEN lead.
+ * Two things happen on the SAME lead row, atomically:
+ *  1. Stamp first-contact timing (`contacted_at` / `contacted_by_user_id`) —
+ *     first-touch wins, only when `contacted_at IS NULL` (mirrors
+ *     `markContactContacted`'s contact-level guard) so per-lead speed-to-lead
+ *     stays accurate going forward.
+ *  2. Advance the lead's status `new` → `contacted` (CASE guard never downgrades
+ *     `contacted`/`qualified`). This is what moves the DERIVED effective stage
+ *     out of the "New" tab, since `effectiveStageSql` reads lead status, not
+ *     `contacted_at`. Without this, contacting a lead would leave it in New.
+ * Called alongside `markContactContacted` everywhere a contact is first
+ * contacted (messaging, activities, ingestion auto-contact).
+ */
+async function markLeadContacted(contactId: string, contractorId: string, userId: string, contactedAt: Date = new Date()): Promise<void> {
+  await db.update(leads)
+    .set({
+      contactedAt: sql`CASE WHEN ${leads.contactedAt} IS NULL THEN ${contactedAt} ELSE ${leads.contactedAt} END`,
+      contactedByUserId: sql`CASE WHEN ${leads.contactedAt} IS NULL THEN ${userId} ELSE ${leads.contactedByUserId} END`,
+      status: sql`CASE WHEN ${leads.status} = 'new' THEN 'contacted' ELSE ${leads.status} END`,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(leads.contractorId, contractorId),
+      sql`leads.id = (
+        SELECT l.id FROM leads l
+        WHERE l.contact_id = ${contactId} AND l.contractor_id = ${contractorId}
+          AND l.archived = false AND l.status IN ('new', 'contacted', 'qualified')
+        ORDER BY l.created_at DESC LIMIT 1
+      )`,
+    ));
+}
+
+/**
+ * Task #805 — mirror a manual contact-status change (Kanban drag / disqualify /
+ * lose) onto the contact's most-recent active (non-archived, non-converted) lead
+ * so the derived effective stage tracks the move. `contacts.status` is mirrored
+ * separately by the caller (`updateContact`) so other surfaces keep working.
+ * Only the lead-pipeline statuses map onto a lead row — `scheduled` is booking
+ * state (handled by `markContactScheduled`) and `active`/`inactive` are
+ * customer statuses with no lead equivalent, so those are ignored here.
+ */
+async function updateLeadStageForContact(contactId: string, contractorId: string, status: string): Promise<void> {
+  const leadStatuses = ['new', 'contacted', 'disqualified', 'lost'];
+  if (!leadStatuses.includes(status)) return;
+  await db.update(leads)
+    .set({ status: status as typeof leads.status.enumValues[number], updatedAt: new Date() })
+    .where(and(
+      eq(leads.contractorId, contractorId),
+      sql`leads.id = (
+        SELECT l.id FROM leads l
+        WHERE l.contact_id = ${contactId} AND l.contractor_id = ${contractorId}
+          AND l.archived = false AND l.status <> 'converted'
+        ORDER BY l.created_at DESC LIMIT 1
+      )`,
+    ));
 }
 
 async function deleteContact(id: string, contractorId: string): Promise<boolean> {
@@ -1154,6 +1239,8 @@ export const contactMethods = {
   bulkCreateContacts,
   updateContact,
   markContactContacted,
+  markLeadContacted,
+  updateLeadStageForContact,
   deleteContact,
   unlinkOrphanedEmailActivities,
   findMatchingContact,

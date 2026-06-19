@@ -120,7 +120,11 @@ export async function ingestLead(
       const hasAgedLeads = contactLeads.some(l => l.aged);
       if (hasAgedLeads) {
         await storage.unageLead(contact.id, contractorId);
-        await storage.updateContact(contact.id, { contactedAt: new Date() }, contractorId);
+        const reactivatedAt = new Date();
+        await storage.updateContact(contact.id, { contactedAt: reactivatedAt }, contractorId);
+        // Task #805: mirror the contact-level auto-contact onto the most-recent
+        // open lead so per-lead speed-to-lead timing stays accurate.
+        await storage.markLeadContacted(contact.id, contractorId, null as unknown as string, reactivatedAt);
         log.info(`Auto-reactivated aged leads for contact ${contact.id} due to new submission`);
       }
     }
@@ -169,9 +173,12 @@ export async function ingestLead(
       const promotionUpdate: Record<string, unknown> = {};
       if (promote) {
         promotionUpdate.type = 'lead';
-        if (contact.status === 'disqualified' || contact.status === 'lost') {
-          promotionUpdate.status = 'new';
-        }
+        // Task #805: a genuinely new lead for an existing non-lead contact resets
+        // the mirrored contacts.status to 'new' so it tracks the fresh open lead
+        // created below (the Leads page stage derives from that lead). Widened
+        // from the prior disqualified/lost-only reset to also cover re-engaged
+        // active/inactive customers.
+        promotionUpdate.status = 'new';
       }
 
       const enrichment = buildContactEnrichment(contact, input, normalizedPhones);

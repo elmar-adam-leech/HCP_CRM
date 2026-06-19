@@ -1,0 +1,2 @@
+- [Lead pipeline stage derivation](lead-pipeline-stage.md) — Leads page/dashboard stage is a DERIVED projection from `leads`, not raw `contacts.status`; scope rules + enum-cast gotcha.
+- [Schema migrations location](schema-migrations-location.md) — column/index migrations live in `server/schema-drift.ts` columnMigrations, NOT `server/db.ts` (replit.md is outdated on this).

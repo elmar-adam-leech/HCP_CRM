@@ -1367,6 +1367,58 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
               )`,
       description: 'backfill: reset leads stuck on customer-only status (active/inactive) back into the pipeline (task #798)',
     },
+    // Task #805 — lead-level first-contact timing (per-lead speed-to-lead).
+    {
+      sql: `ALTER TABLE leads ADD COLUMN IF NOT EXISTS contacted_at timestamp`,
+      description: 'leads.contacted_at (task #805: when this lead was first contacted)',
+    },
+    {
+      sql: `ALTER TABLE leads ADD COLUMN IF NOT EXISTS contacted_by_user_id varchar`,
+      description: 'leads.contacted_by_user_id (task #805: user who first contacted this lead)',
+    },
+    {
+      sql: `DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.table_constraints
+          WHERE constraint_name = 'leads_contacted_by_user_id_fkey'
+            AND table_name = 'leads'
+        ) THEN
+          ALTER TABLE leads
+            ADD CONSTRAINT leads_contacted_by_user_id_fkey
+            FOREIGN KEY (contacted_by_user_id) REFERENCES users(id);
+        END IF;
+      END $$`,
+      description: 'leads.contacted_by_user_id FK to users(id) (task #805)',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS leads_contractor_contacted_at_idx ON leads (contractor_id, contacted_at)`,
+      description: 'leads composite index on (contractor_id, contacted_at) for dashboard speed-to-lead/contacted aggregates (task #805)',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS leads_contact_archived_status_created_idx ON leads (contact_id, archived, status, created_at)`,
+      description: 'leads composite index on (contact_id, archived, status, created_at) for effective-stage derivation (task #805)',
+    },
+    {
+      // Task #805 — one-time, idempotent backfill: seed each contact's MOST
+      // RECENT lead with the contact-level contacted_at / contacted_by_user_id
+      // (best-effort; historical multi-lead contacts carry only one
+      // contact-level timestamp). Only touches lead rows whose contacted_at is
+      // still NULL, so re-running is a no-op once seeded.
+      sql: `UPDATE leads l
+            SET contacted_at = c.contacted_at,
+                contacted_by_user_id = c.contacted_by_user_id
+            FROM contacts c
+            WHERE l.contact_id = c.id
+              AND l.contacted_at IS NULL
+              AND c.contacted_at IS NOT NULL
+              AND l.id = (
+                SELECT l2.id FROM leads l2
+                WHERE l2.contact_id = c.id
+                ORDER BY l2.created_at DESC
+                LIMIT 1
+              )`,
+      description: 'backfill leads.contacted_at/contacted_by_user_id from contact-level timing onto most-recent lead per contact (task #805)',
+    },
   ];
 
 export async function applyColumnMigrations(

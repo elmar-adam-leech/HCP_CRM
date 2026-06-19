@@ -782,6 +782,11 @@ export function registerContactRoutes(app: Express): void {
       }
       contact = updated;
 
+      // Task #805: mirror the manual stage change onto the most-recent active
+      // lead so the Leads page derived stage tracks the move (contacts.status
+      // is already mirrored above for the other surfaces).
+      await storage.updateLeadStageForContact(req.params.id, req.user.contractorId, status);
+
       try {
         await createActivityAndBroadcast(
           req.user.contractorId,

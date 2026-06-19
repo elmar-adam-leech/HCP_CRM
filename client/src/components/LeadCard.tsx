@@ -57,11 +57,14 @@ export const LeadCard = memo(function LeadCard({ lead, onSchedule, onSendEmail, 
   const leadSourceLabel = formatLeadSource(lead.source);
   const leadScheduledDate = lead.scheduledAt ? new Date(lead.scheduledAt).toLocaleDateString() : undefined;
   const leadTags = lead.tags || [];
+  // Task #805: badge / border reflect the derived effective stage (most-recent
+  // open lead + booking), falling back to raw status.
+  const leadStage = lead.effectiveStage ?? lead.status ?? 'new';
 
   return (
     <div className="min-w-0 w-full">
       <Card 
-        className={`relative hover-elevate ${getStatusBorderColor('lead', lead.status || 'new')}`}
+        className={`relative hover-elevate ${getStatusBorderColor('lead', leadStage)}`}
         data-testid={`card-lead-${lead.id}`}
       >
       <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0 pb-2">
@@ -90,7 +93,7 @@ export const LeadCard = memo(function LeadCard({ lead, onSchedule, onSendEmail, 
               />
             </div>
             <div className="flex items-center gap-2 mt-1 flex-wrap">
-              <StatusBadge status={lead.status as Parameters<typeof StatusBadge>[0]['status']} entityType="lead" />
+              <StatusBadge status={leadStage as Parameters<typeof StatusBadge>[0]['status']} entityType="lead" />
               <CustomerBadge hasJobs={lead.hasJobs} />
               <span className="text-xs text-muted-foreground truncate">{leadSourceLabel}</span>
               {lead.autoDisputed && (

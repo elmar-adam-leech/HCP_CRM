@@ -44,6 +44,9 @@ export const leads = pgTable("leads", {
   convertedToEstimateId: varchar("converted_to_estimate_id").references(() => estimates.id), // If converted to estimate
   convertedToJobId: varchar("converted_to_job_id").references(() => jobs.id), // If converted to job
   assignedToUserId: varchar("assigned_to_user_id").references(() => users.id), // User assigned to follow up
+  // Lead-level first-contact timing (task #805) — per-lead speed-to-lead.
+  contactedAt: timestamp("contacted_at"), // When this lead was first contacted (call, text, or email)
+  contactedByUserId: varchar("contacted_by_user_id").references(() => users.id), // User who first contacted this lead
   contractorId: varchar("contractor_id").notNull().references(() => contractors.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -58,6 +61,10 @@ export const leads = pgTable("leads", {
   contractorDateIdx: index("leads_contractor_date_idx").on(table.contractorId, table.createdAt),
   contactCreatedIdx: index("leads_contact_created_idx").on(table.contactId, table.createdAt),
   assignedToUserIdIdx: index("leads_assigned_to_user_id_idx").on(table.assignedToUserId),
+  // Task #805 — speed-to-lead / contacted aggregates on the dashboard.
+  contractorContactedAtIdx: index("leads_contractor_contacted_at_idx").on(table.contractorId, table.contactedAt),
+  // Task #805 — effective-stage derivation: most-recent open/terminal lead per contact.
+  contactStageIdx: index("leads_contact_archived_status_created_idx").on(table.contactId, table.archived, table.status, table.createdAt),
   // Indexes for conversion tracking queries (e.g., finding which estimate/job a lead became)
   convertedToEstimateIdIdx: index("leads_converted_to_estimate_id_idx").on(table.convertedToEstimateId),
   convertedToJobIdIdx: index("leads_converted_to_job_id_idx").on(table.convertedToJobId),

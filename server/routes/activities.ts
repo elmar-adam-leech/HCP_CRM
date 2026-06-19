@@ -88,6 +88,7 @@ export function registerActivityRoutes(app: Express): void {
     const contactId = activity.contactId;
     if (contactId && ['call', 'email', 'sms'].includes(activity.type)) {
       await storage.markContactContacted(contactId, req.user.contractorId, req.user.userId);
+      await storage.markLeadContacted(contactId, req.user.contractorId, req.user.userId);
     }
     broadcastToContractor(req.user.contractorId, {
       type: 'activity_created',

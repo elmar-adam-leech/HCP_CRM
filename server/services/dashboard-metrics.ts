@@ -2,8 +2,21 @@
  * Aggregate query service for contractor dashboard KPIs
  * (Speed-to-Lead, Set Rate, Close Rate, Follow-ups).
  *
- * These queries are cross-domain (contacts + estimates + jobs) and are
+ * These queries are cross-domain (leads + estimates + jobs) and are
  * intentionally separate from single-entity storage modules.
+ *
+ * Task #805: lead-pipeline KPIs are re-based onto the `leads` table (per-lead
+ * grain) instead of `contacts` (type=lead), so two submissions from one person
+ * count as two leads. Windowed by `leads.created_at`, archived leads excluded.
+ * Definitions are shared with the Leads page derivation (see lead-stage.ts):
+ *   - Total Leads      = COUNT(leads) in window
+ *   - Disqualified     = COUNT(status = 'disqualified')  (not 'lost')
+ *   - Set / Scheduled  = COUNT(converted_to_estimate_id IS NOT NULL)
+ *   - Set Rate         = set / (total − disqualified)
+ *   - Today's Follow-ups = COUNT(follow_up_date within today)
+ *   - Speed-to-Lead    = AVG(contacted_at − created_at) where contacted_at set
+ * Per-user (non-admin) scoping: set/touched slices filter on
+ * `assigned_to_user_id`; contacted/speed slices on `contacted_by_user_id`.
  *
  * SCALE NOTE: At significant load (many concurrent dashboard loads) these
  * aggregate COUNT queries can create meaningful DB pressure. Consider caching
@@ -11,7 +24,7 @@
  * the number of full-table scans per minute.
  */
 
-import { contacts, estimates, jobs } from "@shared/schema";
+import { leads, estimates, jobs } from "@shared/schema";
 import { db } from "../db";
 import { eq, and, gte, lte, sql } from "drizzle-orm";
 
@@ -40,9 +53,9 @@ export async function getDashboardMetrics(
 }> {
   const isAdmin = userRole === 'admin' || userRole === 'super_admin';
 
-  const baseConditions = [eq(contacts.contractorId, contractorId), eq(contacts.type, 'lead')];
-  if (startDate) baseConditions.push(gte(contacts.createdAt, startDate));
-  if (endDate) baseConditions.push(lte(contacts.createdAt, endDate));
+  const baseConditions = [eq(leads.contractorId, contractorId), eq(leads.archived, false)];
+  if (startDate) baseConditions.push(gte(leads.createdAt, startDate));
+  if (endDate) baseConditions.push(lte(leads.createdAt, endDate));
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -51,24 +64,26 @@ export async function getDashboardMetrics(
 
   const [metricsRow] = await db.select({
     totalLeads: sql<number>`COUNT(*)::int`,
-    scheduledAll: sql<number>`COUNT(*) FILTER (WHERE ${contacts.status} = 'scheduled')::int`,
-    scheduledByUser: sql<number>`COUNT(*) FILTER (WHERE ${contacts.status} = 'scheduled' AND ${contacts.scheduledByUserId} = ${userId})::int`,
-    touchedByUser: sql<number>`COUNT(*) FILTER (WHERE ${contacts.contactedByUserId} = ${userId} OR ${contacts.scheduledByUserId} = ${userId})::int`,
-    speedToLeadAll: sql<number>`COALESCE(AVG(EXTRACT(EPOCH FROM (${contacts.contactedAt} - ${contacts.createdAt})) / 60.0) FILTER (WHERE ${contacts.contactedAt} IS NOT NULL), 0)::float`,
-    speedToLeadUser: sql<number>`COALESCE(AVG(EXTRACT(EPOCH FROM (${contacts.contactedAt} - ${contacts.createdAt})) / 60.0) FILTER (WHERE ${contacts.contactedAt} IS NOT NULL AND ${contacts.contactedByUserId} = ${userId}), 0)::float`,
-    todaysFollowUps: sql<number>`COUNT(*) FILTER (WHERE ${contacts.followUpDate} >= ${today} AND ${contacts.followUpDate} < ${tomorrow})::int`,
-    disqualifiedAll: sql<number>`COUNT(*) FILTER (WHERE ${contacts.status} = 'disqualified')::int`,
-    disqualifiedTouchedByUser: sql<number>`COUNT(*) FILTER (WHERE ${contacts.status} = 'disqualified' AND (${contacts.contactedByUserId} = ${userId} OR ${contacts.scheduledByUserId} = ${userId}))::int`,
-  }).from(contacts).where(and(...baseConditions));
+    // "Set" = converted to an estimate. Org-wide and per-user (assigned) slices.
+    setAll: sql<number>`COUNT(*) FILTER (WHERE ${leads.convertedToEstimateId} IS NOT NULL)::int`,
+    setByUser: sql<number>`COUNT(*) FILTER (WHERE ${leads.convertedToEstimateId} IS NOT NULL AND ${leads.assignedToUserId} = ${userId})::int`,
+    // "Touched" (non-admin denominator) = assigned to this user.
+    touchedByUser: sql<number>`COUNT(*) FILTER (WHERE ${leads.assignedToUserId} = ${userId})::int`,
+    speedToLeadAll: sql<number>`COALESCE(AVG(EXTRACT(EPOCH FROM (${leads.contactedAt} - ${leads.createdAt})) / 60.0) FILTER (WHERE ${leads.contactedAt} IS NOT NULL), 0)::float`,
+    speedToLeadUser: sql<number>`COALESCE(AVG(EXTRACT(EPOCH FROM (${leads.contactedAt} - ${leads.createdAt})) / 60.0) FILTER (WHERE ${leads.contactedAt} IS NOT NULL AND ${leads.contactedByUserId} = ${userId}), 0)::float`,
+    todaysFollowUps: sql<number>`COUNT(*) FILTER (WHERE ${leads.followUpDate} >= ${today} AND ${leads.followUpDate} < ${tomorrow})::int`,
+    disqualifiedAll: sql<number>`COUNT(*) FILTER (WHERE ${leads.status} = 'disqualified')::int`,
+    disqualifiedTouchedByUser: sql<number>`COUNT(*) FILTER (WHERE ${leads.status} = 'disqualified' AND ${leads.assignedToUserId} = ${userId})::int`,
+  }).from(leads).where(and(...baseConditions));
 
   const totalLeads = metricsRow?.totalLeads ?? 0;
   const speedToLeadMinutes = isAdmin
     ? (metricsRow?.speedToLeadAll ?? 0)
     : (metricsRow?.speedToLeadUser ?? 0);
 
-  const scheduledCount = isAdmin
-    ? (metricsRow?.scheduledAll ?? 0)
-    : (metricsRow?.scheduledByUser ?? 0);
+  const setCount = isAdmin
+    ? (metricsRow?.setAll ?? 0)
+    : (metricsRow?.setByUser ?? 0);
   // disqualifiedCount mirrors the scoping of totalLeads (org-wide for both
   // roles, since totalLeads above is COUNT(*) without a user filter), so the
   // "* N disqualified" subtitle on the Total Leads card stays consistent with
@@ -78,7 +93,7 @@ export async function getDashboardMetrics(
     ? totalLeads - (metricsRow?.disqualifiedAll ?? 0)
     : (metricsRow?.touchedByUser ?? 0) - (metricsRow?.disqualifiedTouchedByUser ?? 0);
   const denominatorCount = Math.max(rawDenominator, 0);
-  const setRate = denominatorCount > 0 ? (scheduledCount / denominatorCount) * 100 : 0;
+  const setRate = denominatorCount > 0 ? (setCount / denominatorCount) * 100 : 0;
 
   return {
     speedToLeadMinutes: Math.round(speedToLeadMinutes * 10) / 10,
@@ -100,18 +115,19 @@ export async function getMetricsAggregates(contractorId: string, periodStart: Da
   ] = await Promise.all([
     db.select({
       totalLeads: sql<number>`COUNT(*)::int`,
-      contactedLeads: sql<number>`COUNT(${contacts.contactedAt})::int`,
+      contactedLeads: sql<number>`COUNT(${leads.contactedAt})::int`,
       avgSpeedToLeadHours: sql<number>`COALESCE(
-        AVG(EXTRACT(EPOCH FROM (${contacts.contactedAt} - ${contacts.createdAt})) / 3600.0)
-          FILTER (WHERE ${contacts.contactedAt} IS NOT NULL), 0
+        AVG(EXTRACT(EPOCH FROM (${leads.contactedAt} - ${leads.createdAt})) / 3600.0)
+          FILTER (WHERE ${leads.contactedAt} IS NOT NULL), 0
       )::float`,
-      scheduledLeads: sql<number>`COUNT(*) FILTER (WHERE ${contacts.isScheduled} = true)::int`,
+      // "Set" leads (converted to an estimate) — feeds the Set Rate consumer.
+      scheduledLeads: sql<number>`COUNT(*) FILTER (WHERE ${leads.convertedToEstimateId} IS NOT NULL)::int`,
     })
-      .from(contacts)
+      .from(leads)
       .where(and(
-        eq(contacts.contractorId, contractorId),
-        eq(contacts.type, 'lead'),
-        gte(contacts.createdAt, periodStart)
+        eq(leads.contractorId, contractorId),
+        eq(leads.archived, false),
+        gte(leads.createdAt, periodStart)
       )),
     db.select({
       totalEstimates: sql<number>`COUNT(*)::int`,

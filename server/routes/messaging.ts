@@ -94,6 +94,9 @@ export function registerMessagingRoutes(app: Express): void {
         resolvedContactId
           ? storage.markContactContacted(resolvedContactId, req.user.contractorId, req.user.userId)
           : Promise.resolve(),
+        resolvedContactId
+          ? storage.markLeadContacted(resolvedContactId, req.user.contractorId, req.user.userId)
+          : Promise.resolve(),
         storage.createActivity({
           type: 'sms',
           title: 'SMS sent',
@@ -235,6 +238,7 @@ export function registerMessagingRoutes(app: Express): void {
 
       if (resolvedContactId) {
         await storage.markContactContacted(resolvedContactId, req.user.contractorId, req.user.userId);
+        await storage.markLeadContacted(resolvedContactId, req.user.contractorId, req.user.userId);
       }
 
       let broadcastLeadId: string | null = leadId || null;
@@ -326,6 +330,7 @@ export function registerMessagingRoutes(app: Express): void {
     if (callResponse.success && callResponse.callId) {
       if (resolvedContactId) {
         await storage.markContactContacted(resolvedContactId, req.user.contractorId, req.user.userId);
+        await storage.markLeadContacted(resolvedContactId, req.user.contractorId, req.user.userId);
       }
 
       await storage.createActivity({
@@ -489,6 +494,7 @@ export function registerMessagingRoutes(app: Express): void {
     }, req.user.contractorId);
     if (contactId) {
       await storage.markContactContacted(contactId, req.user.contractorId, req.user.userId);
+      await storage.markLeadContacted(contactId, req.user.contractorId, req.user.userId);
     }
     res.json({ success: true });
   }));
@@ -513,6 +519,7 @@ export function registerMessagingRoutes(app: Express): void {
     }, req.user.contractorId);
     if (contactId) {
       await storage.markContactContacted(contactId, req.user.contractorId, req.user.userId);
+      await storage.markLeadContacted(contactId, req.user.contractorId, req.user.userId);
     }
     res.json({ success: true });
   }));
