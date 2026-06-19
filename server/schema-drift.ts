@@ -1340,7 +1340,7 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
     {
       sql: `UPDATE contacts c
             SET type = 'lead',
-                status = CASE
+                status = (CASE
                   WHEN c.is_scheduled THEN 'scheduled'
                   WHEN EXISTS (
                     SELECT 1 FROM estimates e
@@ -1355,7 +1355,7 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
                       AND j.scheduled_date IS NOT NULL
                   ) THEN 'scheduled'
                   ELSE 'new'
-                END,
+                END)::contact_status,
                 updated_at = now()
             WHERE c.status IN ('active', 'inactive')
               AND EXISTS (
