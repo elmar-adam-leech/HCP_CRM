@@ -875,6 +875,12 @@ export function registerContactRoutes(app: Express): void {
           }
           contact = updated;
 
+          // Task #812: mirror the chosen pipeline status onto the most-recent
+          // active lead so the Leads page derived stage moves to the matching
+          // tab — exactly like the single-lead status path. The helper ignores
+          // customer-only statuses (active/inactive) which have no lead stage.
+          await storage.updateLeadStageForContact(id, req.user.contractorId, status);
+
           results.succeeded++;
 
           try {
