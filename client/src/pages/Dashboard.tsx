@@ -27,11 +27,6 @@ export default function Dashboard() {
 
   return (
     <PageLayout>
-      <PageHeader
-        title="Dashboard"
-        description="Overview of your business performance and recent activity"
-      />
-
       <DashboardMetrics />
       <FollowUpsWidget />
       <RecentActivityTimeline limit={8} />
