@@ -926,40 +926,80 @@ async function deleteLead(id: string, contractorId: string): Promise<boolean> {
   return true;
 }
 
+// lead_status enum values — used to safely map a contact's (wider) status enum
+// onto a lead row's status when backfilling a missing lead (task #814).
+const LEAD_STATUS_VALUES: readonly string[] = ['new', 'contacted', 'qualified', 'converted', 'disqualified', 'lost'];
+
+function contactStatusToLeadStatus(status: string | null | undefined): InsertLead['status'] {
+  return status && LEAD_STATUS_VALUES.includes(status)
+    ? (status as InsertLead['status'])
+    : 'new';
+}
+
+/**
+ * Task #814 — apply an aged/archived flag to a lead-type contact's lead rows.
+ *
+ * The Leads page is a derived projection that intentionally lists lead-type
+ * contacts that have NO backing row in the `leads` table (the effective stage
+ * falls back to `contacts.status`). The age/unage/archive/restore actions all
+ * UPDATE the `leads` table by `contact_id`; when a contact has zero lead rows
+ * the UPDATE affects nothing, storage returns undefined, and the route 404s.
+ *
+ * To make these actions succeed, when no lead row matches we create a minimal
+ * backing lead row carrying the requested flag — but only after verifying the
+ * contact exists and belongs to the contractor, so a genuinely missing or
+ * cross-tenant contact still returns undefined (404). We insert directly rather
+ * than via `createLead` to avoid enrolling a deprioritized/aged/archived lead in
+ * the `lead_created` sales cadence.
+ */
+async function applyLeadFlagForContact(
+  id: string,
+  contractorId: string,
+  flags: { aged?: boolean; archived?: boolean },
+  clearFollowUp: boolean,
+): Promise<Lead | undefined> {
+  const updateSet: Partial<InsertLead> & { updatedAt: Date } = { ...flags, updatedAt: new Date() };
+  if (clearFollowUp) updateSet.followUpDate = null;
+
+  const result = await db.update(leads)
+    .set(updateSet)
+    .where(and(eq(leads.contactId, id), eq(leads.contractorId, contractorId)))
+    .returning();
+  if (result[0]) return result[0];
+
+  // No backing lead row — create one if the contact is real and in-tenant.
+  const contact = await getContact(id, contractorId);
+  if (!contact) return undefined;
+
+  const inserted = await db.insert(leads).values({
+    contactId: contact.id,
+    contractorId,
+    status: contactStatusToLeadStatus(contact.status),
+    source: contact.source ?? undefined,
+    aged: flags.aged ?? false,
+    archived: flags.archived ?? false,
+  }).returning();
+  return inserted[0];
+}
+
 async function archiveLead(id: string, contractorId: string): Promise<Lead | undefined> {
   // Task #762: clear stale follow_up_date in the same UPDATE so reopening
   // (restoreLead) doesn't silently bring back an old date.
-  const result = await db.update(leads)
-    .set({ archived: true, followUpDate: null, updatedAt: new Date() })
-    .where(and(eq(leads.contactId, id), eq(leads.contractorId, contractorId)))
-    .returning();
-  return result[0];
+  return applyLeadFlagForContact(id, contractorId, { archived: true }, true);
 }
 
 async function restoreLead(id: string, contractorId: string): Promise<Lead | undefined> {
-  const result = await db.update(leads)
-    .set({ archived: false, updatedAt: new Date() })
-    .where(and(eq(leads.contactId, id), eq(leads.contractorId, contractorId)))
-    .returning();
-  return result[0];
+  return applyLeadFlagForContact(id, contractorId, { archived: false }, false);
 }
 
 async function ageLead(id: string, contractorId: string): Promise<Lead | undefined> {
   // Task #762: clear stale follow_up_date when a lead is aged, mirroring the
   // archive path. Unaging won't restore the old date.
-  const result = await db.update(leads)
-    .set({ aged: true, followUpDate: null, updatedAt: new Date() })
-    .where(and(eq(leads.contactId, id), eq(leads.contractorId, contractorId)))
-    .returning();
-  return result[0];
+  return applyLeadFlagForContact(id, contractorId, { aged: true }, true);
 }
 
 async function unageLead(id: string, contractorId: string): Promise<Lead | undefined> {
-  const result = await db.update(leads)
-    .set({ aged: false, updatedAt: new Date() })
-    .where(and(eq(leads.contactId, id), eq(leads.contractorId, contractorId)))
-    .returning();
-  return result[0];
+  return applyLeadFlagForContact(id, contractorId, { aged: false }, false);
 }
 
 // deduplicateContacts — moved to server/services/contact-deduper.ts
