@@ -8,6 +8,7 @@ import { db } from "../db";
 import { eq, and } from "drizzle-orm";
 import { DialpadService } from "../dialpad";
 import { gmailService } from "../gmail-service";
+import { isEmptyEmailBody, isHtmlEmail, sanitizeEmailHtml } from "../utils/email-html";
 import { type AuthedRequest, requireIntegrationManager } from "../auth-service";
 import { broadcastToContractor } from "../websocket";
 import { providerService } from "../providers/provider-service";
@@ -168,7 +169,20 @@ export function registerMessagingRoutes(app: Express): void {
 
     const parsed = parseBody(emailBodySchema, req, res);
     if (!parsed) return;
-    const { to, subject, content, contactId, leadId, customerId, estimateId, fromAddress } = parsed;
+    const { to, subject, content: rawContent, contactId, leadId, customerId, estimateId, fromAddress } = parsed;
+
+    // Security boundary: rich-text bodies arrive as HTML from the composer.
+    // Never trust client-sanitized HTML — re-sanitize to a strict allowlist
+    // here before it is sent to a provider or persisted as an activity. Plain
+    // text passes through unchanged.
+    const content = isHtmlEmail(rawContent) ? sanitizeEmailHtml(rawContent) : rawContent;
+    // Reject effectively-empty bodies — including rich-text that only contains
+    // empty tags / <br> / &nbsp; (e.g. "<p><br></p>") — even if a non-browser
+    // caller bypasses the client-side checks.
+    if (isEmptyEmailBody(content)) {
+      res.status(400).json({ message: "Email body is required" });
+      return;
+    }
 
     const resolvedContactId = contactId || leadId || customerId;
 

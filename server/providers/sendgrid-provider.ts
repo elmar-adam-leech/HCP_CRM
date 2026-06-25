@@ -2,6 +2,7 @@ import * as sgMail from '@sendgrid/mail';
 import { EmailProvider, EmailResult } from './interfaces';
 import { credentialService } from '../credential-service';
 import { logger } from '../utils/logger';
+import { isHtmlEmail, sanitizeEmailHtml, htmlToPlainText } from '../utils/email-html';
 
 const log = logger('SendGridProvider');
 
@@ -34,13 +35,27 @@ export class SendGridEmailProvider implements EmailProvider {
       sgMail.setApiKey(apiKey);
 
       const fromEmail = options.fromEmail || configuredFromEmail || 'noreply@company.com';
-      
+
+      // Rich-text (HTML) bodies are sanitized server-side (the security
+      // boundary) and sent as a real HTML part with a derived plain-text
+      // fallback. Plain-text bodies (automated/workflow/AI sends) keep their
+      // existing naive newline→<br> behavior — no regression.
+      let textPart: string;
+      let htmlPart: string;
+      if (isHtmlEmail(options.content)) {
+        htmlPart = sanitizeEmailHtml(options.content);
+        textPart = htmlToPlainText(htmlPart);
+      } else {
+        textPart = options.content;
+        htmlPart = options.content.replace(/\n/g, '<br>');
+      }
+
       const msg = {
         to: options.to,
         from: fromEmail,
         subject: options.subject,
-        text: options.content,
-        html: options.content.replace(/\n/g, '<br>'), // Simple HTML conversion
+        text: textPart,
+        html: htmlPart,
       };
 
       const response = await sgMail.send(msg);

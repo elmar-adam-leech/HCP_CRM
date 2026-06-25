@@ -6,6 +6,7 @@ import { oauthStates } from '@shared/schema';
 import { eq } from 'drizzle-orm';
 import { logger } from './utils/logger';
 import { htmlToPlainText } from './utils/text';
+import { isHtmlEmail, sanitizeEmailHtml, buildMultipartAlternative } from './utils/email-html';
 import { maskEmail } from './utils/pii-redactor';
 
 const log = logger('GmailService');
@@ -296,16 +297,35 @@ export class GmailService {
         }
       }
       
-      // Create the email message with HTML support
+      // Rich-text (HTML) bodies are delivered as multipart/alternative with a
+      // derived plain-text fallback. Plain-text bodies (automated/workflow/AI
+      // sends) keep their existing single text/html part behavior — no
+      // regression. The content is sanitized server-side as the security
+      // boundary before being trusted.
+      let contentTypeHeader: string;
+      let bodyContent: string;
+      if (isHtmlEmail(options.content)) {
+        const safeHtml = sanitizeEmailHtml(options.content);
+        const plainFallback = htmlToPlainText(safeHtml);
+        const multipart = buildMultipartAlternative(safeHtml, plainFallback);
+        contentTypeHeader = `Content-Type: ${multipart.contentType}`;
+        bodyContent = multipart.body;
+      } else {
+        contentTypeHeader = 'Content-Type: text/html; charset=utf-8';
+        bodyContent = options.content;
+      }
+
+      // Create the email message
       const headers = [
         `To: ${safeToAddress}`,
         fromHeader,
         `Subject: ${safeSubject}`,
-        'Content-Type: text/html; charset=utf-8',
+        'MIME-Version: 1.0',
+        contentTypeHeader,
       ].filter(Boolean).join('\r\n');
       
       // Add blank line separator between headers and body
-      const email = headers + '\r\n\r\n' + options.content;
+      const email = headers + '\r\n\r\n' + bodyContent;
       
       // Debug log to verify the From header
       log.info('[Gmail] Sending email with headers:', {

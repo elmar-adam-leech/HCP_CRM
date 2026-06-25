@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { ResponsiveModal } from "@/components/ui/responsive-modal";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { RichTextEditor, richTextIsEmpty } from "@/components/RichTextEditor";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -13,7 +13,7 @@ import { useTemplates } from "@/hooks/useTemplates";
 import { useToast } from "@/hooks/use-toast";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { applyTemplateSubstitution } from "@/lib/templateSubstitution";
+import { applyTemplateSubstitution, plainTextToHtml } from "@/lib/templateSubstitution";
 import { useMarkConversationRead } from "@/hooks/useMarkConversationRead";
 
 interface FromAddress {
@@ -72,7 +72,7 @@ export function EmailComposerModal({
 }: EmailComposerModalProps) {
   const [, navigate] = useLocation();
   const [subject, setSubject] = useState(initialSubject ?? "");
-  const [content, setContent] = useState(initialContent ?? "");
+  const [content, setContent] = useState(initialContent ? plainTextToHtml(initialContent) : "");
   const [selectedTemplate, setSelectedTemplate] = useState<string>("");
   const [selectedFromAddress, setSelectedFromAddress] = useState<string>("");
   const { toast } = useToast();
@@ -83,7 +83,7 @@ export function EmailComposerModal({
   useEffect(() => {
     if (!isOpen) return;
     if (initialSubject && !subject) setSubject(initialSubject);
-    if (initialContent && !content) setContent(initialContent);
+    if (initialContent && richTextIsEmpty(content)) setContent(plainTextToHtml(initialContent));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, initialSubject, initialContent]);
 
@@ -153,7 +153,7 @@ export function EmailComposerModal({
       return;
     }
 
-    if (!content.trim()) {
+    if (richTextIsEmpty(content)) {
       toast({
         title: "Content required",
         description: "Please enter email content",
@@ -184,7 +184,7 @@ export function EmailComposerModal({
     sendEmailMutation.mutate({
       to: recipientEmail,
       subject: subject.trim(),
-      content: content.trim(),
+      content: content,
       contactId: derivedContactId || undefined,
       leadId,
       customerId,
@@ -219,7 +219,7 @@ export function EmailComposerModal({
         contactAddress: recipientAddress ?? "",
         contactId: contactId ?? "",
       });
-      setContent(substitutedContent);
+      setContent(plainTextToHtml(substitutedContent));
       
       // Prefer template.subject (with substitution), fall back to template.title
       const templateSubject = template.subject
@@ -387,13 +387,12 @@ export function EmailComposerModal({
           {/* Message Content */}
           <div className="grid gap-2 shrink-0">
             <Label htmlFor="email-content">Message</Label>
-            <Textarea
-              id="email-content"
-              placeholder="Type your message here..."
+            <RichTextEditor
               value={content}
-              onChange={(e) => setContent(e.target.value)}
-              className="min-h-[100px] max-h-[120px] resize-none"
-              data-testid="textarea-email-content"
+              onChange={setContent}
+              placeholder="Type your message here..."
+              ariaLabel="Email message"
+              dataTestId="textarea-email-content"
             />
             {selectedTemplate && (
               <div className="text-xs text-muted-foreground">
@@ -417,7 +416,7 @@ export function EmailComposerModal({
               size="sm"
               className="w-full sm:w-auto"
               onClick={handleSendEmail}
-              disabled={!subject.trim() || !content.trim() || sendEmailMutation.isPending || showGmailWarning}
+              disabled={!subject.trim() || richTextIsEmpty(content) || sendEmailMutation.isPending || showGmailWarning}
               data-testid="button-send-email"
             >
               {sendEmailMutation.isPending ? (

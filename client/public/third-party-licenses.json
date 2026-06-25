@@ -10,10 +10,64 @@
         "publisher": "Sindre Sorhus"
       },
       {
+        "name": "@asamuzakjp/css-color",
+        "version": "5.1.11",
+        "repository": "https://github.com/asamuzaK/cssColor",
+        "publisher": "asamuzaK"
+      },
+      {
+        "name": "@asamuzakjp/dom-selector",
+        "version": "7.1.1",
+        "repository": "https://github.com/asamuzaK/domSelector",
+        "publisher": "asamuzaK"
+      },
+      {
+        "name": "@asamuzakjp/generational-cache",
+        "version": "1.0.1",
+        "repository": "https://github.com/asamuzaK/generationalCache",
+        "publisher": "asamuzaK"
+      },
+      {
+        "name": "@asamuzakjp/nwsapi",
+        "version": "2.3.9",
+        "repository": "https://github.com/dperini/nwsapi",
+        "publisher": "Diego Perini"
+      },
+      {
         "name": "@babel/runtime",
         "version": "7.27.0",
         "repository": "https://github.com/babel/babel",
         "publisher": "The Babel Team"
+      },
+      {
+        "name": "@bramus/specificity",
+        "version": "2.4.2",
+        "repository": "https://github.com/bramus/specificity",
+        "publisher": "Bramus Van Damme"
+      },
+      {
+        "name": "@csstools/css-calc",
+        "version": "3.2.1",
+        "repository": "https://github.com/csstools/postcss-plugins",
+        "publisher": ""
+      },
+      {
+        "name": "@csstools/css-color-parser",
+        "version": "4.1.9",
+        "repository": "https://github.com/csstools/postcss-plugins",
+        "publisher": ""
+      },
+      {
+        "name": "@csstools/css-parser-algorithms",
+        "version": "4.0.0",
+        "repository": "https://github.com/csstools/postcss-plugins",
+        "publisher": ""
+      },
+      {
+        "name": "@csstools/css-tokenizer",
+        "version": "4.0.0",
+        "repository": "https://github.com/csstools/postcss-plugins",
+        "publisher": ""
       },
       {
         "name": "@dnd-kit/accessibility",
@@ -38,6 +92,12 @@
         "version": "3.2.2",
         "repository": "https://github.com/clauderic/dnd-kit",
         "publisher": "Claudéric Demers"
+      },
+      {
+        "name": "@exodus/bytes",
+        "version": "1.15.1",
+        "repository": "https://github.com/ExodusOSS/bytes",
+        "publisher": "Exodus Movement, Inc."
       },
       {
         "name": "@floating-ui/core",
@@ -1006,6 +1066,12 @@
         "publisher": "Nick Campbell"
       },
       {
+        "name": "bidi-js",
+        "version": "1.0.3",
+        "repository": "https://github.com/lojjic/bidi-js",
+        "publisher": "Jason Johnston"
+      },
+      {
         "name": "bignumber.js",
         "version": "9.3.1",
         "repository": "https://github.com/MikeMcl/bignumber.js",
@@ -1210,6 +1276,12 @@
         "publisher": "André Cruz"
       },
       {
+        "name": "css-tree",
+        "version": "3.2.1",
+        "repository": "https://github.com/csstree/csstree",
+        "publisher": "Roman Dvornov"
+      },
+      {
         "name": "cssesc",
         "version": "3.0.0",
         "repository": "https://github.com/mathiasbynens/cssesc",
@@ -1226,6 +1298,12 @@
         "version": "4.0.1",
         "repository": "https://github.com/TooTallNate/node-data-uri-to-buffer",
         "publisher": "Nathan Rajlich"
+      },
+      {
+        "name": "data-urls",
+        "version": "7.0.0",
+        "repository": "https://github.com/jsdom/data-urls",
+        "publisher": "Domenic Denicola"
       },
       {
         "name": "date-fns",
@@ -1250,6 +1328,12 @@
         "version": "1.2.0",
         "repository": "https://github.com/sindresorhus/decamelize",
         "publisher": "Sindre Sorhus"
+      },
+      {
+        "name": "decimal.js",
+        "version": "10.6.0",
+        "repository": "https://github.com/MikeMcl/decimal.js",
+        "publisher": "Michael Mclaughlin"
       },
       {
         "name": "decimal.js-light",
@@ -1600,6 +1684,12 @@
         "publisher": "Adam Baldwin"
       },
       {
+        "name": "html-encoding-sniffer",
+        "version": "6.0.0",
+        "repository": "https://github.com/jsdom/html-encoding-sniffer",
+        "publisher": "Domenic Denicola"
+      },
+      {
         "name": "html-url-attributes",
         "version": "3.0.1",
         "repository": "https://github.com/rehypejs/rehype-minify/tree/main/packages/html-url-attributes",
@@ -1720,6 +1810,12 @@
         "publisher": "Sindre Sorhus"
       },
       {
+        "name": "is-potential-custom-element-name",
+        "version": "1.0.1",
+        "repository": "https://github.com/mathiasbynens/is-potential-custom-element-name",
+        "publisher": "Mathias Bynens"
+      },
+      {
         "name": "is-promise",
         "version": "2.2.2",
         "repository": "https://github.com/then/is-promise",
@@ -1736,6 +1832,12 @@
         "version": "4.0.0",
         "repository": "https://github.com/lydell/js-tokens",
         "publisher": "Simon Lydell"
+      },
+      {
+        "name": "jsdom",
+        "version": "29.1.1",
+        "repository": "https://github.com/jsdom/jsdom",
+        "publisher": ""
       },
       {
         "name": "json-bigint",
@@ -2218,6 +2320,12 @@
         "publisher": "Titus Wormer"
       },
       {
+        "name": "parse5",
+        "version": "8.0.1",
+        "repository": "https://github.com/inikulin/parse5",
+        "publisher": "Ivan Nikulin"
+      },
+      {
         "name": "parseurl",
         "version": "1.3.3",
         "repository": "https://github.com/pillarjs/parseurl",
@@ -2404,6 +2512,12 @@
         "publisher": "Rob Wu"
       },
       {
+        "name": "punycode",
+        "version": "2.3.1",
+        "repository": "https://github.com/mathiasbynens/punycode.js",
+        "publisher": "Mathias Bynens"
+      },
+      {
         "name": "pvtsutils",
         "version": "1.3.6",
         "repository": "https://github.com/PeculiarVentures/pvtsutils",
@@ -2578,6 +2692,12 @@
         "publisher": "Troy Goode"
       },
       {
+        "name": "require-from-string",
+        "version": "2.0.2",
+        "repository": "https://github.com/floatdrop/require-from-string",
+        "publisher": "Vsevolod Strukchinsky"
+      },
+      {
         "name": "resolve",
         "version": "1.22.8",
         "repository": "https://github.com/browserify/resolve",
@@ -2746,6 +2866,12 @@
         "publisher": "Jordan Harband"
       },
       {
+        "name": "symbol-tree",
+        "version": "3.2.4",
+        "repository": "https://github.com/jsdom/js-symbol-tree",
+        "publisher": "Joris van der Wel"
+      },
+      {
         "name": "tailwind-merge",
         "version": "2.6.0",
         "repository": "https://github.com/dcastil/tailwind-merge",
@@ -2782,6 +2908,18 @@
         "publisher": "Alex Reardon"
       },
       {
+        "name": "tldts",
+        "version": "7.4.4",
+        "repository": "https://github.com/remusao/tldts",
+        "publisher": "Rémi Berson"
+      },
+      {
+        "name": "tldts-core",
+        "version": "7.4.4",
+        "repository": "https://github.com/remusao/tldts",
+        "publisher": "Rémi Berson"
+      },
+      {
         "name": "to-regex-range",
         "version": "5.0.1",
         "repository": "https://github.com/micromatch/to-regex-range",
@@ -2792,6 +2930,12 @@
         "version": "1.0.1",
         "repository": "https://github.com/component/toidentifier",
         "publisher": "Douglas Christopher Wilson"
+      },
+      {
+        "name": "tr46",
+        "version": "6.0.0",
+        "repository": "https://github.com/jsdom/tr46",
+        "publisher": "Sebastian Mayr"
       },
       {
         "name": "trim-lines",
@@ -2821,6 +2965,12 @@
         "name": "type-is",
         "version": "1.6.18",
         "repository": "https://github.com/jshttp/type-is",
+        "publisher": ""
+      },
+      {
+        "name": "undici",
+        "version": "7.28.0",
+        "repository": "https://github.com/nodejs/undici",
         "publisher": ""
       },
       {
@@ -2932,10 +3082,28 @@
         "publisher": "Titus Wormer"
       },
       {
+        "name": "w3c-xmlserializer",
+        "version": "5.0.0",
+        "repository": "https://github.com/jsdom/w3c-xmlserializer",
+        "publisher": ""
+      },
+      {
         "name": "web-streams-polyfill",
         "version": "3.3.3",
         "repository": "https://github.com/MattiasBuelens/web-streams-polyfill",
         "publisher": "Mattias Buelens"
+      },
+      {
+        "name": "whatwg-mimetype",
+        "version": "5.0.0",
+        "repository": "https://github.com/jsdom/whatwg-mimetype",
+        "publisher": "Domenic Denicola"
+      },
+      {
+        "name": "whatwg-url",
+        "version": "16.0.1",
+        "repository": "https://github.com/jsdom/whatwg-url",
+        "publisher": "Sebastian Mayr"
       },
       {
         "name": "wrap-ansi",
@@ -2960,6 +3128,12 @@
         "version": "8.20.1",
         "repository": "https://github.com/websockets/ws",
         "publisher": "Einar Otto Stangvik"
+      },
+      {
+        "name": "xmlchars",
+        "version": "2.2.0",
+        "repository": "https://github.com/lddubeau/xmlchars",
+        "publisher": "Louis-Dominique Dubeau"
       },
       {
         "name": "xtend",
@@ -3262,6 +3436,12 @@
         "publisher": "Ben Coe"
       },
       {
+        "name": "saxes",
+        "version": "6.0.0",
+        "repository": "https://github.com/lddubeau/saxes",
+        "publisher": "Louis-Dominique Dubeau"
+      },
+      {
         "name": "semver",
         "version": "7.7.2",
         "repository": "https://github.com/npm/node-semver",
@@ -3440,6 +3620,12 @@
         "version": "0.1.13",
         "repository": "https://github.com/gristlabs/ts-interface-checker",
         "publisher": "Dmitry S, Grist Labs"
+      },
+      {
+        "name": "xml-name-validator",
+        "version": "5.0.0",
+        "repository": "https://github.com/jsdom/xml-name-validator",
+        "publisher": "Domenic Denicola"
       }
     ]
   },
@@ -3482,6 +3668,12 @@
         "version": "1.2.1",
         "repository": "https://github.com/7rulnik/source-map-js",
         "publisher": "Valentin 7rulnik Semirulnik"
+      },
+      {
+        "name": "tough-cookie",
+        "version": "6.0.1",
+        "repository": "https://github.com/salesforce/tough-cookie",
+        "publisher": "Jeremy Stashewsky"
       }
     ]
   },
@@ -3502,6 +3694,12 @@
         "publisher": "Isaac Z. Schlueter"
       },
       {
+        "name": "lru-cache",
+        "version": "11.5.1",
+        "repository": "https://github.com/isaacs/node-lru-cache",
+        "publisher": "Isaac Z. Schlueter"
+      },
+      {
         "name": "package-json-from-dist",
         "version": "1.0.1",
         "repository": "https://github.com/isaacs/package-json-from-dist",
@@ -3512,6 +3710,42 @@
         "version": "1.11.1",
         "repository": "https://github.com/isaacs/path-scurry",
         "publisher": "Isaac Z. Schlueter"
+      }
+    ]
+  },
+  {
+    "license": "MIT-0",
+    "licenseText": "MIT No Attribution (MIT-0)\n\nCopyright © CSSTools Contributors\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of\nthis software and associated documentation files (the “Software”), to deal in\nthe Software without restriction, including without limitation the rights to\nuse, copy, modify, merge, publish, distribute, sublicense, and/or sell copies\nof the Software, and to permit persons to whom the Software is furnished to do\nso.\n\nTHE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.",
+    "packages": [
+      {
+        "name": "@csstools/color-helpers",
+        "version": "6.1.0",
+        "repository": "https://github.com/csstools/postcss-plugins",
+        "publisher": ""
+      },
+      {
+        "name": "@csstools/css-syntax-patches-for-csstree",
+        "version": "1.1.5",
+        "repository": "https://github.com/csstools/postcss-plugins",
+        "publisher": ""
+      }
+    ]
+  },
+  {
+    "license": "BSD-2-Clause",
+    "licenseText": "Copyright (c) Felix Böhm\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:\n\nRedistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.\n\nRedistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.\n\nTHIS IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS,\nEVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
+    "packages": [
+      {
+        "name": "entities",
+        "version": "8.0.0",
+        "repository": "https://github.com/fb55/entities",
+        "publisher": "Felix Boehm"
+      },
+      {
+        "name": "webidl-conversions",
+        "version": "8.0.1",
+        "repository": "https://github.com/jsdom/webidl-conversions",
+        "publisher": "Domenic Denicola"
       }
     ]
   },
@@ -3542,6 +3776,18 @@
         "version": "3.4.5",
         "repository": "https://github.com/cure53/DOMPurify",
         "publisher": "Dr.-Ing. Mario Heiderich, Cure53"
+      }
+    ]
+  },
+  {
+    "license": "CC0-1.0",
+    "licenseText": "CC0 1.0 Universal\n\nStatement of Purpose\n\nThe laws of most jurisdictions throughout the world automatically confer\nexclusive Copyright and Related Rights (defined below) upon the creator and\nsubsequent owner(s) (each and all, an \"owner\") of an original work of\nauthorship and/or a database (each, a \"Work\").\n\nCertain owners wish to permanently relinquish those rights to a Work for the\npurpose of contributing to a commons of creative, cultural and scientific\nworks (\"Commons\") that the public can reliably and without fear of later\nclaims of infringement build upon, modify, incorporate in other works, reuse\nand redistribute as freely as possible in any form whatsoever and for any\npurposes, including without limitation commercial purposes. These owners may\ncontribute to the Commons to promote the ideal of a free culture and the\nfurther production of creative, cultural and scientific works, or to gain\nreputation or greater distribution for their Work in part through the use and\nefforts of others.\n\nFor these and/or other purposes and motivations, and without any expectation\nof additional consideration or compensation, the person associating CC0 with a\nWork (the \"Affirmer\"), to the extent that he or she is an owner of Copyright\nand Related Rights in the Work, voluntarily elects to apply CC0 to the Work\nand publicly distribute the Work under its terms, with knowledge of his or her\nCopyright and Related Rights in the Work and the meaning and intended legal\neffect of CC0 on those rights.\n\n1. Copyright and Related Rights. A Work made available under CC0 may be\nprotected by copyright and related or neighboring rights (\"Copyright and\nRelated Rights\"). Copyright and Related Rights include, but are not limited\nto, the following:\n\n  i. the right to reproduce, adapt, distribute, perform, display, communicate,\n  and translate a Work;\n\n  ii. moral rights retained by the original author(s) and/or performer(s);\n\n  iii. publicity and privacy rights pertaining to a person's image or likeness\n  depicted in a Work;\n\n  iv. rights protecting against unfair competition in regards to a Work,\n  subject to the limitations in paragraph 4(a), below;\n\n  v. rights protecting the extraction, dissemination, use and reuse of data in\n  a Work;\n\n  vi. database rights (such as those arising under Directive 96/9/EC of the\n  European Parliament and of the Council of 11 March 1996 on the legal\n  protection of databases, and under any national implementation thereof,\n  including any amended or successor version of such directive); and\n\n  vii. other similar, equivalent or corresponding rights throughout the world\n  based on applicable law or treaty, and any national implementations thereof.\n\n2. Waiver. To the greatest extent permitted by, but not in contravention of,\napplicable law, Affirmer hereby overtly, fully, permanently, irrevocably and\nunconditionally waives, abandons, and surrenders all of Affirmer's Copyright\nand Related Rights and associated claims and causes of action, whether now\nknown or unknown (including existing as well as future claims and causes of\naction), in the Work (i) in all territories worldwide, (ii) for the maximum\nduration provided by applicable law or treaty (including future time\nextensions), (iii) in any current or future medium and for any number of\ncopies, and (iv) for any purpose whatsoever, including without limitation\ncommercial, advertising or promotional purposes (the \"Waiver\"). Affirmer makes\nthe Waiver for the benefit of each member of the public at large and to the\ndetriment of Affirmer's heirs and successors, fully intending that such Waiver\nshall not be subject to revocation, rescission, cancellation, termination, or\nany other legal or equitable action to disrupt the quiet enjoyment of the Work\nby the public as contemplated by Affirmer's express Statement of Purpose.\n\n3. Public License Fallback. Should any part of the Waiver for any reason be\njudged legally invalid or ineffective under applicable law, then the Waiver\nshall be preserved to the maximum extent permitted taking into account\nAffirmer's express Statement of Purpose. In addition, to the extent the Waiver\nis so judged Affirmer hereby grants to each affected person a royalty-free,\nnon transferable, non sublicensable, non exclusive, irrevocable and\nunconditional license to exercise Affirmer's Copyright and Related Rights in\nthe Work (i) in all territories worldwide, (ii) for the maximum duration\nprovided by applicable law or treaty (including future time extensions), (iii)\nin any current or future medium and for any number of copies, and (iv) for any\npurpose whatsoever, including without limitation commercial, advertising or\npromotional purposes (the \"License\"). The License shall be deemed effective as\nof the date CC0 was applied by Affirmer to the Work. Should any part of the\nLicense for any reason be judged legally invalid or ineffective under\napplicable law, such partial invalidity or ineffectiveness shall not\ninvalidate the remainder of the License, and in such case Affirmer hereby\naffirms that he or she will not (i) exercise any of his or her remaining\nCopyright and Related Rights in the Work or (ii) assert any associated claims\nand causes of action with respect to the Work, in either case contrary to\nAffirmer's express Statement of Purpose.\n\n4. Limitations and Disclaimers.\n\n  a. No trademark or patent rights held by Affirmer are waived, abandoned,\n  surrendered, licensed or otherwise affected by this document.\n\n  b. Affirmer offers the Work as-is and makes no representations or warranties\n  of any kind concerning the Work, express, implied, statutory or otherwise,\n  including without limitation warranties of title, merchantability, fitness\n  for a particular purpose, non infringement, or the absence of latent or\n  other defects, accuracy, or the present or absence of errors, whether or not\n  discoverable, all to the greatest extent permissible under applicable law.\n\n  c. Affirmer disclaims responsibility for clearing rights of other persons\n  that may apply to the Work or any use thereof, including without limitation\n  any person's Copyright and Related Rights in the Work. Further, Affirmer\n  disclaims responsibility for obtaining any necessary consents, permissions\n  or other rights required for any use of the Work.\n\n  d. Affirmer understands and acknowledges that Creative Commons is not a\n  party to this document and has no duty or obligation with respect to this\n  CC0 or use of the Work.\n\nFor more information, please see\n<http://creativecommons.org/publicdomain/zero/1.0/>",
+    "packages": [
+      {
+        "name": "mdn-data",
+        "version": "2.27.1",
+        "repository": "https://github.com/mdn/data",
+        "publisher": "Mozilla Developer Network"
       }
     ]
   },

@@ -2,6 +2,7 @@ import { google } from 'googleapis';
 import type { EmailProvider, EmailResult } from './interfaces';
 import { credentialService } from '../credential-service';
 import { logger } from '../utils/logger';
+import { isHtmlEmail, sanitizeEmailHtml, htmlToPlainText, buildMultipartAlternative } from '../utils/email-html';
 
 const log = logger('GmailProvider');
 
@@ -45,14 +46,31 @@ export class GmailEmailProvider implements EmailProvider {
     try {
       const { gmail, userEmail } = await this.createGmailClient(options.contractorId);
       const fromEmail = options.fromEmail || userEmail || 'noreply@company.com';
-      
+
+      // Rich-text (HTML) bodies are sanitized server-side and delivered as a
+      // multipart/alternative message with a derived plain-text fallback.
+      // Plain-text bodies keep their existing text/plain behavior — no
+      // regression for automated/workflow/AI sends.
+      let contentTypeHeader: string | null = null;
+      let bodyContent: string;
+      if (isHtmlEmail(options.content)) {
+        const safeHtml = sanitizeEmailHtml(options.content);
+        const multipart = buildMultipartAlternative(safeHtml, htmlToPlainText(safeHtml));
+        contentTypeHeader = `Content-Type: ${multipart.contentType}`;
+        bodyContent = multipart.body;
+      } else {
+        bodyContent = options.content;
+      }
+
       // Create the email message
       const email = [
         `To: ${options.to}`,
         `From: ${fromEmail}`,
         `Subject: ${options.subject}`,
+        'MIME-Version: 1.0',
+        ...(contentTypeHeader ? [contentTypeHeader] : []),
         '',
-        options.content,
+        bodyContent,
       ].join('\n');
 
       // Encode the email in base64

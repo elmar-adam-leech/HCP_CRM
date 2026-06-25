@@ -17,6 +17,27 @@ export interface TemplateVariables {
   notes?: string;
 }
 
+/**
+ * Convert stored plain-text (templates, sales-process step bodies) into HTML
+ * suitable for the rich-text email editor: escape HTML-special characters so
+ * they render literally, and preserve line breaks as <br>. The result is safe
+ * to load into the contentEditable editor as formatted text rather than raw
+ * markup. The server re-sanitizes on send regardless.
+ */
+export function plainTextToHtml(text: string): string {
+  if (!text) return "";
+  // Already-HTML content (rare, e.g. re-editing a sent rich email) passes
+  // through untouched so we don't double-escape its tags.
+  if (/<(?:\/?)(?:p|br|strong|em|b|i|a)(?:\s|>|\/)/i.test(text)) {
+    return text;
+  }
+  const escaped = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return escaped.replace(/\r\n|\r|\n/g, "<br>");
+}
+
 export function applyTemplateSubstitution(
   content: string,
   variables: TemplateVariables

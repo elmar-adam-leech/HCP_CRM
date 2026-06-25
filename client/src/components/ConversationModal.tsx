@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { RichTextEditor, richTextIsEmpty } from "@/components/RichTextEditor";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PhoneNumberSelector } from "@/components/PhoneNumberSelector";
 import { MessageHistory } from "@/components/MessageHistory";
@@ -139,7 +139,7 @@ export function ConversationModal({ isOpen, onClose, conversation }: Conversatio
   const hasEmail = !!conversation?.contactEmail;
 
   const handleSendEmail = () => {
-    if (!emailSubject.trim() || !emailBody.trim() || !hasEmail) return;
+    if (!emailSubject.trim() || richTextIsEmpty(emailBody) || !hasEmail) return;
     sendEmailMutation.mutate({ subject: emailSubject, body: emailBody });
   };
 
@@ -297,20 +297,22 @@ export function ConversationModal({ isOpen, onClose, conversation }: Conversatio
                   disabled={!hasEmail}
                 />
                 <div className="flex gap-2">
-                  <Textarea
-                    placeholder="Type your email message..."
-                    value={emailBody}
-                    onChange={(e) => setEmailBody(e.target.value)}
-                    className="flex-1 min-h-[60px] sm:min-h-[80px] resize-none text-sm"
-                    data-testid="textarea-email-body"
-                    disabled={!hasEmail}
-                  />
+                  <div className="flex-1">
+                    <RichTextEditor
+                      value={emailBody}
+                      onChange={setEmailBody}
+                      placeholder="Type your email message..."
+                      ariaLabel="Email message"
+                      disabled={!hasEmail}
+                      dataTestId="textarea-email-body"
+                    />
+                  </div>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <span className="self-end">
                         <Button
                           onClick={handleSendEmail}
-                          disabled={!hasEmail || !emailSubject.trim() || !emailBody.trim() || sendEmailMutation.isPending || showGmailWarning}
+                          disabled={!hasEmail || !emailSubject.trim() || richTextIsEmpty(emailBody) || sendEmailMutation.isPending || showGmailWarning}
                           size="icon"
                           data-testid="button-send-email"
                         >
