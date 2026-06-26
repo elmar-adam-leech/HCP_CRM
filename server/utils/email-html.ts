@@ -17,6 +17,7 @@ import createDOMPurify from 'dompurify';
 // @ts-ignore
 import { JSDOM } from 'jsdom';
 import { htmlToPlainText } from './text';
+import { normalizeBlockBreaks } from '@shared/lib/email-normalize';
 
 export { htmlToPlainText };
 
@@ -50,7 +51,15 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
  * unchanged aside from entity encoding of any stray angle brackets).
  */
 export function sanitizeEmailHtml(html: string): string {
-  return DOMPurify.sanitize(html, {
+  // Normalize browser-specific block separators (e.g. Chrome/Safari wrap each
+  // Enter-separated line in a <div>) into allowlisted <br> breaks BEFORE the
+  // allowlist pass. Otherwise <div> is stripped WITHOUT a line break, silently
+  // collapsing multiple lines into one. This is the security boundary, so it
+  // must guard against the same dropped-break issue the client editor does.
+  const container = window.document.createElement('div');
+  container.innerHTML = html;
+  normalizeBlockBreaks(container);
+  return DOMPurify.sanitize(container.innerHTML, {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
     ALLOWED_URI_REGEXP: SAFE_URI_REGEXP,

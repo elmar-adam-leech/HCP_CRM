@@ -11,6 +11,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { normalizeBlockBreaks } from "@shared/lib/email-normalize";
 
 // Strict allowlist — must mirror the server-side allowlist in
 // server/utils/email-html.ts. The server re-sanitizes on send (the real
@@ -21,7 +22,13 @@ const SANITIZE_CONFIG = {
 };
 
 export function sanitizeRichText(html: string): string {
-  return DOMPurify.sanitize(html, SANITIZE_CONFIG);
+  // Normalize browser-specific block separators (e.g. Chrome/Safari's <div>
+  // wrappers for Enter-separated lines) into allowlisted <br> breaks BEFORE
+  // sanitizing, so line breaks are never silently dropped with the <div>.
+  const container = document.createElement("div");
+  container.innerHTML = html;
+  normalizeBlockBreaks(container);
+  return DOMPurify.sanitize(container.innerHTML, SANITIZE_CONFIG);
 }
 
 /**

@@ -5,6 +5,7 @@ import {
   isEmptyEmailBody,
   buildMultipartAlternative,
 } from './email-html';
+import { htmlToPlainText } from './text';
 
 describe('sanitizeEmailHtml', () => {
   it('keeps the allowlisted formatting tags', () => {
@@ -50,6 +51,46 @@ describe('sanitizeEmailHtml', () => {
     );
     expect(out).not.toMatch(/<div|<span|<img/i);
     expect(out).toContain('text');
+  });
+
+  it('preserves line breaks when Chrome/Safari wrap lines in <div>', () => {
+    // Chrome/Safari emit the first line bare and subsequent lines in <div>.
+    const out = sanitizeEmailHtml('Line one<div>Line two</div><div>Line three</div>');
+    expect(out).not.toMatch(/<div/i);
+    expect(out).toContain('<br>');
+    // The plain-text fallback must carry all three lines on separate lines.
+    expect(htmlToPlainText(out)).toBe('Line one\nLine two\nLine three');
+  });
+
+  it('preserves a blank line typed between paragraphs', () => {
+    const out = sanitizeEmailHtml('A<div><br></div><div>B</div>');
+    const text = htmlToPlainText(out);
+    expect(text).toBe('A\n\nB');
+  });
+
+  it('keeps bold and links intact while normalizing div breaks', () => {
+    const out = sanitizeEmailHtml(
+      'Hello <strong>world</strong><div>Visit <a href="https://example.com">site</a></div>',
+    );
+    expect(out).toContain('<strong>world</strong>');
+    expect(out).toContain('href="https://example.com"');
+    expect(out).toContain('<br>');
+    expect(out).not.toMatch(/<div/i);
+  });
+
+  it('does not add a spurious leading break for fully div-wrapped lines', () => {
+    const out = sanitizeEmailHtml('<div>First</div><div>Second</div>');
+    expect(htmlToPlainText(out)).toBe('First\nSecond');
+  });
+
+  it('leaves <p>-separated lines (Firefox / forced separator) working', () => {
+    const out = sanitizeEmailHtml('<p>Line one</p><p>Line two</p>');
+    expect(htmlToPlainText(out)).toBe('Line one\nLine two');
+  });
+
+  it('does not stack breaks on top of an existing <br>', () => {
+    const out = sanitizeEmailHtml('Line one<br><div>Line two</div>');
+    expect(htmlToPlainText(out)).toBe('Line one\nLine two');
   });
 });
 
