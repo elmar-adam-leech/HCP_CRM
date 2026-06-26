@@ -11,7 +11,7 @@
  * Definitions are shared with the Leads page derivation (see lead-stage.ts):
  *   - Total Leads      = COUNT(leads) in window
  *   - Disqualified     = COUNT(status = 'disqualified')  (not 'lost')
- *   - Set / Scheduled  = COUNT(converted_to_estimate_id IS NOT NULL)
+ *   - Set / Scheduled  = COUNT(leads whose contact is booked, contacts.is_scheduled = true)
  *   - Set Rate         = set / (total − disqualified)
  *   - Today's Follow-ups = COUNT(follow_up_date within today)
  *   - Speed-to-Lead    = AVG(contacted_at − created_at) where contacted_at set
@@ -24,7 +24,7 @@
  * the number of full-table scans per minute.
  */
 
-import { leads, estimates, jobs } from "@shared/schema";
+import { leads, estimates, jobs, contacts } from "@shared/schema";
 import { db } from "../db";
 import { eq, and, gte, lte, sql } from "drizzle-orm";
 
@@ -64,9 +64,11 @@ export async function getDashboardMetrics(
 
   const [metricsRow] = await db.select({
     totalLeads: sql<number>`COUNT(*)::int`,
-    // "Set" = converted to an estimate. Org-wide and per-user (assigned) slices.
-    setAll: sql<number>`COUNT(*) FILTER (WHERE ${leads.convertedToEstimateId} IS NOT NULL)::int`,
-    setByUser: sql<number>`COUNT(*) FILTER (WHERE ${leads.convertedToEstimateId} IS NOT NULL AND ${leads.assignedToUserId} = ${userId})::int`,
+    // "Set" = scheduled booking, aligned with the Leads pipeline's "scheduled"
+    // stage (contacts.is_scheduled = true; see lead-stage.ts effectiveStageSql),
+    // NOT estimate conversion. Org-wide and per-user (assigned) slices.
+    setAll: sql<number>`COUNT(*) FILTER (WHERE ${contacts.isScheduled} = true)::int`,
+    setByUser: sql<number>`COUNT(*) FILTER (WHERE ${contacts.isScheduled} = true AND ${leads.assignedToUserId} = ${userId})::int`,
     // "Touched" (non-admin denominator) = assigned to this user.
     touchedByUser: sql<number>`COUNT(*) FILTER (WHERE ${leads.assignedToUserId} = ${userId})::int`,
     speedToLeadAll: sql<number>`COALESCE(AVG(EXTRACT(EPOCH FROM (${leads.contactedAt} - ${leads.createdAt})) / 60.0) FILTER (WHERE ${leads.contactedAt} IS NOT NULL), 0)::float`,
@@ -74,7 +76,10 @@ export async function getDashboardMetrics(
     todaysFollowUps: sql<number>`COUNT(*) FILTER (WHERE ${leads.followUpDate} >= ${today} AND ${leads.followUpDate} < ${tomorrow})::int`,
     disqualifiedAll: sql<number>`COUNT(*) FILTER (WHERE ${leads.status} = 'disqualified')::int`,
     disqualifiedTouchedByUser: sql<number>`COUNT(*) FILTER (WHERE ${leads.status} = 'disqualified' AND ${leads.assignedToUserId} = ${userId})::int`,
-  }).from(leads).where(and(...baseConditions));
+  })
+    .from(leads)
+    .leftJoin(contacts, eq(leads.contactId, contacts.id))
+    .where(and(...baseConditions));
 
   const totalLeads = metricsRow?.totalLeads ?? 0;
   const speedToLeadMinutes = isAdmin
@@ -120,10 +125,13 @@ export async function getMetricsAggregates(contractorId: string, periodStart: Da
         AVG(EXTRACT(EPOCH FROM (${leads.contactedAt} - ${leads.createdAt})) / 3600.0)
           FILTER (WHERE ${leads.contactedAt} IS NOT NULL), 0
       )::float`,
-      // "Set" leads (converted to an estimate) — feeds the Set Rate consumer.
-      scheduledLeads: sql<number>`COUNT(*) FILTER (WHERE ${leads.convertedToEstimateId} IS NOT NULL)::int`,
+      // "Set" leads = scheduled booking (contacts.is_scheduled = true), aligned
+      // with the Leads pipeline's "scheduled" stage — NOT estimate conversion.
+      // Feeds the Set Rate consumer (business-metrics.ts).
+      scheduledLeads: sql<number>`COUNT(*) FILTER (WHERE ${contacts.isScheduled} = true)::int`,
     })
       .from(leads)
+      .leftJoin(contacts, eq(leads.contactId, contacts.id))
       .where(and(
         eq(leads.contractorId, contractorId),
         eq(leads.archived, false),

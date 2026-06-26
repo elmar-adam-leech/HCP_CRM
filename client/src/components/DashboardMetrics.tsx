@@ -237,7 +237,7 @@ export function DashboardMetrics() {
             value={metrics?.setRate ?? 0}
             unit="%"
             icon={<Target className="h-4 w-4" />}
-            description="Appointments set / Qualified leads"
+            description="Scheduled leads / (Total − Disqualified)"
           />
           <MetricCard
             title="Total Leads"
