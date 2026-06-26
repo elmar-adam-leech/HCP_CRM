@@ -34,6 +34,8 @@ export function getIntegrationConfig(data: IntegrationData): Integration {
   switch (data.name) {
     case 'dialpad':
       return { ...base, displayName: 'Dialpad', description: 'SMS and calling services for customer communication', icon: Phone, type: 'communication' };
+    case 'twilio':
+      return { ...base, displayName: 'Twilio', description: 'SMS and calling services for customer communication', icon: Phone, type: 'communication' };
     case 'gmail':
       return { ...base, displayName: 'Gmail', description: 'Email services for customer communication via Gmail API', icon: Mail, type: 'communication' };
     case 'sendgrid':

@@ -6,7 +6,6 @@ import { insertMessageSchema, users, contractors } from "@shared/schema";
 import { z } from "zod";
 import { db } from "../db";
 import { eq, and } from "drizzle-orm";
-import { DialpadService } from "../dialpad";
 import { gmailService } from "../gmail-service";
 import { isEmptyEmailBody, isHtmlEmail, sanitizeEmailHtml } from "../utils/email-html";
 import { type AuthedRequest, requireIntegrationManager } from "../auth-service";
@@ -74,13 +73,17 @@ export function registerMessagingRoutes(app: Express): void {
       }
     }
 
-    const smsDialpadService = new DialpadService();
-    const smsResponse = await smsDialpadService.sendText(
-      messageData.toNumber,
-      messageContent,
-      messageData.fromNumber || undefined,
-      req.user.contractorId
-    );
+    // Provider-agnostic SMS send — resolves the contractor's configured SMS
+    // provider (Dialpad, Twilio, ...) via the provider abstraction.
+    const smsPref = await storage.getTenantProvider(req.user.contractorId, 'sms');
+    const smsProviderName = smsPref?.smsProvider || 'dialpad';
+    const smsResponse = await providerService.sendSms({
+      to: messageData.toNumber,
+      message: messageContent,
+      fromNumber: messageData.fromNumber || undefined,
+      contractorId: req.user.contractorId,
+      userId: req.user.userId,
+    });
 
     if (smsResponse.success) {
       const savedMessage = await storage.createMessage({
@@ -105,7 +108,7 @@ export function registerMessagingRoutes(app: Express): void {
           contactId: resolvedContactId || null,
           userId: req.user.userId,
           externalId: smsResponse.messageId || null,
-          externalSource: 'dialpad',
+          externalSource: smsProviderName,
         }, req.user.contractorId),
       ]);
 

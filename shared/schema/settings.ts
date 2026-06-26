@@ -16,6 +16,9 @@ export const contractors = pgTable("contractors", {
   defaultDialpadNumber: text("default_dialpad_number"), // Organization-wide default Dialpad phone number
   dialpadActivityLastSyncAt: timestamp("dialpad_activity_last_sync_at"), // Last time Dialpad activities were synced
   dialpadActivitySyncEnabled: boolean("dialpad_activity_sync_enabled").default(true).notNull(), // Enable/disable automatic activity sync
+  // Twilio (task #822) — parallel calling/SMS provider.
+  defaultTwilioNumber: text("default_twilio_number"), // Organization-wide default Twilio phone number
+  twilioRecordCalls: boolean("twilio_record_calls").default(false).notNull(), // Record inbound+outbound calls (OFF by default, consent-gated)
   estimateArchiveDays: integer("estimate_archive_days"), // nullable — null = show all, N = only show estimates from last N days
   logoUrl: text("logo_url"), // Company logo: https URL or data:image/...;base64,... (nullable)
   brandColor: text("brand_color"), // Optional brand/accent color (hex, e.g. "#3366ff") used to theme the public booking page

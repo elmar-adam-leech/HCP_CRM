@@ -75,6 +75,10 @@ export const userContractors = pgTable("user_contractors", {
   contractorId: varchar("contractor_id").notNull().references(() => contractors.id, { onDelete: "cascade" }),
   role: userRoleEnum("role").notNull().default("user"), // Role specific to this contractor
   dialpadDefaultNumber: text("dialpad_default_number"), // Per-contractor default Dialpad number
+  // Twilio (task #822): per-contractor default Twilio number this user sends/calls from,
+  // and the rep's personal phone the bridge-model outbound call rings first.
+  twilioDefaultNumber: text("twilio_default_number"),
+  twilioPhoneToRing: text("twilio_phone_to_ring"),
   callPreference: text("call_preference").default("integration"), // 'integration' | 'personal'
   canManageIntegrations: boolean("can_manage_integrations").default(false).notNull(),
   allowedIntegrations: text("allowed_integrations").array(), // null = access to all integrations (when canManageIntegrations=true)

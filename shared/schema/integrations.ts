@@ -311,3 +311,85 @@ export const insertHcpCalendarEventSchema = createInsertSchema(hcpCalendarEvents
 });
 export type InsertHcpCalendarEvent = z.infer<typeof insertHcpCalendarEventSchema>;
 export type HcpCalendarEvent = typeof hcpCalendarEvents.$inferSelect;
+
+// ──────────────────────────────────────────────────────────────────────────
+// Twilio (task #822) — parallel calling + SMS provider alongside Dialpad.
+// Mirrors the Dialpad phone-number / webhook-state tables. The Dialpad
+// contractor is untouched; a contractor uses EITHER provider per service type.
+// ──────────────────────────────────────────────────────────────────────────
+
+// Twilio phone numbers owned by a contractor's Twilio account, with their
+// voice/SMS capabilities. Mirrors dialpadPhoneNumbers.
+export const twilioPhoneNumbers = pgTable("twilio_phone_numbers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  contractorId: varchar("contractor_id").notNull().references(() => contractors.id),
+  phoneNumber: text("phone_number").notNull(), // E.164 number
+  twilioSid: text("twilio_sid"), // Twilio IncomingPhoneNumber SID (PNxxxx)
+  displayName: text("display_name"),
+  canSendSms: boolean("can_send_sms").notNull().default(false),
+  canReceiveSms: boolean("can_receive_sms").notNull().default(false),
+  canMakeCalls: boolean("can_make_calls").notNull().default(false),
+  canReceiveCalls: boolean("can_receive_calls").notNull().default(false),
+  isActive: boolean("is_active").notNull().default(true),
+  lastSyncAt: timestamp("last_sync_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  contractorPhoneUnique: unique('twilio_phone_numbers_contractor_phone_unique').on(table.contractorId, table.phoneNumber),
+  contractorIdIdx: index("twilio_phone_numbers_contractor_id_idx").on(table.contractorId),
+}));
+
+export const insertTwilioPhoneNumberSchema = createInsertSchema(twilioPhoneNumbers).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertTwilioPhoneNumber = z.infer<typeof insertTwilioPhoneNumberSchema>;
+export type TwilioPhoneNumber = typeof twilioPhoneNumbers.$inferSelect;
+
+// Per-user permission to use a specific Twilio number. Mirrors
+// userPhoneNumberPermissions but FKs to twilioPhoneNumbers.
+export const twilioUserPhonePermissions = pgTable("twilio_user_phone_permissions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  phoneNumberId: varchar("phone_number_id").notNull().references(() => twilioPhoneNumbers.id),
+  contractorId: varchar("contractor_id").notNull().references(() => contractors.id),
+  canSendSms: boolean("can_send_sms").notNull().default(false),
+  canMakeCalls: boolean("can_make_calls").notNull().default(false),
+  isActive: boolean("is_active").notNull().default(true),
+  assignedBy: varchar("assigned_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  userPhoneUnique: unique('twilio_user_phone_perms_user_phone_unique').on(table.userId, table.phoneNumberId),
+  userIdIdx: index("twilio_user_phone_perms_user_id_idx").on(table.userId),
+  phoneNumberIdIdx: index("twilio_user_phone_perms_phone_id_idx").on(table.phoneNumberId),
+  contractorIdIdx: index("twilio_user_phone_perms_contractor_id_idx").on(table.contractorId),
+}));
+
+export const insertTwilioUserPhonePermissionSchema = createInsertSchema(twilioUserPhonePermissions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertTwilioUserPhonePermission = z.infer<typeof insertTwilioUserPhonePermissionSchema>;
+export type TwilioUserPhonePermission = typeof twilioUserPhonePermissions.$inferSelect;
+
+// Tracks the webhook configuration applied to each Twilio number per contractor,
+// so the diagnostic/re-config path can detect drift. Mirrors dialpadWebhookState.
+export const twilioWebhookState = pgTable("twilio_webhook_state", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  contractorId: varchar("contractor_id").notNull().references(() => contractors.id).unique(),
+  lastRegisteredVoiceUrl: text("last_registered_voice_url"),
+  lastRegisteredSmsUrl: text("last_registered_sms_url"),
+  configuredNumberSids: text("configured_number_sids").array(),
+  lastRegisteredAt: timestamp("last_registered_at"),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertTwilioWebhookStateSchema = createInsertSchema(twilioWebhookState).omit({
+  id: true,
+  updatedAt: true,
+});
+export type InsertTwilioWebhookState = z.infer<typeof insertTwilioWebhookStateSchema>;
+export type TwilioWebhookState = typeof twilioWebhookState.$inferSelect;

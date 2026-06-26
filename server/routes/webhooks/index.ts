@@ -5,6 +5,7 @@ import { registerEstimateWebhookRoutes } from "./estimates";
 import { registerJobWebhookRoutes } from "./jobs";
 import { registerDialpadSmsWebhookRoutes } from "./dialpad-sms";
 import { registerDialpadCallsWebhookRoutes } from "./dialpad-calls";
+import { registerTwilioWebhookRoutes } from "./twilio";
 import { registerFacebookWebhookRoutes } from "./facebook";
 
 export function registerWebhookRoutes(app: Express): void {
@@ -14,5 +15,6 @@ export function registerWebhookRoutes(app: Express): void {
   registerJobWebhookRoutes(app);
   registerDialpadSmsWebhookRoutes(app);
   registerDialpadCallsWebhookRoutes(app);
+  registerTwilioWebhookRoutes(app);
   registerFacebookWebhookRoutes(app);
 }

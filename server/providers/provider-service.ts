@@ -31,6 +31,7 @@ export const AVAILABLE_INTEGRATIONS = {
   GMAIL: 'gmail' as const,
   SENDGRID: 'sendgrid' as const,
   HOUSECALL_PRO: 'housecall-pro' as const,
+  TWILIO: 'twilio' as const,
 } as const;
 
 export const INTEGRATION_NAMES = Object.values(AVAILABLE_INTEGRATIONS);
@@ -98,6 +99,12 @@ export class ProviderService {
             const { DialpadSmsProvider } = await import('./dialpad-provider');
             return new DialpadSmsProvider();
           }
+        },
+        twilio: {
+          load: async () => {
+            const { TwilioSmsProvider } = await import('./twilio-provider');
+            return new TwilioSmsProvider();
+          }
         }
       },
       calling: {
@@ -105,6 +112,12 @@ export class ProviderService {
           load: async () => {
             const { DialpadCallProvider } = await import('./dialpad-provider');
             return new DialpadCallProvider();
+          }
+        },
+        twilio: {
+          load: async () => {
+            const { TwilioCallProvider } = await import('./twilio-provider');
+            return new TwilioCallProvider();
           }
         }
       }

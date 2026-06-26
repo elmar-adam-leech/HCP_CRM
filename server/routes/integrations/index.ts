@@ -133,13 +133,30 @@ export function registerIntegrationRoutes(app: Express): void {
         log.error('Failed to auto-create Dialpad webhook:', error);
       }
     }
-    
+
+    if (integrationName === 'twilio') {
+      try {
+        const { syncTwilioNumbers } = await import('../../twilio/numbers');
+        const { configureTwilioWebhooks } = await import('../../twilio/webhook-config');
+        await syncTwilioNumbers(req.user.contractorId);
+        const result = await configureTwilioWebhooks(req.user.contractorId);
+        webhookCreated = result.configured > 0;
+        if (result.configured === 0) {
+          webhookError = 'No Twilio numbers were configured. Purchase or assign a number in Twilio, then re-sync.';
+        }
+      } catch (error) {
+        webhookError = error instanceof Error ? error.message : 'Unknown error occurred';
+        log.error('Failed to auto-configure Twilio webhooks:', error);
+      }
+    }
+
+    const webhookProvider = integrationName === 'dialpad' || integrationName === 'twilio';
     res.json({ 
       success: true, 
       message: `${integrationName} integration enabled successfully`,
       integration,
-      webhookCreated: integrationName === 'dialpad' ? webhookCreated : undefined,
-      webhookError: integrationName === 'dialpad' ? webhookError : undefined
+      webhookCreated: webhookProvider ? webhookCreated : undefined,
+      webhookError: webhookProvider ? webhookError : undefined
     });
   }));
 

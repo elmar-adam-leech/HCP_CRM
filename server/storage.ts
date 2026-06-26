@@ -48,6 +48,9 @@ import {
   type Activity, type InsertActivity,
   type BusinessTargets, type InsertBusinessTargets,
   type DialpadPhoneNumber, type InsertDialpadPhoneNumber,
+  type TwilioPhoneNumber, type InsertTwilioPhoneNumber,
+  type TwilioUserPhonePermission, type InsertTwilioUserPhonePermission,
+  type TwilioWebhookState, type InsertTwilioWebhookState,
   type UserPhoneNumberPermission, type InsertUserPhoneNumberPermission,
   type DialpadUser, type InsertDialpadUser,
   type DialpadDepartment, type InsertDialpadDepartment,
@@ -100,6 +103,7 @@ import { activityMethods } from "./storage/activities";
 import { integrationMethods } from "./storage/integrations";
 import { employeeMethods } from "./storage/employees";
 import { dialpadMethods } from "./storage/dialpad";
+import { twilioMethods } from "./storage/twilio";
 import { notificationMethods } from "./storage/notifications";
 import { settingsMethods } from "./storage/settings";
 import { workflowMethods } from "./storage/workflows";
@@ -459,6 +463,23 @@ export interface IStorage {
   createDialpadPhoneNumber(phoneNumber: InsertDialpadPhoneNumber): Promise<DialpadPhoneNumber>;
   updateDialpadPhoneNumber(id: string, phoneNumber: UpdateDialpadPhoneNumber): Promise<DialpadPhoneNumber>;
 
+  // Twilio phone number operations
+  getTwilioPhoneNumbers(contractorId: string): Promise<TwilioPhoneNumber[]>;
+  getTwilioPhoneNumber(id: string, contractorId: string): Promise<TwilioPhoneNumber | undefined>;
+  getTwilioPhoneNumberByNumber(contractorId: string, phoneNumber: string): Promise<TwilioPhoneNumber | undefined>;
+  createTwilioPhoneNumber(phoneNumber: InsertTwilioPhoneNumber): Promise<TwilioPhoneNumber>;
+  updateTwilioPhoneNumber(id: string, phoneNumber: Partial<InsertTwilioPhoneNumber>): Promise<TwilioPhoneNumber>;
+  deleteTwilioPhoneNumber(id: string): Promise<boolean>;
+
+  // Twilio per-user phone permission operations
+  getTwilioUserPhonePermissions(userId: string): Promise<TwilioUserPhonePermission[]>;
+  createTwilioUserPhonePermission(permission: InsertTwilioUserPhonePermission): Promise<TwilioUserPhonePermission>;
+  deleteTwilioUserPhonePermission(id: string): Promise<boolean>;
+
+  // Twilio webhook state operations
+  getTwilioWebhookState(contractorId: string): Promise<TwilioWebhookState | undefined>;
+  upsertTwilioWebhookState(state: InsertTwilioWebhookState): Promise<TwilioWebhookState>;
+
   // User phone number permission operations
   getUserPhoneNumberPermissions(userId: string): Promise<UserPhoneNumberPermission[]>;
   getUserPhoneNumberPermission(userId: string, phoneNumberId: string): Promise<UserPhoneNumberPermission | undefined>;
@@ -652,6 +673,7 @@ export const storage: IStorage = {
   ...integrationMethods,
   ...employeeMethods,
   ...dialpadMethods,
+  ...twilioMethods,
   ...notificationMethods,
   ...settingsMethods,
   ...workflowMethods,

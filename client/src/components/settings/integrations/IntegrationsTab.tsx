@@ -1,4 +1,5 @@
 import { DialpadCard } from "./DialpadCard";
+import { TwilioCard } from "./TwilioCard";
 import { SendGridCard } from "./SendGridCard";
 import { HousecallProCard } from "./HousecallProCard";
 import { HcpEmployeeMappingCard } from "./HcpEmployeeMappingCard";
@@ -28,6 +29,7 @@ export function IntegrationsTab() {
       {canView('shared-email') && <SharedEmailCard />}
       {canView('lead-capture') && <LeadCaptureCard />}
       {canView('dialpad') && <DialpadCard />}
+      {canView('twilio') && <TwilioCard />}
       {canView('sendgrid') && <SendGridCard />}
       {canView('housecall-pro') && <HousecallProCard />}
       {canView('housecall-pro') && <HcpEmployeeMappingCard />}

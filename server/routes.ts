@@ -28,6 +28,7 @@ import { registerAiRoutes } from './routes/ai';
 import { registerSettingsRoutes } from './routes/settings';
 import { registerIntegrationRoutes } from './routes/integrations';
 import { registerDialpadRoutes } from './routes/integrations/dialpad';
+import { registerTwilioRoutes } from './routes/integrations/twilio';
 import { registerHousecallProRoutes } from './routes/integrations/housecall-pro';
 import { registerHcpSyncRoutes } from './routes/integrations/hcp-sync';
 import { registerHcpSchedulingRoutes } from './routes/integrations/hcp-scheduling';
@@ -161,6 +162,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerGoogleLocalServicesIntegrationRoutes(app);
   registerIntegrationRoutes(app);
   registerDialpadRoutes(app);
+  registerTwilioRoutes(app);
   registerHousecallProRoutes(app);
   registerHcpSyncRoutes(app);
   registerHcpSchedulingRoutes(app);

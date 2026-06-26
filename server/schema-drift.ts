@@ -1419,6 +1419,70 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
               )`,
       description: 'backfill leads.contacted_at/contacted_by_user_id from contact-level timing onto most-recent lead per contact (task #805)',
     },
+    // ── Twilio telephony integration (task #822) ──────────────────────────
+    {
+      sql: `ALTER TABLE contractors ADD COLUMN IF NOT EXISTS default_twilio_number text`,
+      description: 'contractors.default_twilio_number (org default Twilio number, task #822)',
+    },
+    {
+      sql: `ALTER TABLE contractors ADD COLUMN IF NOT EXISTS twilio_record_calls boolean NOT NULL DEFAULT false`,
+      description: 'contractors.twilio_record_calls (call-recording toggle, OFF by default, task #822)',
+    },
+    {
+      sql: `ALTER TABLE user_contractors ADD COLUMN IF NOT EXISTS twilio_default_number text`,
+      description: 'user_contractors.twilio_default_number (per-user Twilio send/call number, task #822)',
+    },
+    {
+      sql: `ALTER TABLE user_contractors ADD COLUMN IF NOT EXISTS twilio_phone_to_ring text`,
+      description: "user_contractors.twilio_phone_to_ring (rep's personal phone for bridge calls, task #822)",
+    },
+    {
+      sql: `CREATE TABLE IF NOT EXISTS "twilio_phone_numbers" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "contractor_id" varchar NOT NULL REFERENCES "contractors"("id"),
+        "phone_number" text NOT NULL,
+        "twilio_sid" text,
+        "display_name" text,
+        "can_send_sms" boolean NOT NULL DEFAULT false,
+        "can_receive_sms" boolean NOT NULL DEFAULT false,
+        "can_make_calls" boolean NOT NULL DEFAULT false,
+        "can_receive_calls" boolean NOT NULL DEFAULT false,
+        "is_active" boolean NOT NULL DEFAULT true,
+        "last_sync_at" timestamp,
+        "created_at" timestamp NOT NULL DEFAULT now(),
+        "updated_at" timestamp NOT NULL DEFAULT now(),
+        CONSTRAINT "twilio_phone_numbers_contractor_phone_unique" UNIQUE ("contractor_id", "phone_number")
+      ); CREATE INDEX IF NOT EXISTS "twilio_phone_numbers_contractor_id_idx" ON "twilio_phone_numbers" ("contractor_id")`,
+      description: 'twilio_phone_numbers table (task #822)',
+    },
+    {
+      sql: `CREATE TABLE IF NOT EXISTS "twilio_user_phone_permissions" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "user_id" varchar NOT NULL REFERENCES "users"("id"),
+        "phone_number_id" varchar NOT NULL REFERENCES "twilio_phone_numbers"("id"),
+        "contractor_id" varchar NOT NULL REFERENCES "contractors"("id"),
+        "can_send_sms" boolean NOT NULL DEFAULT false,
+        "can_make_calls" boolean NOT NULL DEFAULT false,
+        "is_active" boolean NOT NULL DEFAULT true,
+        "assigned_by" varchar REFERENCES "users"("id"),
+        "created_at" timestamp NOT NULL DEFAULT now(),
+        "updated_at" timestamp NOT NULL DEFAULT now(),
+        CONSTRAINT "twilio_user_phone_perms_user_phone_unique" UNIQUE ("user_id", "phone_number_id")
+      ); CREATE INDEX IF NOT EXISTS "twilio_user_phone_perms_user_id_idx" ON "twilio_user_phone_permissions" ("user_id"); CREATE INDEX IF NOT EXISTS "twilio_user_phone_perms_phone_id_idx" ON "twilio_user_phone_permissions" ("phone_number_id"); CREATE INDEX IF NOT EXISTS "twilio_user_phone_perms_contractor_id_idx" ON "twilio_user_phone_permissions" ("contractor_id")`,
+      description: 'twilio_user_phone_permissions table (task #822)',
+    },
+    {
+      sql: `CREATE TABLE IF NOT EXISTS "twilio_webhook_state" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "contractor_id" varchar NOT NULL REFERENCES "contractors"("id") UNIQUE,
+        "last_registered_voice_url" text,
+        "last_registered_sms_url" text,
+        "configured_number_sids" text[],
+        "last_registered_at" timestamp,
+        "updated_at" timestamp NOT NULL DEFAULT now()
+      )`,
+      description: 'twilio_webhook_state table (task #822)',
+    },
   ];
 
 export async function applyColumnMigrations(

@@ -41,6 +41,12 @@ interface TenantCredentials {
     apiKey?: string;
     baseUrl?: string;
   };
+  twilio?: {
+    accountSid?: string;
+    authToken?: string;
+    apiKeySid?: string;
+    apiKeySecret?: string;
+  };
 }
 
 export class CredentialService {
@@ -179,6 +185,19 @@ export class CredentialService {
   }
 
   /**
+   * Get structured credentials for Twilio service (task #822)
+   */
+  static async getTwilioCredentials(tenantId: string): Promise<TenantCredentials['twilio']> {
+    const creds = await this.getServiceCredentials(tenantId, 'twilio');
+    return {
+      accountSid: creds.account_sid,
+      authToken: creds.auth_token,
+      apiKeySid: creds.api_key_sid,
+      apiKeySecret: creds.api_key_secret,
+    };
+  }
+
+  /**
    * Check if tenant has required credentials for a service
    */
   static async hasRequiredCredentials(tenantId: string, service: string): Promise<boolean> {
@@ -193,6 +212,8 @@ export class CredentialService {
         return !!(creds.api_key);
       case 'sendgrid':
         return !!(creds.api_key);
+      case 'twilio':
+        return !!(creds.account_sid && creds.auth_token);
       default:
         return false;
     }
@@ -268,6 +289,10 @@ export class CredentialService {
           };
         case 'dialpad':
           // Dialpad requires contractor-specific credentials - no global fallback
+          log.warn(`No tenant credentials found for ${service} - contractor must configure their own credentials`);
+          return {};
+        case 'twilio':
+          // Twilio requires contractor-specific credentials - no global fallback
           log.warn(`No tenant credentials found for ${service} - contractor must configure their own credentials`);
           return {};
         case 'sendgrid':
