@@ -19,6 +19,11 @@ interface PhoneNumberSelectorProps {
   className?: string;
   dataTestId?: string;
   disabled?: boolean;
+  /**
+   * Which capability the numbers must support. Defaults to 'sms' (texting).
+   * The Call modal passes 'call' so call-capable numbers are surfaced.
+   */
+  action?: 'sms' | 'call';
 }
 
 export function PhoneNumberSelector({
@@ -28,16 +33,18 @@ export function PhoneNumberSelector({
   placeholder = "Select phone number...",
   className,
   dataTestId = "select-from-number",
-  disabled = false
+  disabled = false,
+  action = 'sms'
 }: PhoneNumberSelectorProps) {
   // Get current user data (cached and shared across the app)
   const { data: currentUser } = useCurrentUser();
 
-  // Fetch available phone numbers
+  // Fetch available phone numbers from every enabled communication provider
+  // (Dialpad, Twilio, ...) via the provider-agnostic endpoint.
   const { data: availableNumbers = [], isLoading: numbersLoading } = useQuery<PhoneNumber[]>({
-    queryKey: ['/api/dialpad/users/available-phone-numbers'],
+    queryKey: ['/api/messages/available-from-numbers', action],
     queryFn: async () => {
-      const response = await fetch('/api/dialpad/users/available-phone-numbers', {
+      const response = await fetch(`/api/messages/available-from-numbers?action=${action}`, {
         credentials: 'include'
       });
       if (!response.ok) throw new Error('Failed to fetch phone numbers');

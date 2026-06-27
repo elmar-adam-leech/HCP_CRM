@@ -11,6 +11,8 @@ import { isEmptyEmailBody, isHtmlEmail, sanitizeEmailHtml } from "../utils/email
 import { type AuthedRequest, requireIntegrationManager } from "../auth-service";
 import { broadcastToContractor } from "../websocket";
 import { providerService } from "../providers/provider-service";
+import { dialpadEnhancedService } from "../dialpad";
+import { isIntegrationEnabledCached } from "../services/cache";
 
 import { logger } from '../utils/logger';
 import { getPublicBaseUrl } from "../utils/public-base-url";
@@ -130,6 +132,79 @@ export function registerMessagingRoutes(app: Express): void {
         message: "Failed to send text message"
       });
     }
+  }));
+
+  // Provider-agnostic "From Number" picker source. Merges the available
+  // phone numbers from every ENABLED communication provider for the
+  // contractor (Dialpad, Twilio, ...) so the Text/Call composer can pick a
+  // sending number regardless of which provider the tenant uses. The actual
+  // send still resolves the provider tenant-level in providerService — this
+  // endpoint only populates the dropdown.
+  app.get("/api/messages/available-from-numbers", asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const action: 'sms' | 'call' = req.query.action === 'call' ? 'call' : 'sms';
+    const contractorId = req.user.contractorId;
+
+    const [dialpadEnabled, twilioEnabled] = await Promise.all([
+      isIntegrationEnabledCached(contractorId, 'dialpad'),
+      isIntegrationEnabledCached(contractorId, 'twilio'),
+    ]);
+
+    const merged: Array<{ id: string; phoneNumber: string; displayName?: string }> = [];
+
+    if (dialpadEnabled) {
+      try {
+        const dialpadNumbers = await dialpadEnhancedService.getUserAvailablePhoneNumbers(
+          req.user.userId,
+          contractorId,
+          action,
+        );
+        for (const n of dialpadNumbers) {
+          merged.push({ id: n.id, phoneNumber: n.phoneNumber, displayName: n.displayName ?? undefined });
+        }
+      } catch (err) {
+        log.warn('Failed to load Dialpad available numbers for picker', { err });
+      }
+    }
+
+    if (twilioEnabled) {
+      try {
+        const twilioNumbers = await storage.getTwilioPhoneNumbers(contractorId);
+        const capable = twilioNumbers.filter(
+          (n) => n.isActive && (action === 'sms' ? n.canSendSms : n.canMakeCalls),
+        );
+        if (capable.length > 0) {
+          for (const n of capable) {
+            merged.push({ id: n.id, phoneNumber: n.phoneNumber, displayName: n.displayName ?? undefined });
+          }
+        } else {
+          // No capability-flagged numbers — fall back to the org default so
+          // the picker isn't empty (Twilio capability flags are often unset).
+          const contractor = await storage.getContractor(contractorId);
+          const orgDefault = contractor?.defaultTwilioNumber;
+          if (orgDefault) {
+            const existing = twilioNumbers.find((n) => n.phoneNumber === orgDefault);
+            merged.push({
+              id: existing?.id ?? 'twilio-org-default',
+              phoneNumber: orgDefault,
+              displayName: existing?.displayName ?? undefined,
+            });
+          }
+        }
+      } catch (err) {
+        log.warn('Failed to load Twilio available numbers for picker', { err });
+      }
+    }
+
+    // Dedupe by phone number (a number could theoretically appear from both
+    // providers); first occurrence wins.
+    const seen = new Set<string>();
+    const deduped = merged.filter((n) => {
+      if (seen.has(n.phoneNumber)) return false;
+      seen.add(n.phoneNumber);
+      return true;
+    });
+
+    res.json(deduped);
   }));
 
   app.get("/api/messages/from-addresses", asyncHandler(async (req: AuthedRequest, res: Response) => {

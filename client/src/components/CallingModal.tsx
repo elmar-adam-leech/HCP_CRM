@@ -178,6 +178,7 @@ export function CallingModal({
             label="Call From"
             placeholder="Select your phone number"
             dataTestId="select-call-from-number"
+            action="call"
           />
 
           <div className="flex gap-2 pt-4">
