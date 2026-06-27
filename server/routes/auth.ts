@@ -605,6 +605,10 @@ export function registerAuthRoutes(app: Express): void {
         gmailEmail: supplemental?.gmailEmail || undefined,
         hasActiveCompanyIntegrations: enabledIntegrations.length > 0,
         callPreference: userContractor?.callPreference || 'integration',
+        // task #832: per-user "phone to ring" for the Twilio bridge call,
+        // sourced from the active user_contractors membership so switching
+        // companies reflects that company's value.
+        twilioPhoneToRing: userContractor?.twilioPhoneToRing ?? null,
         // task #738: surface passkey-enrollment-prompt state so the SPA can
         // show the post-first-login dialog at most once per user (per the
         // dismiss timestamp), and gate it on the user actually having zero

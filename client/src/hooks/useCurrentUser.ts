@@ -10,6 +10,10 @@ export interface CurrentUser {
   contractorName: string;
   dialpadDefaultNumber?: string;
   callPreference?: 'integration' | 'personal';
+  // task #832: per-user "phone to ring" for the Twilio bridge call (the cell/desk
+  // number Twilio rings first when this rep places a call). Sourced from the active
+  // user_contractors membership, so switching active company reflects that value.
+  twilioPhoneToRing?: string | null;
   gmailConnected?: boolean;
   gmailEmail?: string;
   canManageIntegrations: boolean;
