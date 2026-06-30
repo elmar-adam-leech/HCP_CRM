@@ -75,3 +75,42 @@ export async function twilioGet(creds: TwilioCredentials, path: string): Promise
     },
   });
 }
+
+/**
+ * Base URL for the Twilio Messaging API (Messaging Services live here, NOT on
+ * the per-account REST host used by `creds.baseUrl`). Same Basic auth applies.
+ */
+export const TWILIO_MESSAGING_BASE_URL = 'https://messaging.twilio.com/v1';
+
+/** GET JSON from the Twilio Messaging API (messaging.twilio.com/v1). */
+export async function twilioMessagingGet(creds: TwilioCredentials, path: string): Promise<Response> {
+  return fetch(`${TWILIO_MESSAGING_BASE_URL}${path}`, {
+    method: 'GET',
+    headers: {
+      Authorization: basicAuthHeader(creds.accountSid, creds.authToken),
+    },
+  });
+}
+
+/**
+ * POST application/x-www-form-urlencoded to the Twilio Messaging API
+ * (messaging.twilio.com/v1). Mirrors `twilioForm` but targets the messaging host.
+ */
+export async function twilioMessagingForm(
+  creds: TwilioCredentials,
+  path: string,
+  params: Record<string, string | undefined>,
+): Promise<Response> {
+  const body = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') body.append(k, v);
+  }
+  return fetch(`${TWILIO_MESSAGING_BASE_URL}${path}`, {
+    method: 'POST',
+    headers: {
+      Authorization: basicAuthHeader(creds.accountSid, creds.authToken),
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: body.toString(),
+  });
+}

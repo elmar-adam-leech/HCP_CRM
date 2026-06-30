@@ -1483,6 +1483,10 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       )`,
       description: 'twilio_webhook_state table (task #822)',
     },
+    {
+      sql: `ALTER TABLE "twilio_webhook_state" ADD COLUMN IF NOT EXISTS "configured_messaging_service_sids" text[]`,
+      description: 'twilio_webhook_state.configured_messaging_service_sids (task #840)',
+    },
   ];
 
 export async function applyColumnMigrations(

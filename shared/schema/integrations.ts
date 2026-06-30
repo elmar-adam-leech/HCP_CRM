@@ -383,6 +383,9 @@ export const twilioWebhookState = pgTable("twilio_webhook_state", {
   lastRegisteredVoiceUrl: text("last_registered_voice_url"),
   lastRegisteredSmsUrl: text("last_registered_sms_url"),
   configuredNumberSids: text("configured_number_sids").array(),
+  // Messaging Service SIDs (MGxxxx) that own one of this contractor's numbers
+  // and were set to defer inbound to the number-level webhook (task #840).
+  configuredMessagingServiceSids: text("configured_messaging_service_sids").array(),
   lastRegisteredAt: timestamp("last_registered_at"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

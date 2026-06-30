@@ -134,6 +134,7 @@ export function registerIntegrationRoutes(app: Express): void {
       }
     }
 
+    let messagingServicesConfigured = 0;
     if (integrationName === 'twilio') {
       try {
         const { syncTwilioNumbers } = await import('../../twilio/numbers');
@@ -141,6 +142,7 @@ export function registerIntegrationRoutes(app: Express): void {
         await syncTwilioNumbers(req.user.contractorId);
         const result = await configureTwilioWebhooks(req.user.contractorId);
         webhookCreated = result.configured > 0;
+        messagingServicesConfigured = result.messagingServicesConfigured;
         if (result.configured === 0) {
           webhookError = 'No Twilio numbers were configured. Purchase or assign a number in Twilio, then re-sync.';
         }
@@ -156,7 +158,8 @@ export function registerIntegrationRoutes(app: Express): void {
       message: `${integrationName} integration enabled successfully`,
       integration,
       webhookCreated: webhookProvider ? webhookCreated : undefined,
-      webhookError: webhookProvider ? webhookError : undefined
+      webhookError: webhookProvider ? webhookError : undefined,
+      messagingServicesConfigured: integrationName === 'twilio' ? messagingServicesConfigured : undefined
     });
   }));
 

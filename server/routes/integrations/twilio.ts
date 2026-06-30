@@ -31,15 +31,17 @@ export function registerTwilioRoutes(app: Express): void {
     asyncHandler(async (req: AuthedRequest, res: Response) => {
       const sync = await syncTwilioNumbers(req.user.contractorId);
       let configured = 0;
+      let messagingServicesConfigured = 0;
       let webhookError: string | undefined;
       try {
         const result = await configureTwilioWebhooks(req.user.contractorId);
         configured = result.configured;
+        messagingServicesConfigured = result.messagingServicesConfigured;
       } catch (error) {
         webhookError = error instanceof Error ? error.message : "Unknown error";
         log.error("Failed to configure Twilio webhooks during sync:", error);
       }
-      res.json({ synced: sync.synced, configured, webhookError });
+      res.json({ synced: sync.synced, configured, messagingServicesConfigured, webhookError });
     }),
   );
 
