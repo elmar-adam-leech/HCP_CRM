@@ -182,13 +182,12 @@ export class TwilioCallProvider implements CallProvider {
         return { success: false, error: 'Server public URL is not configured; cannot place bridged calls.', errorCode: 'unknown', retryAfterSeconds: 0 };
       }
 
-      const bridgeUrl = new URL(`${base}/api/webhooks/twilio/voice/bridge`);
-      bridgeUrl.searchParams.set('contractorId', options.contractorId);
+      const bridgeUrl = new URL(`${base}/api/webhooks/twilio/voice/bridge/${encodeURIComponent(options.contractorId)}`);
       bridgeUrl.searchParams.set('to', customerE164);
       bridgeUrl.searchParams.set('callerId', callerId);
       bridgeUrl.searchParams.set('record', record ? '1' : '0');
 
-      const statusUrl = `${base}/api/webhooks/twilio/voice/status?contractorId=${encodeURIComponent(options.contractorId)}`;
+      const statusUrl = `${base}/api/webhooks/twilio/voice/status/${encodeURIComponent(options.contractorId)}`;
 
       // no retry on write — retrying risks placing duplicate calls.
       const response = await twilioForm(creds, '/Calls.json', {
