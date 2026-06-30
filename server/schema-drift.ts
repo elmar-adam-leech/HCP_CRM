@@ -1487,6 +1487,120 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `ALTER TABLE "twilio_webhook_state" ADD COLUMN IF NOT EXISTS "configured_messaging_service_sids" text[]`,
       description: 'twilio_webhook_state.configured_messaging_service_sids (task #840)',
     },
+    // ---- Task #844: reconnect orphaned Twilio recordings to their call ----
+    // Twilio calls placed BEFORE the forward fix (which stamps
+    // external_source='twilio' / external_id=<CallSid> on the click-to-call
+    // activity) left two rows per call: a contact-linked "Phone call
+    // initiated" row carrying metadata.externalCallId=<CallSid> but no
+    // external_source/external_id, and an ORPHANED Twilio status/recording
+    // row (external_source='twilio', external_id=<CallSid>, contact_id IS NULL)
+    // that holds the recording but is detached from the contact's timeline.
+    // This one-time, idempotent, tenant-scoped backfill (the metadata column
+    // is `text` holding JSON, so every read casts `metadata::jsonb`) runs four
+    // ordered statements in a single implicit transaction:
+    //   A. Merge the orphan's recording/outcome fields into the originating
+    //      click-to-call row (matched by CallSid: orphan.external_id =
+    //      click-to-call metadata.externalCallId). external_id is NOT stamped
+    //      yet so the unique index (contractor, external_source, external_id)
+    //      cannot transiently collide while both rows still exist.
+    //   B. Delete the now-merged orphan rows so each call shows ONE timeline
+    //      entry with its recording.
+    //   C. Stamp external_source='twilio'/external_id=<CallSid> on the merged
+    //      click-to-call rows (orphan gone, so no unique-index conflict; a
+    //      NOT EXISTS guard is belt-and-suspenders). This also lets any future
+    //      webhook find and enrich the correct contact-linked row.
+    //   D. Re-point any REMAINING orphans (no originating click-to-call row,
+    //      e.g. inbound calls / voicemails) to the correct contact by matching
+    //      the customer number (from_number for inbound, to_number otherwise)
+    //      against contacts.normalized_phone — only when it resolves to exactly
+    //      one contact.
+    // Idempotent: A/B match only contact_id IS NULL orphans (gone after a full
+    // run), C stamps only un-stamped rows that carry a merged call_sid, and D
+    // touches only contact_id IS NULL orphans. Forward-fixed rows (external_id
+    // already set) are excluded throughout. Historical-only; no live behavior
+    // changes.
+    {
+      sql: `
+        UPDATE activities a
+        SET metadata = (
+              (a.metadata::jsonb)
+              || jsonb_build_object('provider', 'twilio')
+              || jsonb_strip_nulls(jsonb_build_object(
+                   'call_sid',           o.external_id,
+                   'recording_url',      (o.metadata::jsonb)->>'recording_url',
+                   'recording_sid',      (o.metadata::jsonb)->>'recording_sid',
+                   'recording_playable', (o.metadata::jsonb)->'recording_playable',
+                   'recording_details',  (o.metadata::jsonb)->'recording_details',
+                   'outcome',            (o.metadata::jsonb)->>'outcome',
+                   'duration_seconds',   (o.metadata::jsonb)->'duration_seconds'
+                 ))
+            )::text,
+            updated_at = now()
+        FROM activities o
+        WHERE o.external_source = 'twilio'
+          AND o.external_id IS NOT NULL
+          AND o.contact_id IS NULL
+          AND a.contractor_id = o.contractor_id
+          AND a.type = 'call'
+          AND a.contact_id IS NOT NULL
+          AND a.external_id IS NULL
+          AND a.external_source IS NULL
+          AND (a.metadata::jsonb)->>'externalCallId' = o.external_id;
+
+        DELETE FROM activities o
+        WHERE o.external_source = 'twilio'
+          AND o.external_id IS NOT NULL
+          AND o.contact_id IS NULL
+          AND EXISTS (
+            SELECT 1 FROM activities c
+            WHERE c.contractor_id = o.contractor_id
+              AND c.type = 'call'
+              AND c.contact_id IS NOT NULL
+              AND (c.metadata::jsonb)->>'externalCallId' = o.external_id
+          );
+
+        UPDATE activities a
+        SET external_source = 'twilio',
+            external_id = (a.metadata::jsonb)->>'call_sid',
+            updated_at = now()
+        WHERE a.type = 'call'
+          AND a.contact_id IS NOT NULL
+          AND a.external_id IS NULL
+          AND a.external_source IS NULL
+          AND (a.metadata::jsonb) ? 'call_sid'
+          AND (a.metadata::jsonb)->>'call_sid' <> ''
+          AND NOT EXISTS (
+            SELECT 1 FROM activities x
+            WHERE x.contractor_id = a.contractor_id
+              AND x.external_source = 'twilio'
+              AND x.external_id = (a.metadata::jsonb)->>'call_sid'
+          );
+
+        UPDATE activities o
+        SET contact_id = m.cid,
+            updated_at = now()
+        FROM (
+          SELECT a.id AS aid, MIN(c.id) AS cid
+          FROM activities a
+          JOIN contacts c
+            ON c.contractor_id = a.contractor_id
+           AND c.normalized_phone IS NOT NULL
+           AND c.normalized_phone <> ''
+           AND c.normalized_phone = RIGHT(REGEXP_REPLACE(
+                 CASE WHEN (a.metadata::jsonb)->>'direction' = 'inbound'
+                      THEN (a.metadata::jsonb)->>'from_number'
+                      ELSE (a.metadata::jsonb)->>'to_number' END,
+                 '\\D', '', 'g'), 10)
+          WHERE a.external_source = 'twilio'
+            AND a.external_id IS NOT NULL
+            AND a.contact_id IS NULL
+          GROUP BY a.id
+          HAVING COUNT(DISTINCT c.id) = 1
+        ) m
+        WHERE o.id = m.aid;
+      `,
+      description: 'backfill: reconnect orphaned Twilio call/recording activities to their contact (task #844)',
+    },
   ];
 
 export async function applyColumnMigrations(
