@@ -213,7 +213,7 @@ export class TwilioCallProvider implements CallProvider {
       }
 
       const result = await response.json();
-      return { success: true, callId: result.sid };
+      return { success: true, callId: result.sid, provider: this.providerName };
     } catch (error) {
       log.error(`Twilio call request threw — ${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`);
       const classified = classifyTwilioCallError(0, '');

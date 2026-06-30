@@ -425,12 +425,25 @@ export function registerMessagingRoutes(app: Express): void {
         await storage.markLeadContacted(resolvedContactId, req.user.contractorId, req.user.userId);
       }
 
+      // For Twilio, stamp the call identity (external_source/external_id) on the
+      // top-level columns so the Twilio status + recording webhooks find and
+      // enrich THIS contact-linked activity (looked up by external_source =
+      // 'twilio' AND external_id = <CallSid>) instead of creating an orphaned
+      // duplicate row with no contact attached. The parent-leg Call SID
+      // returned here is the same SID Twilio reports on the bridged call's
+      // status and recording callbacks, so the lookups line up. Only do this
+      // for Twilio so non-Twilio (e.g. Dialpad) calls are unaffected.
+      const isTwilioCall = callResponse.provider === 'twilio' && !!callResponse.callId;
+
       await storage.createActivity({
         type: 'call',
         title: 'Phone call initiated',
         content: `Call initiated to ${toNumber}${fromNumber ? ` from ${fromNumber}` : ''}`,
         contactId: resolvedContactId || null,
         userId: req.user.userId,
+        ...(isTwilioCall
+          ? { externalSource: 'twilio', externalId: callResponse.callId }
+          : {}),
         metadata: {
           // Stamp direction so the Speed-to-Lead report (which filters on
           // metadata.direction = 'outbound') counts manually-initiated calls.
@@ -439,7 +452,7 @@ export function registerMessagingRoutes(app: Express): void {
           callUrl: callResponse.callUrl || null,
           autoRecord: autoRecord || false,
         },
-      }, req.user.contractorId);
+      } as any, req.user.contractorId);
 
       res.json({
         success: true,

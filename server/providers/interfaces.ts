@@ -48,6 +48,14 @@ export interface CallResult {
   success: boolean;
   callId?: string;
   callUrl?: string;
+  /**
+   * Name of the provider that actually handled the call (e.g. 'twilio',
+   * 'dialpad'). Lets route handlers stamp the originating activity with a
+   * provider-specific external_source/external_id so the matching
+   * status/recording webhooks can enrich that exact row instead of creating
+   * an orphaned duplicate.
+   */
+  provider?: string;
   error?: string;
   errorCode?: 'rate_limit' | 'conflict' | 'permission_denied' | 'unknown';
   retryAfterSeconds?: number;

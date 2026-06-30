@@ -44,6 +44,21 @@ function resolveCallRecording(meta: Record<string, unknown> | null | undefined):
     (d) => d?.id !== undefined && d?.id !== null && String(d.id).length > 0,
   )?.id;
   const recordingId = rawId !== undefined && rawId !== null ? String(rawId) : null;
+
+  // Twilio recordings stream through their own authenticated proxy and never
+  // through the Dialpad one. Identify them by the provider tag or the Twilio
+  // recording SID format (RE…). They have no external share page to open.
+  const provider = typeof (meta as { provider?: unknown }).provider === 'string'
+    ? (meta as { provider: string }).provider
+    : null;
+  const isTwilio = provider === 'twilio' || (recordingId ? /^RE[a-zA-Z0-9]+$/.test(recordingId) : false);
+  if (isTwilio) {
+    return {
+      playableUrl: recordingId ? `/api/twilio/recordings/${encodeURIComponent(recordingId)}` : null,
+      shareUrl: null,
+    };
+  }
+
   const shareUrl = typeof (meta as { recording_url?: unknown }).recording_url === 'string'
     ? ((meta as { recording_url: string }).recording_url)
     : null;

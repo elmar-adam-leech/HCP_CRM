@@ -287,6 +287,7 @@ export class DialpadCallProvider implements CallProvider {
         success: true,
         callId: result.call_id || result.id,
         callUrl: result.call_url,
+        provider: this.providerName,
       };
     } catch (error) {
       // Network/transport-level failure (DNS, timeout, etc). Log the raw

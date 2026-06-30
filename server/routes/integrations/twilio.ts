@@ -10,6 +10,7 @@ import { logger } from "../../utils/logger";
 import { syncTwilioNumbers } from "../../twilio/numbers";
 import { configureTwilioWebhooks } from "../../twilio/webhook-config";
 import { fetchTwilioRecording } from "../../twilio/recordings";
+import { isIntegrationEnabledCached } from "../../services/cache";
 
 const log = logger("TwilioRoutes");
 
@@ -124,6 +125,18 @@ export function registerTwilioRoutes(app: Express): void {
         res.status(400).json({ message: "Invalid recording id" });
         return;
       }
+
+      // Mirror the Dialpad recording proxy: only stream when the Twilio
+      // integration is enabled for this contractor.
+      const isIntegrationEnabled = await isIntegrationEnabledCached(req.user.contractorId, 'twilio');
+      if (!isIntegrationEnabled) {
+        res.status(403).json({
+          message: "Twilio integration is not enabled.",
+          integrationDisabled: true,
+        });
+        return;
+      }
+
       let fetchRes: Awaited<ReturnType<typeof fetchTwilioRecording>>;
       try {
         fetchRes = await fetchTwilioRecording(
