@@ -8,7 +8,7 @@ import {
 import { asyncHandler } from "../../utils/async-handler";
 import { logger } from "../../utils/logger";
 import { syncTwilioNumbers } from "../../twilio/numbers";
-import { configureTwilioWebhooks } from "../../twilio/webhook-config";
+import { configureTwilioWebhooks, inspectTwilioInboundRouting } from "../../twilio/webhook-config";
 import { fetchTwilioRecording } from "../../twilio/recordings";
 import { isIntegrationEnabledCached } from "../../services/cache";
 
@@ -33,16 +33,42 @@ export function registerTwilioRoutes(app: Express): void {
       const sync = await syncTwilioNumbers(req.user.contractorId);
       let configured = 0;
       let messagingServicesConfigured = 0;
+      let inboundRouting:
+        | Awaited<ReturnType<typeof configureTwilioWebhooks>>["inboundRouting"]
+        | undefined;
       let webhookError: string | undefined;
       try {
         const result = await configureTwilioWebhooks(req.user.contractorId);
         configured = result.configured;
         messagingServicesConfigured = result.messagingServicesConfigured;
+        inboundRouting = result.inboundRouting;
       } catch (error) {
         webhookError = error instanceof Error ? error.message : "Unknown error";
         log.error("Failed to configure Twilio webhooks during sync:", error);
       }
-      res.json({ synced: sync.synced, configured, messagingServicesConfigured, webhookError });
+      res.json({ synced: sync.synced, configured, messagingServicesConfigured, inboundRouting, webhookError });
+    }),
+  );
+
+  // Read-only diagnostic: inspect live inbound SMS routing for this contractor's
+  // numbers and any Messaging Service that owns them, without changing anything.
+  app.get(
+    "/api/twilio/inbound-routing",
+    requireIntegrationManager,
+    asyncHandler(async (req: AuthedRequest, res: Response) => {
+      try {
+        const status = await inspectTwilioInboundRouting(req.user.contractorId);
+        res.json(status);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        log.error("Failed to inspect Twilio inbound routing:", error);
+        res.status(502).json({
+          ok: false,
+          numbers: [],
+          messagingServices: [],
+          warnings: [`Could not check inbound SMS routing: ${message}`],
+        });
+      }
     }),
   );
 

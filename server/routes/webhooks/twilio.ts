@@ -344,15 +344,24 @@ export function registerTwilioWebhookRoutes(app: Express): void {
     form,
     asyncHandler(async (req: Request, res: Response) => {
       const contractorId = req.params.tenantId;
-      if (!(await verifyTwilioRequest(req, contractorId))) {
-        res.status(403).type('text/xml').send(emptyTwiml());
-        return;
-      }
 
       const from = String(req.body.From || '');
       const to = String(req.body.To || '');
       const messageSid = String(req.body.MessageSid || req.body.SmsSid || '');
       const numMedia = Number(req.body.NumMedia || '0');
+
+      log.info(
+        `[inbound-sms] received provider=twilio contractor=${contractorId} sid=${messageSid || 'none'} from=${maskPhone(from)} to=${maskPhone(to)} numMedia=${numMedia}`,
+      );
+
+      if (!(await verifyTwilioRequest(req, contractorId))) {
+        log.warn(
+          `[inbound-sms] signature verification FAILED provider=twilio contractor=${contractorId} sid=${messageSid || 'none'} from=${maskPhone(from)} — rejecting 403`,
+        );
+        res.status(403).type('text/xml').send(emptyTwiml());
+        return;
+      }
+
       let body = String(req.body.Body || '');
 
       if (numMedia > 0) {
@@ -365,6 +374,9 @@ export function registerTwilioWebhookRoutes(app: Express): void {
       }
 
       const contact = await matchContact(from, contractorId);
+      log.info(
+        `[inbound-sms] contact-match provider=twilio contractor=${contractorId} sid=${messageSid || 'none'} matched=${contact ? `yes (${contact.id})` : 'no'}`,
+      );
 
       const message = await storage.createMessage(
         {
@@ -378,6 +390,10 @@ export function registerTwilioWebhookRoutes(app: Express): void {
           externalMessageId: messageSid || undefined,
         } as any,
         contractorId,
+      );
+
+      log.info(
+        `[inbound-sms] saved provider=twilio contractor=${contractorId} sid=${messageSid || 'none'} messageId=${message.id} contactId=${contact?.id ?? 'unmatched'}`,
       );
 
       broadcastToContractor(contractorId, {

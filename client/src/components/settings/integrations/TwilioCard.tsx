@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Phone, MessageSquare, RefreshCw, AlertTriangle, Power, XCircle } from "lucide-react";
+import { Phone, MessageSquare, RefreshCw, AlertTriangle, Power, XCircle, CheckCircle2 } from "lucide-react";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useProviderConfig } from "@/hooks/use-provider-config";
@@ -29,6 +29,23 @@ interface TwilioNumber {
 interface TwilioSettings {
   defaultTwilioNumber: string | null;
   twilioRecordCalls: boolean;
+}
+
+interface InboundRoutingStatus {
+  ok: boolean;
+  numbers: Array<{
+    phoneNumber: string;
+    sid: string;
+    smsUrlConfigured: boolean;
+    messagingServiceSid?: string;
+  }>;
+  messagingServices: Array<{
+    sid: string;
+    friendlyName?: string;
+    routedToUs: boolean;
+    mode: "direct" | "deferral" | "none";
+  }>;
+  warnings: string[];
 }
 
 export function TwilioCard() {
@@ -51,6 +68,11 @@ export function TwilioCard() {
 
   const { data: settings } = useQuery<TwilioSettings>({
     queryKey: ["/api/twilio/settings"],
+    enabled: hasCredentials && isEnabled && isAdmin,
+  });
+
+  const { data: inboundRouting, isFetching: isCheckingRouting } = useQuery<InboundRoutingStatus>({
+    queryKey: ["/api/twilio/inbound-routing"],
     enabled: hasCredentials && isEnabled && isAdmin,
   });
 
@@ -95,9 +117,15 @@ export function TwilioCard() {
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/twilio/numbers"] });
       queryClient.invalidateQueries({ queryKey: ["/api/integrations"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/twilio/inbound-routing"] });
+      const inboundOk = data?.inboundRouting?.ok;
       toast({
         title: "Twilio sync completed",
-        description: `Synced ${data.synced ?? 0} numbers, configured ${data.configured ?? 0} webhooks.`,
+        description:
+          inboundOk === false
+            ? `Synced ${data.synced ?? 0} numbers, but inbound texts may not be wired up — see the status below.`
+            : `Synced ${data.synced ?? 0} numbers, configured ${data.configured ?? 0} webhooks.`,
+        variant: inboundOk === false ? "destructive" : undefined,
       });
     },
     onError: (error: any) => {
@@ -278,6 +306,55 @@ export function TwilioCard() {
             <RefreshCw className={`h-4 w-4 mr-2 ${syncMutation.isPending ? "animate-spin" : ""}`} />
             {syncMutation.isPending ? "Syncing..." : "Sync Numbers & Webhooks"}
           </Button>
+
+          {isAdmin && (
+            <div className="space-y-2" data-testid="twilio-inbound-routing">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">Incoming text routing</span>
+                {isCheckingRouting && <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />}
+              </div>
+
+              {inboundRouting?.ok && (
+                <Alert>
+                  <CheckCircle2 className="h-4 w-4 text-green-600" />
+                  <AlertDescription className="text-sm">
+                    Incoming texts are wired up to reach the CRM.
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {inboundRouting && !inboundRouting.ok && (
+                <Alert variant="destructive">
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertDescription className="text-sm space-y-1">
+                    <p className="font-medium">Incoming texts may not reach the CRM.</p>
+                    {inboundRouting.warnings.length > 0 ? (
+                      <ul className="list-disc pl-4 space-y-0.5">
+                        {inboundRouting.warnings.map((w, i) => (
+                          <li key={i}>{w}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>Click "Sync Numbers &amp; Webhooks" to set up incoming text routing.</p>
+                    )}
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {inboundRouting && inboundRouting.messagingServices.length > 0 && (
+                <div className="text-xs text-muted-foreground space-y-0.5">
+                  {inboundRouting.messagingServices.map((svc) => (
+                    <div key={svc.sid} className="flex items-center justify-between gap-2">
+                      <span className="truncate">{svc.friendlyName || svc.sid}</span>
+                      <Badge variant={svc.routedToUs ? "secondary" : "destructive"} className="shrink-0">
+                        {svc.routedToUs ? "Routed to CRM" : "Not routed"}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

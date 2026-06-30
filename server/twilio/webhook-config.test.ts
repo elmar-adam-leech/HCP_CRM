@@ -1,18 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Task #840: when a contractor's Twilio number lives inside a Messaging Service,
-// Twilio ignores the number-level SMS webhook and uses the Service's inbound
-// setting. configureTwilioWebhooks must flip UseInboundWebhookOnNumber=true on
-// any Service that owns one of the contractor's numbers so inbound texts reach
-// the CRM, while leaving outbound/A2P alone and staying idempotent.
+// When a contractor's Twilio number lives inside a Messaging Service, Twilio
+// ignores the number-level SMS webhook and uses the Service's inbound setting.
+// configureTwilioWebhooks must set the Service's InboundRequestUrl DIRECTLY to
+// our SMS webhook (and UseInboundWebhookOnNumber=false) on any Service that owns
+// one of the contractor's numbers so inbound texts reach the CRM — the earlier
+// UseInboundWebhookOnNumber=true deferral did not take effect for some accounts.
+// Outbound/A2P config is left alone and the operation stays idempotent on re-run.
 
 const twilioFormMock = vi.fn();
 const twilioMessagingGetMock = vi.fn();
 const twilioMessagingFormMock = vi.fn();
 
+const twilioGetMock = vi.fn();
+
 vi.mock('./client', () => ({
   getTwilioCredentials: vi.fn().mockResolvedValue({ accountSid: 'AC', authToken: 'tok', baseUrl: 'https://api.twilio.com' }),
   twilioForm: (...args: unknown[]) => twilioFormMock(...args),
+  twilioGet: (...args: unknown[]) => twilioGetMock(...args),
   twilioMessagingGet: (...args: unknown[]) => twilioMessagingGetMock(...args),
   twilioMessagingForm: (...args: unknown[]) => twilioMessagingFormMock(...args),
 }));
@@ -46,7 +51,9 @@ describe('configureTwilioWebhooks — Messaging Service inbound routing', () => 
     ]);
   });
 
-  it('flips UseInboundWebhookOnNumber on the Service owning the number', async () => {
+  const smsUrl = 'https://crm.example.com/api/webhooks/twilio/sms/c1';
+
+  it('sets InboundRequestUrl directly on the Service owning the number', async () => {
     twilioMessagingGetMock.mockImplementation((_creds: unknown, path: string) => {
       if (path.startsWith('/Services?')) {
         return Promise.resolve(okJson({ services: [{ sid: 'MG1', use_inbound_webhook_on_number: false }], meta: {} }));
@@ -58,14 +65,32 @@ describe('configureTwilioWebhooks — Messaging Service inbound routing', () => 
 
     expect(result.configured).toBe(1);
     expect(result.messagingServicesConfigured).toBe(1);
+    expect(result.inboundRouting.ok).toBe(true);
     expect(twilioMessagingFormMock).toHaveBeenCalledTimes(1);
     const [, path, params] = twilioMessagingFormMock.mock.calls[0] as [unknown, string, Record<string, string>];
     expect(path).toBe('/Services/MG1');
-    expect(params.UseInboundWebhookOnNumber).toBe('true');
+    expect(params.InboundRequestUrl).toBe(smsUrl);
+    expect(params.InboundMethod).toBe('POST');
+    expect(params.UseInboundWebhookOnNumber).toBe('false');
     expect(upsertTwilioWebhookStateMock.mock.calls[0][0].configuredMessagingServiceSids).toEqual(['MG1']);
   });
 
-  it('is idempotent: counts but does not re-POST a Service already deferring to the number', async () => {
+  it('is idempotent: counts but does not re-POST a Service already pointed at our URL', async () => {
+    twilioMessagingGetMock.mockImplementation((_creds: unknown, path: string) => {
+      if (path.startsWith('/Services?')) {
+        return Promise.resolve(okJson({ services: [{ sid: 'MG1', inbound_request_url: smsUrl, use_inbound_webhook_on_number: false }], meta: {} }));
+      }
+      return Promise.resolve(okJson({ phone_numbers: [{ sid: 'PN1' }], meta: {} }));
+    });
+
+    const result = await configureTwilioWebhooks('c1');
+
+    expect(result.messagingServicesConfigured).toBe(1);
+    expect(result.inboundRouting.ok).toBe(true);
+    expect(twilioMessagingFormMock).not.toHaveBeenCalled();
+  });
+
+  it('re-POSTs a Service that only defers via UseInboundWebhookOnNumber=true', async () => {
     twilioMessagingGetMock.mockImplementation((_creds: unknown, path: string) => {
       if (path.startsWith('/Services?')) {
         return Promise.resolve(okJson({ services: [{ sid: 'MG1', use_inbound_webhook_on_number: true }], meta: {} }));
@@ -76,7 +101,9 @@ describe('configureTwilioWebhooks — Messaging Service inbound routing', () => 
     const result = await configureTwilioWebhooks('c1');
 
     expect(result.messagingServicesConfigured).toBe(1);
-    expect(twilioMessagingFormMock).not.toHaveBeenCalled();
+    expect(twilioMessagingFormMock).toHaveBeenCalledTimes(1);
+    const [, , params] = twilioMessagingFormMock.mock.calls[0] as [unknown, string, Record<string, string>];
+    expect(params.InboundRequestUrl).toBe(smsUrl);
   });
 
   it('ignores Services that do not own any of the contractor numbers', async () => {
