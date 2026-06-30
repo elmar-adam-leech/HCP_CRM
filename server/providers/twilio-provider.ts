@@ -187,7 +187,14 @@ export class TwilioCallProvider implements CallProvider {
       bridgeUrl.searchParams.set('callerId', callerId);
       bridgeUrl.searchParams.set('record', record ? '1' : '0');
 
-      const statusUrl = `${base}/api/webhooks/twilio/voice/status/${encodeURIComponent(options.contractorId)}`;
+      // Carry the real customer number on the status-callback URL. The bridge
+      // model rings the REP first, so the status webhook's leg `To` is the
+      // rep's phone, not the customer. Passing the customer here gives the
+      // status webhook the true number for display and as a matching fallback.
+      // The query string is part of the URL covered by Twilio's signature, so
+      // adding it keeps request validation intact.
+      const statusUrl = new URL(`${base}/api/webhooks/twilio/voice/status/${encodeURIComponent(options.contractorId)}`);
+      statusUrl.searchParams.set('customer', customerE164);
 
       // no retry on write — retrying risks placing duplicate calls.
       const response = await twilioForm(creds, '/Calls.json', {
@@ -195,7 +202,7 @@ export class TwilioCallProvider implements CallProvider {
         From: callerId,
         Url: bridgeUrl.toString(),
         Method: 'POST',
-        StatusCallback: statusUrl,
+        StatusCallback: statusUrl.toString(),
         StatusCallbackEvent: 'completed',
         StatusCallbackMethod: 'POST',
       });

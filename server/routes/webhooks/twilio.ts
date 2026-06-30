@@ -96,9 +96,17 @@ export function registerTwilioWebhookRoutes(app: Express): void {
       }
 
       const base = getPublicBaseUrl();
-      const recordingCallbackUrl = base
-        ? `${base}/api/webhooks/twilio/voice/recording/${encodeURIComponent(contractorId)}`
-        : undefined;
+      let recordingCallbackUrl: string | undefined;
+      if (base) {
+        // Carry the real customer number onto the recording callback. This leg
+        // dials the customer, so the bridge handler already knows it; passing
+        // it through lets the recording webhook display/match the true customer
+        // even when no originating activity exists. The query string is part of
+        // the URL Twilio signs, so this keeps signature validation intact.
+        const recUrl = new URL(`${base}/api/webhooks/twilio/voice/recording/${encodeURIComponent(contractorId)}`);
+        recUrl.searchParams.set('customer', customer);
+        recordingCallbackUrl = recUrl.toString();
+      }
 
       const twiml = buildBridgeDialTwiml({
         customerNumber: customer,
@@ -176,13 +184,23 @@ export function registerTwilioWebhookRoutes(app: Express): void {
 
       // Twilio "Direction": "inbound" for inbound; "outbound-api"/"outbound-dial" for ours.
       const isInbound = direction.toLowerCase().startsWith('inbound');
-      const customerNumber = isInbound ? from : to;
+      // Bridge model: for OUTBOUND calls the leg's `To` is the REP's phone, not
+      // the customer. The true customer number is passed on the callback URL
+      // (?customer=...). Never treat the rep's leg `To` as the customer.
+      const customerFromUrl = String(req.query.customer || '');
+      const customerNumber = isInbound ? from : (customerFromUrl || to);
       const outcome = deriveCallOutcome(callStatus);
-      const contact = await matchContact(customerNumber, contractorId);
 
       const existing = await db.select().from(activities)
         .where(and(eq(activities.externalSource, 'twilio'), eq(activities.externalId, callSid)))
         .limit(1);
+
+      // Only derive a contact when there is no existing activity row, and only
+      // against the TRUE customer number (inbound caller, or the customer passed
+      // on the callback URL). When the originating "Phone call initiated"
+      // activity already exists it carries the correct customer link, which we
+      // must preserve — never re-derive it from the rep's leg.
+      const contact = existing[0] ? undefined : await matchContact(customerNumber, contractorId);
 
       const dirLabel = isInbound ? 'Inbound' : 'Outbound';
       const outcomeLabel = outcome === 'answered' ? '' : ` — ${outcome}`;
@@ -196,7 +214,8 @@ export function registerTwilioWebhookRoutes(app: Express): void {
         direction: isInbound ? 'inbound' : 'outbound',
         outcome,
         from_number: from,
-        to_number: to,
+        // For outbound the leg's `to` is the rep; record the real customer.
+        to_number: isInbound ? to : customerNumber,
         duration_seconds: durationStr ? Number(durationStr) : undefined,
       };
 
@@ -205,7 +224,9 @@ export function registerTwilioWebhookRoutes(app: Express): void {
           .set({
             title,
             content,
-            contactId: contact?.id ?? existing[0].contactId,
+            // Preserve the existing customer link; do not overwrite it with a
+            // contact derived from the rep's leg.
+            contactId: existing[0].contactId,
             metadata: { ...(existing[0].metadata as object || {}), ...metadata },
             updatedAt: new Date(),
           })
@@ -225,8 +246,9 @@ export function registerTwilioWebhookRoutes(app: Express): void {
         );
       }
 
-      if (contact) {
-        broadcastToContractor(contractorId, { type: 'new_activity', contactId: contact.id });
+      const broadcastContactId = existing[0]?.contactId ?? contact?.id;
+      if (broadcastContactId) {
+        broadcastToContractor(contractorId, { type: 'new_activity', contactId: broadcastContactId });
       }
       res.status(200).send(emptyTwiml());
     }),
@@ -284,11 +306,19 @@ export function registerTwilioWebhookRoutes(app: Express): void {
           .where(eq(activities.id, existing[0].id));
       } else {
         // Recording arrived before/without a status activity (e.g. voicemail).
+        // Best-effort match against the true customer number when one was passed
+        // on the callback URL (outbound bridge); inbound voicemail carries no
+        // such param, so it stays unmatched here exactly as before.
+        const customerFromUrl = String(req.query.customer || '');
+        const contact = customerFromUrl
+          ? await matchContact(customerFromUrl, contractorId)
+          : undefined;
         await storage.createActivity(
           {
             type: 'call',
             title: 'Inbound call — voicemail',
             content: 'Voicemail recording received via Twilio.',
+            contactId: contact?.id,
             externalSource: 'twilio',
             externalId: callSid,
             metadata: {
