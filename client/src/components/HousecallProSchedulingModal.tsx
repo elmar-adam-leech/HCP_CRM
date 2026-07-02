@@ -44,13 +44,13 @@ interface Employee {
 interface AvailabilitySlot {
   start_time: string;
   end_time: string;
-  duration_minutes: number;
+  conflict: boolean;
 }
 
 interface EstimatorAvailability {
   employee_id: string;
   employee_name: string;
-  available_slots: AvailabilitySlot[];
+  slots: AvailabilitySlot[];
 }
 
 interface HousecallProStatus {
@@ -107,17 +107,29 @@ export function HousecallProSchedulingModal({ lead, isOpen, onClose, onScheduled
   const selectedDate = form.watch('date');
   const selectedEmployeeId = form.watch('employeeId');
   
+  // Task #859: internal flexible scheduling. Request EVERY candidate time
+  // (includeConflicts=true) so conflicting times are shown with an inline
+  // "Booked" badge but stay selectable, rather than only offering free gaps.
   const { data: availability, isLoading: availabilityLoading, error: availabilityError } = useQuery<EstimatorAvailability[]>({
-    queryKey: ['/api/housecall-pro/availability', { 
-      date: selectedDate ? format(selectedDate, 'yyyy-MM-dd') : undefined,
-      estimatorIds: selectedEmployeeId || undefined 
-    }],
-    enabled: isOpen && selectedDate && housecallProStatus?.configured && housecallProStatus?.connected,
+    queryKey: ['/api/housecall-pro/availability', 'candidates', selectedDate ? format(selectedDate, 'yyyy-MM-dd') : undefined, selectedEmployeeId || undefined],
+    queryFn: async () => {
+      if (!selectedDate) throw new Error('No date selected');
+      const params = new URLSearchParams({
+        date: format(selectedDate, 'yyyy-MM-dd'),
+        includeConflicts: 'true',
+      });
+      if (selectedEmployeeId) {
+        params.set('estimatorIds', selectedEmployeeId);
+      }
+      const resp = await apiRequest('GET', `/api/housecall-pro/availability?${params.toString()}`);
+      return resp.json();
+    },
+    enabled: !!(isOpen && selectedDate && housecallProStatus?.configured && housecallProStatus?.connected),
   });
 
-  // Get available slots for the selected estimator
+  // Get candidate slots for the selected estimator
   const selectedEstimatorAvailability = availability?.find(avail => avail.employee_id === selectedEmployeeId);
-  const availableSlots = selectedEstimatorAvailability?.available_slots || [];
+  const availableSlots = selectedEstimatorAvailability?.slots || [];
 
   // Reset time slot when date or employee changes
   useEffect(() => {
@@ -415,12 +427,9 @@ export function HousecallProSchedulingModal({ lead, isOpen, onClose, onScheduled
                       </AlertDescription>
                     </Alert>
                   ) : availableSlots.length === 0 ? (
-                    <Alert>
-                      <AlertCircle className="h-4 w-4" />
-                      <AlertDescription>
-                        No available time slots for the selected date. Please choose a different date or estimator.
-                      </AlertDescription>
-                    </Alert>
+                    <p className="text-sm text-muted-foreground">
+                      No working hours for the selected date. Please choose a different date.
+                    </p>
                   ) : (
                     <div className="grid gap-2">
                       {availableSlots.map((slot, index) => {
@@ -441,9 +450,11 @@ export function HousecallProSchedulingModal({ lead, isOpen, onClose, onScheduled
                                 {slot.start_time} - {slot.end_time}
                               </span>
                             </div>
-                            <Badge variant="secondary" className="ml-2">
-                              {Math.floor(slot.duration_minutes / 60)}h {slot.duration_minutes % 60}m
-                            </Badge>
+                            {slot.conflict && (
+                              <Badge variant="secondary" className="ml-2" data-testid={`badge-booked-${index}`}>
+                                Booked
+                              </Badge>
+                            )}
                           </Button>
                         );
                       })}

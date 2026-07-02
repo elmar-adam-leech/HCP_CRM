@@ -90,7 +90,7 @@ export function registerHousecallProRoutes(app: Express): void {
       return;
     }
 
-    const { date, estimatorIds } = req.query;
+    const { date, estimatorIds, includeConflicts } = req.query;
 
     if (!date || typeof date !== 'string') {
       res.status(400).json({ message: "Date parameter is required (YYYY-MM-DD format)" });
@@ -109,6 +109,26 @@ export function registerHousecallProRoutes(app: Express): void {
       } else if (Array.isArray(estimatorIds)) {
         estimatorIdArray = (estimatorIds as string[]).filter(id => typeof id === 'string' && id.trim());
       }
+    }
+
+    // Task #859: internal flexible scheduling. When includeConflicts=true,
+    // return EVERY candidate start time (with a `conflict` flag) instead of only
+    // free gaps, so the staff-facing modal can render "Booked" badges while
+    // keeping conflicting times selectable.
+    if (includeConflicts === 'true') {
+      const candidateResult = await housecallProService.getEstimatorTimeCandidates(
+        req.user.contractorId,
+        date,
+        estimatorIdArray
+      );
+
+      if (!candidateResult.success) {
+        res.status(400).json({ message: candidateResult.error });
+        return;
+      }
+
+      res.json(candidateResult.data);
+      return;
     }
 
     const result = await housecallProService.getEstimatorAvailability(

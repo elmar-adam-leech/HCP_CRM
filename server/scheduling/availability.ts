@@ -276,6 +276,100 @@ export async function getAvailabilityForDate(
   });
 }
 
+/**
+ * A single candidate appointment time for the INTERNAL scheduling modal
+ * (task #859). Unlike getUnifiedAvailability — which only returns free gaps —
+ * this returns EVERY candidate start time across the salesperson's working
+ * window and flags the ones that overlap an existing appointment so the UI can
+ * render a soft "Booked" badge while still allowing the staff member to pick
+ * that time (intentional double-booking is permitted internally).
+ */
+export interface DaySlotCandidate {
+  start: Date;
+  end: Date;
+  /** True when this candidate overlaps an existing appointment for the salesperson. */
+  conflict: boolean;
+}
+
+/**
+ * Return every candidate appointment start time for a single salesperson on a
+ * given calendar date (YYYY-MM-DD) in the contractor's timezone, each flagged
+ * with whether it conflicts with an existing appointment.
+ *
+ * This powers the internal "flexible scheduling" experience (task #859): staff
+ * can pick ANY time in the working window, and conflicting times are surfaced
+ * with an inline badge rather than hidden.
+ *
+ * The conflict flag is computed against RAW (unbuffered) busy windows so the
+ * badge means "something is actually booked here", not merely "inside the
+ * travel-time buffer". Not cached — the internal modal is low-volume and needs
+ * conflict info the public availability cache does not carry.
+ */
+export async function getSalespersonDaySlots(
+  tenantId: string,
+  dateStr: string,
+  salespersonId: string,
+  timezone: string = 'America/New_York',
+): Promise<{ slots: DaySlotCandidate[]; durationMinutes: number; bufferMinutes: number }> {
+  const { durationMinutes, bufferMinutes } = await getAppointmentSettings(tenantId);
+
+  const salespeople = await getSalespeople(tenantId);
+  const sp = salespeople.find(s => s.userId === salespersonId);
+  if (!sp) {
+    return { slots: [], durationMinutes, bufferMinutes };
+  }
+
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const noonAnchor = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+
+  const dayOfWeek = getDayOfWeekInTimezone(noonAnchor, timezone);
+  if (!sp.workingDays.includes(dayOfWeek)) {
+    return { slots: [], durationMinutes, bufferMinutes };
+  }
+
+  const workStart = parseWorkingHours(sp.workingHoursStart || "08:00");
+  const workEnd = parseWorkingHours(sp.workingHoursEnd || "17:00");
+  const dayStart = createDateInTimezone(noonAnchor, workStart.hours, workStart.minutes, timezone);
+  const dayEnd = createDateInTimezone(noonAnchor, workEnd.hours, workEnd.minutes, timezone);
+
+  // Widen the busy-window query so appointments starting just before the work
+  // day (whose buffer/tail could overlap early slots) are still fetched.
+  const queryStart = new Date(dayStart.getTime() - bufferMinutes * 60 * 1000);
+  const queryEnd = new Date(dayEnd.getTime() + bufferMinutes * 60 * 1000);
+
+  const dbWindows = await getBusyWindowsFromDb(
+    tenantId,
+    sp.housecallProUserId ?? null,
+    sp.userId,
+    queryStart,
+    queryEnd,
+  );
+  const googleWindows = await getGoogleBusyWindows(sp, queryStart, queryEnd);
+  // RAW (unbuffered) windows — the "Booked" badge reflects an actual overlap.
+  const busyWindows: BusyWindow[] = [...dbWindows, ...googleWindows];
+
+  const now = new Date();
+  const slots: DaySlotCandidate[] = [];
+  let slotStart = new Date(dayStart);
+
+  while (slotStart.getTime() + durationMinutes * 60 * 1000 <= dayEnd.getTime()) {
+    const slotEnd = new Date(slotStart.getTime() + durationMinutes * 60 * 1000);
+
+    // Don't offer times that have already started today.
+    if (slotStart >= now) {
+      slots.push({
+        start: new Date(slotStart),
+        end: slotEnd,
+        conflict: isSlotBusy(slotStart, slotEnd, busyWindows),
+      });
+    }
+
+    slotStart = new Date(slotStart.getTime() + SLOT_INTERVAL_MINUTES * 60 * 1000);
+  }
+
+  return { slots, durationMinutes, bufferMinutes };
+}
+
 export async function getUnifiedAvailability(
   tenantId: string,
   startDate: Date,

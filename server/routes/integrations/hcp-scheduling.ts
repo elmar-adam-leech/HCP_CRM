@@ -10,7 +10,7 @@ import { asyncHandler } from "../../utils/async-handler";
 import { logger } from "../../utils/logger";
 import { createActivityAndBroadcast } from "../../utils/activity";
 import { housecallSchedulingService } from "../../housecall-scheduling-service";
-import { getAppointmentSettings } from "../../scheduling/availability";
+import { getAppointmentSettings, getSalespersonDaySlots } from "../../scheduling/availability";
 import { getWebhookHealthStatus, getWebhookStatus, triggerManualBackfill } from "../../services/hcp-webhook-health";
 import crypto from "crypto";
 
@@ -103,6 +103,48 @@ export function registerHcpSchedulingRoutes(app: Express): void {
       startDate: start.toISOString(),
       endDate: end.toISOString(),
       events,
+    });
+  }));
+
+  // Internal (staff-facing) flexible scheduling (task #859): return EVERY
+  // candidate start time across the selected salesperson's working window for a
+  // single day, each flagged with whether it conflicts with an existing
+  // appointment. The client renders conflicting times with an inline "Booked"
+  // badge but keeps them selectable (intentional double-booking is allowed
+  // internally). The public booking flow remains conflict-avoiding and does not
+  // use this endpoint.
+  app.get("/api/scheduling/day-slots", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    const { date, salespersonId } = req.query;
+
+    if (!date || typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      res.status(400).json({ message: "date is required (YYYY-MM-DD format)" });
+      return;
+    }
+
+    if (!salespersonId || typeof salespersonId !== 'string') {
+      res.status(400).json({ message: "salespersonId is required" });
+      return;
+    }
+
+    const contractor = await storage.getContractor(req.user.contractorId) as Contractor | null;
+    const timezone = contractor?.timezone || 'America/New_York';
+
+    const { slots, durationMinutes, bufferMinutes } = await getSalespersonDaySlots(
+      req.user.contractorId,
+      date,
+      salespersonId,
+      timezone,
+    );
+
+    res.json({
+      date,
+      slotDurationMinutes: durationMinutes,
+      bufferMinutes,
+      slots: slots.map(slot => ({
+        start: slot.start.toISOString(),
+        end: slot.end.toISOString(),
+        conflict: slot.conflict,
+      })),
     });
   }));
 

@@ -86,6 +86,105 @@ export class HcpSchedulingModule extends HcpBaseClient {
     }
   }
 
+  /**
+   * Internal (staff-facing) flexible scheduling for the HCP modal (task #859).
+   * Returns EVERY candidate start time across business hours at a fixed
+   * interval for each estimator, flagging times that overlap an existing
+   * scheduled estimate. Unlike getEstimatorAvailability (which returns only
+   * free gaps), conflicting times are still returned so the UI can render an
+   * inline "Booked" badge while keeping them selectable — intentional
+   * double-booking is permitted internally. The public booking flow does not
+   * use this method.
+   */
+  async getEstimatorTimeCandidates(
+    tenantId: string,
+    date: string,
+    estimatorIds?: string[]
+  ): Promise<HousecallProResponse<{
+    employee_id: string;
+    employee_name: string;
+    slots: Array<{
+      start_time: string;
+      end_time: string;
+      conflict: boolean;
+    }>;
+  }[]>> {
+    try {
+      const employeesResult = await this.getEmployeesForScheduling(tenantId);
+      if (!employeesResult.success || !employeesResult.data) {
+        return {
+          success: false,
+          error: employeesResult.error || 'Failed to fetch employees',
+        };
+      }
+
+      const estimators = employeesResult.data.filter(emp => {
+        const isEstimator = emp.role.toLowerCase().includes('estimator') || emp.role.toLowerCase().includes('sales');
+        const isSpecific = !estimatorIds || estimatorIds.includes(emp.id);
+        return emp.is_active && isEstimator && isSpecific;
+      });
+
+      const businessHours = { start: '08:00', end: '17:00' };
+      const intervalMinutes = 30;
+      const durationMinutes = 60;
+
+      const availability = [];
+
+      for (const estimator of estimators) {
+        const startOfDay = `${date}T00:00:00Z`;
+        const endOfDay = `${date}T23:59:59Z`;
+
+        const estimatesResult = await this.getEstimatesForScheduling(tenantId, {
+          scheduled_start_min: startOfDay,
+          scheduled_start_max: endOfDay,
+          work_status: 'scheduled',
+        });
+
+        const estimatorSchedule = estimatesResult.success
+          ? (estimatesResult.data || []).filter((est: any) =>
+              est.employee_id === estimator.id && est.scheduled_start && est.scheduled_end
+            )
+          : [];
+
+        const busyWindows = estimatorSchedule.map((est: any) => ({
+          start: this.isoToMinutes(est.scheduled_start!),
+          end: this.isoToMinutes(est.scheduled_end!),
+        }));
+
+        const businessStart = this.timeToMinutes(businessHours.start);
+        const businessEnd = this.timeToMinutes(businessHours.end);
+
+        const slots: Array<{ start_time: string; end_time: string; conflict: boolean }> = [];
+        for (let t = businessStart; t + durationMinutes <= businessEnd; t += intervalMinutes) {
+          const slotStart = t;
+          const slotEnd = t + durationMinutes;
+          const conflict = busyWindows.some(w => slotStart < w.end && slotEnd > w.start);
+          slots.push({
+            start_time: this.minutesToTime(slotStart),
+            end_time: this.minutesToTime(slotEnd),
+            conflict,
+          });
+        }
+
+        availability.push({
+          employee_id: estimator.id,
+          employee_name: `${estimator.first_name} ${estimator.last_name}`,
+          slots,
+        });
+      }
+
+      return {
+        success: true,
+        data: availability,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to get availability',
+      };
+    }
+  }
+
   async getEmployeeScheduledEstimates(
     tenantId: string,
     employeeId: string,

@@ -38,12 +38,11 @@ interface Salesperson {
 interface AvailabilitySlot {
   start: string;
   end: string;
-  availableCount: number;
+  conflict: boolean;
 }
 
 interface AvailabilityResponse {
-  startDate: string;
-  endDate: string;
+  date: string;
   slotDurationMinutes: number;
   bufferMinutes: number;
   slots: AvailabilitySlot[];
@@ -108,25 +107,22 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
 
   const formattedDate = selectedDate ? format(selectedDate, 'yyyy-MM-dd') : '';
 
+  // Task #859: internal flexible scheduling. Fetch EVERY candidate time across
+  // the selected salesperson's working window (not just free gaps), each flagged
+  // with `conflict` so we can show an inline "Booked" badge while keeping the
+  // time selectable. Requires both a date and a salesperson.
   const { data: availabilityData, isLoading: slotsLoading } = useQuery<AvailabilityResponse>({
-    queryKey: ['/api/scheduling/availability', formattedDate, selectedSalespersonId],
+    queryKey: ['/api/scheduling/day-slots', formattedDate, selectedSalespersonId],
     queryFn: async () => {
-      if (!selectedDate) throw new Error('No date selected');
-      const startOfDay = new Date(selectedDate);
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(selectedDate);
-      endOfDay.setHours(23, 59, 59, 999);
+      if (!formattedDate || !selectedSalespersonId) throw new Error('Missing date or salesperson');
       const params = new URLSearchParams({
-        startDate: startOfDay.toISOString(),
-        endDate: endOfDay.toISOString(),
+        date: formattedDate,
+        salespersonId: selectedSalespersonId,
       });
-      if (selectedSalespersonId) {
-        params.set('salespersonId', selectedSalespersonId);
-      }
-      const resp = await apiRequest('GET', `/api/scheduling/availability?${params.toString()}`);
+      const resp = await apiRequest('GET', `/api/scheduling/day-slots?${params.toString()}`);
       return resp.json();
     },
-    enabled: isOpen && !!selectedDate,
+    enabled: isOpen && !!formattedDate && !!selectedSalespersonId,
     staleTime: 30000,
   });
 
@@ -145,7 +141,7 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
           value: timeValue,
           label: `${startHr}:${startMin} - ${endHr}:${endMin}`,
           isoStart: slot.start,
-          available: true,
+          conflict: slot.conflict,
         };
       });
   })();
@@ -464,6 +460,10 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
                             <Loader2 className="h-4 w-4 animate-spin" />
                             <span className="text-muted-foreground">Loading available times...</span>
                           </div>
+                        ) : !selectedSalesperson ? (
+                          <div className="text-center py-4 text-muted-foreground">
+                            Select a salesperson to see available times
+                          </div>
                         ) : availableSlots.length > 0 ? (
                           <Select onValueChange={field.onChange} value={field.value}>
                             <SelectTrigger data-testid="select-time-slot">
@@ -472,6 +472,9 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
                                   <div className="flex items-center gap-2">
                                     <Clock className="h-4 w-4" />
                                     <span>{availableSlots.find(s => s.value === field.value)?.label}</span>
+                                    {availableSlots.find(s => s.value === field.value)?.conflict && (
+                                      <Badge variant="secondary" className="ml-1">Booked</Badge>
+                                    )}
                                   </div>
                                 )}
                               </SelectValue>
@@ -482,8 +485,11 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
                                   key={slot.value}
                                   value={slot.value}
                                 >
-                                  <div className="flex items-center gap-2 w-full">
+                                  <div className="flex items-center justify-between gap-2 w-full">
                                     <span>{slot.label}</span>
+                                    {slot.conflict && (
+                                      <Badge variant="secondary" data-testid={`badge-booked-${slot.value}`}>Booked</Badge>
+                                    )}
                                   </div>
                                 </SelectItem>
                               ))}
@@ -491,10 +497,7 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
                           </Select>
                         ) : (
                           <div className="text-center py-4 text-muted-foreground">
-                            {selectedSalesperson
-                              ? `No available slots on ${formatDateScheduling(selectedDate)} for the selected salesperson`
-                              : `No available slots on ${formatDateScheduling(selectedDate)}`
-                            }
+                            {selectedSalesperson.name} is not working on {formatDateScheduling(selectedDate)}. Pick another day.
                           </div>
                         )}
                       </FormControl>

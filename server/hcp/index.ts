@@ -26,7 +26,7 @@ export class HousecallProService
     Pick<HcpLeadsModule, 'createLead' | 'getLead' | 'addLeadNote' | 'convertLead' | 'getLeadSources'>,
     Pick<HcpJobsModule, 'getJobs' | 'getJob'>,
     Pick<HcpEmployeesModule, 'getEmployees' | 'filterEstimators'>,
-    Pick<HcpSchedulingModule, 'getEstimatorAvailability' | 'getEmployeeScheduledEstimates' | 'getEmployeeScheduledJobs' | 'getEmployeeScheduledEvents' | 'calculateAvailableSlots'>,
+    Pick<HcpSchedulingModule, 'getEstimatorAvailability' | 'getEstimatorTimeCandidates' | 'getEmployeeScheduledEstimates' | 'getEmployeeScheduledJobs' | 'getEmployeeScheduledEvents' | 'calculateAvailableSlots'>,
     Pick<HcpServiceItemsModule, 'getServiceItem'>
 {
   private readonly _estimates = new HcpEstimatesModule();
@@ -57,6 +57,7 @@ export class HousecallProService
   filterEstimators = this._employees.filterEstimators.bind(this._employees);
 
   getEstimatorAvailability = this._scheduling.getEstimatorAvailability.bind(this._scheduling);
+  getEstimatorTimeCandidates = this._scheduling.getEstimatorTimeCandidates.bind(this._scheduling);
   getEmployeeScheduledEstimates = this._scheduling.getEmployeeScheduledEstimates.bind(this._scheduling);
   getEmployeeScheduledJobs = this._scheduling.getEmployeeScheduledJobs.bind(this._scheduling);
   getEmployeeScheduledEvents = this._scheduling.getEmployeeScheduledEvents.bind(this._scheduling);
