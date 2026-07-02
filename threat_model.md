@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This project is a multi-tenant CRM for field-service contractors. It exposes an authenticated browser-based CRM, public booking and lead-capture endpoints, third-party webhook receivers, and multiple high-trust outbound integrations including Housecall Pro, Dialpad, Gmail, Facebook Lead Ads, Google Places, Google Local Services, and SendGrid.
+This project is a multi-tenant CRM for field-service contractors. It exposes an authenticated browser-based CRM, public booking and lead-capture endpoints, third-party webhook receivers, and multiple high-trust outbound integrations including Housecall Pro, Dialpad, Twilio, Gmail, Facebook Lead Ads, Google Places, Google Local Services, and SendGrid.
 
 The stack is a React/Vite frontend (`client/`) and a Node.js/Express backend (`server/`) with PostgreSQL via Drizzle ORM and shared schemas in `shared/`. Authentication uses JWTs delivered primarily in an HTTP-only `auth_token` cookie, with multi-company membership and per-session active `contractorId` scoping. Production assumptions for this threat model: `NODE_ENV=production`, TLS is terminated by the platform, and mockup/dev sandbox surfaces are not deployed.
 
@@ -18,7 +18,7 @@ configuration changes.
 - **User accounts and active sessions** — JWT session cookies, MFA state, password reset tokens, and token revocation state. Compromise enables account takeover and lateral movement across contractor data.
 - **Tenant business data** — contacts, leads, jobs, estimates, activities, reports, workflow executions, audit logs, and scheduling data. This is the core multi-tenant dataset and contains business-sensitive information.
 - **Customer PII** — names, phone numbers, email addresses, physical addresses, booking details, and communication history. Exposure impacts customer privacy and contractor trust.
-- **Integration credentials and secrets** — Gmail OAuth tokens, Dialpad API keys and webhook secrets, Housecall Pro credentials, Facebook page access tokens, SendGrid keys, Google API credentials, JWT signing keys, and credential-encryption keys. These secrets grant direct access to external systems and inbound trust boundaries.
+- **Integration credentials and secrets** — Gmail OAuth tokens, Dialpad API keys and webhook secrets, Twilio Account SID / Auth Token (the Auth Token also signs inbound webhooks), Housecall Pro credentials, Facebook page access tokens, SendGrid keys, Google API credentials, JWT signing keys, and credential-encryption keys. These secrets grant direct access to external systems and inbound trust boundaries.
 - **Automation and messaging capabilities** — workflow definitions, message templates, outbound email/SMS/call functionality, and booking creation. Abuse can send messages, create records, or trigger actions at tenant scope.
 
 ## Trust Boundaries
@@ -26,7 +26,7 @@ configuration changes.
 - **Browser to API** — all `/api/*` traffic from the SPA crosses from an untrusted client into privileged server code. Every authenticated endpoint must validate identity, authorization, and tenant scope on the server.
 - **Public internet to unauthenticated endpoints** — `/api/public/*` booking routes and `/api/webhooks/*` receivers accept requests without session auth. These routes must enforce their own authentication, validation, abuse controls, and least-privilege responses.
 - **API to PostgreSQL** — the server has broad read/write access to tenant data. Any injection flaw or missing tenant filter at the server layer can expose or corrupt all contractor data.
-- **API to external providers** — the server holds long-lived credentials for Housecall Pro, Dialpad, Gmail, Facebook, SendGrid, Google APIs, and similar services. Credential disclosure or unvalidated outbound requests can impact external accounts as well as local data.
+- **API to external providers** — the server holds long-lived credentials for Housecall Pro, Dialpad, Twilio, Gmail, Facebook, SendGrid, Google APIs, and similar services. Credential disclosure or unvalidated outbound requests can impact external accounts as well as local data.
 - **Authenticated user to privileged user** — standard users, managers, admins, and super admins have different powers. Authorization must be enforced server-side; UI gating is not sufficient.
 - **Tenant to tenant** — users may belong to multiple contractors, but each session is scoped to one active `contractorId`. Every data access path must preserve strict tenant isolation.
 
@@ -230,6 +230,62 @@ Future scans should treat `server/worker.ts` as a privileged server
 entrypoint equivalent to the in-app job timers, and should verify any newly
 added job is wrapped in `withJobLock` and preserves its idempotency
 guarantees before being scheduled.
+
+## Twilio integration — inbound webhook receivers & bridged calling
+
+Twilio is a first-class calling/texting provider (module in `server/twilio/*`,
+provider adapter in `server/providers/twilio-provider.ts`, receivers in
+`server/routes/webhooks/twilio.ts`). It adds new **public, unauthenticated
+inbound webhook receivers** under `/api/webhooks/twilio/*` and one outbound
+credential boundary. Credentials are contractor-scoped only (Account SID +
+Auth Token via `credentialService`); there is no system-wide fallback.
+
+Inbound trust boundary (public internet → unauthenticated endpoints):
+
+- `POST /api/webhooks/twilio/sms/:tenantId` — inbound SMS ingestion.
+- `POST /api/webhooks/twilio/voice/incoming/:tenantId` — inbound calls (ring tree).
+- `POST /api/webhooks/twilio/voice/bridge/:tenantId` — outbound-call second leg (bridge TwiML).
+- `POST /api/webhooks/twilio/voice/ring-step/:tenantId` — ring-tree `<Dial action>` fallthrough.
+- `POST /api/webhooks/twilio/voice/status/:tenantId` — call status/duration callbacks.
+
+Required guarantees / considerations:
+
+- **Sender authentication.** Every Twilio receiver MUST verify the
+  `X-Twilio-Signature` header via `validateTwilioSignature` (base64
+  HMAC-SHA1 of the exact posted URL + sorted params, keyed by the tenant's
+  Auth Token) BEFORE acting on any payload — mirroring the HCP/Dialpad
+  webhook-auth requirement. The signed URL is the exact tenant-scoped
+  endpoint (including query string); because the Messaging Service
+  `InboundRequestUrl` is set to equal the number-level `SmsUrl`, signature
+  verification is unchanged whether Twilio posts via the number or via the
+  Service. Any change that mismatches the reconstructed URL silently breaks
+  verification.
+- **Tenant scope from a signed source.** The `:tenantId` in the path is
+  attacker-controllable, but the Auth Token used to verify the signature is
+  resolved per-tenant, so a valid signature proves the request targets the
+  correct tenant's credentials. Do not trust `:tenantId` for anything before
+  the signature check passes.
+- **TwiML is generated, not reflected.** All TwiML builders
+  (`server/twilio/utils.ts`, `ring-tree.ts`) `escapeXml()` every
+  interpolated value (phone numbers, greetings, action URLs). Any new TwiML
+  path MUST escape untrusted values to avoid TwiML/markup injection.
+- **Writes never retry.** Outbound `initiateCall` / SMS send are excluded
+  from the read-only retry policy (see `server/twilio/client.ts` comment) so
+  a transient error cannot place duplicate calls or send duplicate texts.
+- **DoS.** External Messaging-API pagination is hard-capped
+  (`MAX_MESSAGING_PAGES`) so a misconfigured account cannot loop forever;
+  inbound receivers should retain rate limiting appropriate to their public
+  exposure.
+- **Recording proxy.** `server/twilio/recordings.ts` streams recording media
+  through an authenticated app route (Twilio media requires Basic auth);
+  recording URLs/media MUST remain behind the same tenant-scoped
+  authorization as other communication history and MUST NOT be exposed to
+  unauthorized users.
+
+Future scans should treat `server/routes/webhooks/twilio.ts` as a
+sender-authenticated public boundary equivalent to the HCP/Dialpad webhook
+receivers, and verify any newly added Twilio receiver both checks
+`X-Twilio-Signature` and resolves tenant credentials before processing.
 
 ## 2026-04-22 Refresh Notes
 

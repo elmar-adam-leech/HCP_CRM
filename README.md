@@ -10,7 +10,7 @@ A multi-tenant CRM built for field service businesses — HVAC contractors and s
 - **Contacts** — Unified contact records linked across leads, estimates, and jobs with deduplication, tagging, and follow-up scheduling
 - **Workflow Automation** — Visual drag-and-drop builder (React Flow) for automated sequences triggered by business events: send SMS/email, update statuses, assign users, add delays, run AI actions, and branch on conditions
 - **Gmail Integration** — Per-user OAuth connection; syncs inbox automatically and captures email threads against contact records
-- **SMS & Calling** — Dialpad integration for two-way SMS conversations and click-to-call directly within the CRM; unified message threads per contact
+- **SMS & Calling** — Dialpad and Twilio integrations for two-way SMS conversations and click-to-call directly within the CRM; unified message threads per contact, a per-tenant provider preference with a "From Number" picker, Twilio bridged outbound calls, a configurable inbound ring tree, and call recording
 - **Housecall Pro Sync** — Webhook-driven import of customers, jobs, and estimates from HCP; bidirectional status mapping
 - **Scheduling** — Unified calendar view, appointment slot enforcement, and auto-assignment algorithm for salespeople
 - **AI Monitor** — Conversation analysis, lead scoring, and AI-generated responses via xAI (Grok)
@@ -37,7 +37,7 @@ A multi-tenant CRM built for field service businesses — HVAC contractors and s
 | Auth | JWT (HTTP-only cookies), bcrypt, token revocation table |
 | Real-time | WebSockets (`ws`) |
 | Email (transactional) | SendGrid |
-| SMS / Calling | Dialpad API |
+| SMS / Calling | Dialpad API, Twilio API |
 | Gmail | Google OAuth 2.0 |
 | AI | xAI (Grok) API |
 
@@ -54,10 +54,12 @@ A multi-tenant CRM built for field service businesses — HVAC contractors and s
 │       └── pages/           # Route-level page components
 ├── server/                  # Express backend
 │   ├── middleware/          # Auth, rate limiting, error handling
-│   ├── providers/           # SMS, email, calling provider adapters
-│   ├── routes/              # REST API route handlers
+│   ├── providers/           # SMS, email, calling provider adapters (Dialpad, Twilio)
+│   ├── routes/              # REST API route handlers (incl. /api/webhooks/twilio/*)
 │   ├── services/            # Business logic (workflow engine, AI, deduper, etc.)
 │   ├── storage/             # Drizzle query layer (one file per domain)
+│   ├── twilio/              # Twilio module (client, numbers, webhook-config, ring-tree, recordings)
+│   ├── schema-drift.ts      # columnMigrations — single source of truth for runtime schema changes
 │   └── utils/               # Shared server utilities
 ├── shared/
 │   └── schema/              # Drizzle table definitions + Zod schemas (shared by client & server)
