@@ -162,6 +162,7 @@ export interface BookingResult {
   assignedSalespersonId?: string;
   assignedSalespersonName?: string;
   housecallProEventId?: string;
+  googleCalendarEventId?: string;
   error?: string;
   scheduleError?: string;
 }
@@ -179,4 +180,9 @@ export interface SalespersonInfo {
   workingHoursEnd: string;
   hasCustomSchedule: boolean;
   displayOrder: number | null;
+  // Per-user Google Calendar connection (task #858). The refresh token is
+  // AES-256-GCM encrypted at rest; availability reads busy times from it and
+  // booking writes real events to it.
+  googleCalendarConnected?: boolean;
+  googleCalendarRefreshToken?: string | null;
 }

@@ -17,6 +17,8 @@ export async function getSalespeople(tenantId: string): Promise<SalespersonInfo[
     workingHoursEnd: userContractors.workingHoursEnd,
     hasCustomSchedule: userContractors.hasCustomSchedule,
     displayOrder: userContractors.displayOrder,
+    googleCalendarConnected: users.googleCalendarConnected,
+    googleCalendarRefreshToken: users.googleCalendarRefreshToken,
   })
   .from(userContractors)
   .innerJoin(users, eq(users.id, userContractors.userId))
@@ -33,6 +35,8 @@ export async function getSalespeople(tenantId: string): Promise<SalespersonInfo[
     workingHoursEnd: sp.workingHoursEnd ?? "17:00",
     hasCustomSchedule: sp.hasCustomSchedule ?? false,
     displayOrder: sp.displayOrder ?? null,
+    googleCalendarConnected: sp.googleCalendarConnected ?? false,
+    googleCalendarRefreshToken: sp.googleCalendarRefreshToken ?? null,
   }));
 }
 

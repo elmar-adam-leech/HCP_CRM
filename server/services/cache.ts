@@ -109,6 +109,8 @@ export const getUserSupplementalCached = memoizeAsync(
       dialpadDefaultNumber: user.dialpadDefaultNumber || undefined,
       gmailConnected: user.gmailConnected || false,
       gmailEmail: user.gmailEmail || undefined,
+      googleCalendarConnected: user.googleCalendarConnected || false,
+      googleCalendarEmail: user.googleCalendarEmail || undefined,
       passkeyPromptDismissedAt: (user as { passkeyPromptDismissedAt?: Date | null }).passkeyPromptDismissedAt ?? null,
       passkeyCount,
     };

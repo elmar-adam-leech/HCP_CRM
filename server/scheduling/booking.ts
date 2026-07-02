@@ -5,7 +5,7 @@ import type { BookingRequest, BookingResult, SalespersonInfo } from '../types/sc
 import { parseAddressString } from '../types/scheduling';
 import { logger } from '../utils/logger';
 import { getSalespeople } from './queries';
-import { selectNextAvailableSalesperson, getAvailabilityForDate } from './availability';
+import { selectNextAvailableSalesperson, getAvailabilityForDate, getAppointmentSettings } from './availability';
 import { invalidateAndRecompute, utcToLocalDateStr } from '../services/availability-cache';
 import { resolveHcpCustomer } from './hcp-customer';
 import { createOrConvertHcpEstimate } from './hcp-estimate';
@@ -14,10 +14,10 @@ import { markContactScheduled } from '../services/contact-status';
 import { createActivityAndBroadcast } from '../utils/activity';
 import { storage } from '../storage';
 import { placesResolveAddressComponents } from '../utils/places-client';
+import { users } from '@shared/schema';
+import { googleCalendarService, GoogleCalendarAuthError } from '../google-calendar-service';
 
 const log = logger('HcpSchedulingService');
-
-const SLOT_DURATION_MINUTES = 60;
 
 export async function bookAppointment(tenantId: string, request: BookingRequest): Promise<BookingResult> {
   // If components are missing or partial, try to canonicalize via Places
@@ -58,7 +58,68 @@ export async function bookAppointment(tenantId: string, request: BookingRequest)
     return { success: false, error: 'No available salespeople for the requested time slot' };
   }
 
-  const endTime = new Date(request.startTime.getTime() + SLOT_DURATION_MINUTES * 60 * 1000);
+  const { durationMinutes } = await getAppointmentSettings(tenantId);
+  const endTime = new Date(request.startTime.getTime() + durationMinutes * 60 * 1000);
+
+  // Write a real event to the salesperson's Google Calendar when they've
+  // connected it (task #858). This is additive and independent of HCP: a
+  // salesperson may use Google Calendar, HCP, or both — provider selection is
+  // per-user, driven by what each rep has connected, so HCP behavior is
+  // unchanged for reps who don't use Google Calendar.
+  //
+  // This runs FIRST — before any HCP/CRM estimate, contact-status change, or
+  // activity write — precisely because booking writes must fail loudly. If the
+  // calendar write fails (e.g. a revoked/expired token) we throw here, before
+  // any irreversible local or external side effect has occurred, so a failed
+  // booking never leaves an orphaned HCP estimate or a contact flipped to
+  // "scheduled" with no corresponding calendar event.
+  let googleCalendarEventId: string | undefined;
+  if (selectedSalesperson.googleCalendarConnected && selectedSalesperson.googleCalendarRefreshToken) {
+    const eventTimezone = request.timezone
+      || await (async () => {
+        const [cRow] = await db.select({ timezone: contractors.timezone })
+          .from(contractors)
+          .where(eq(contractors.id, tenantId))
+          .limit(1);
+        return cRow?.timezone || 'America/New_York';
+      })();
+    const descriptionParts = [
+      request.customerName ? `Customer: ${request.customerName}` : null,
+      request.customerPhone ? `Phone: ${request.customerPhone}` : null,
+      request.customerEmail ? `Email: ${request.customerEmail}` : null,
+      request.notes ? `\nNotes:\n${request.notes}` : null,
+    ].filter(Boolean) as string[];
+    try {
+      googleCalendarEventId = await googleCalendarService.createEvent(
+        selectedSalesperson.googleCalendarRefreshToken,
+        {
+          summary: request.title,
+          description: descriptionParts.join('\n') || undefined,
+          location: request.customerAddress || undefined,
+          startTime: request.startTime,
+          endTime,
+          timezone: eventTimezone,
+          attendees: request.customerEmail ? [request.customerEmail] : undefined,
+        },
+      );
+      log.info(`[scheduling] Created Google Calendar event ${googleCalendarEventId} for salesperson ${selectedSalesperson.name}`);
+    } catch (err) {
+      if (err instanceof GoogleCalendarAuthError) {
+        // Token revoked/expired — mark the user disconnected so the UI prompts
+        // a reconnect, then fail loudly.
+        try {
+          await db.update(users)
+            .set({ googleCalendarConnected: false })
+            .where(eq(users.id, selectedSalesperson.userId));
+        } catch (updateErr) {
+          log.error('[scheduling] Failed to flag Google Calendar as disconnected:', updateErr);
+        }
+        throw new Error(`${selectedSalesperson.name}'s Google Calendar connection has expired. Please reconnect Google Calendar in Settings and try again.`);
+      }
+      log.error('[scheduling] Failed to create Google Calendar event:', err);
+      throw new Error('Failed to create the event in Google Calendar. Please try again.');
+    }
+  }
 
   let hcpEstimateId: string | undefined;
   let scheduleError: string | undefined;
@@ -267,6 +328,7 @@ export async function bookAppointment(tenantId: string, request: BookingRequest)
     assignedSalespersonId: selectedSalesperson.userId,
     contactId: request.contactId,
     housecallProEventId: hcpEstimateId,
+    googleCalendarEventId,
     title: request.title,
     startTime: request.startTime,
     endTime,
@@ -327,6 +389,7 @@ export async function bookAppointment(tenantId: string, request: BookingRequest)
     assignedSalespersonId: selectedSalesperson.userId,
     assignedSalespersonName: selectedSalesperson.name,
     housecallProEventId: hcpEstimateId,
+    googleCalendarEventId,
     scheduleError,
   };
 }

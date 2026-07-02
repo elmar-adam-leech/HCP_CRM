@@ -16,6 +16,8 @@ export interface CurrentUser {
   twilioPhoneToRing?: string | null;
   gmailConnected?: boolean;
   gmailEmail?: string;
+  googleCalendarConnected?: boolean;
+  googleCalendarEmail?: string;
   canManageIntegrations: boolean;
   allowedIntegrations?: string[] | null;
   hasActiveCompanyIntegrations?: boolean;

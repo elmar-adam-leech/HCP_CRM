@@ -6,6 +6,7 @@ import { HcpEmployeeMappingCard } from "./HcpEmployeeMappingCard";
 import { FacebookLeadsCard } from "./FacebookLeadsCard";
 import { GoogleLocalServicesCard } from "./GoogleLocalServicesCard";
 import { GmailConnectionCard } from "./GmailConnectionCard";
+import { GoogleCalendarConnectionCard } from "./GoogleCalendarConnectionCard";
 import { LeadCaptureCard } from "./LeadCaptureCard";
 import { SharedEmailCard } from "./SharedEmailCard";
 import { useCurrentUser, isAdminUser } from "@/hooks/useCurrentUser";
@@ -26,6 +27,7 @@ export function IntegrationsTab() {
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       {canView('gmail') && <GmailConnectionCard />}
+      <GoogleCalendarConnectionCard />
       {canView('shared-email') && <SharedEmailCard />}
       {canView('lead-capture') && <LeadCaptureCard />}
       {canView('dialpad') && <DialpadCard />}

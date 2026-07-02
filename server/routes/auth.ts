@@ -603,6 +603,8 @@ export function registerAuthRoutes(app: Express): void {
         dialpadDefaultNumber: supplemental?.dialpadDefaultNumber || undefined,
         gmailConnected: supplemental?.gmailConnected || false,
         gmailEmail: supplemental?.gmailEmail || undefined,
+        googleCalendarConnected: supplemental?.googleCalendarConnected || false,
+        googleCalendarEmail: supplemental?.googleCalendarEmail || undefined,
         hasActiveCompanyIntegrations: enabledIntegrations.length > 0,
         callPreference: userContractor?.callPreference || 'integration',
         // task #832: per-user "phone to ring" for the Twilio bridge call,

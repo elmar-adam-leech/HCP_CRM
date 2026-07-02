@@ -108,6 +108,7 @@ vi.mock('../scheduling/queries', () => ({
 vi.mock('../scheduling/availability', () => ({
   selectNextAvailableSalesperson: vi.fn(),
   getAvailabilityForDate: vi.fn(),
+  getAppointmentSettings: vi.fn(async () => ({ durationMinutes: 60, bufferMinutes: 30 })),
 }));
 
 vi.mock('../services/availability-cache', () => ({

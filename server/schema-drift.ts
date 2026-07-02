@@ -1609,6 +1609,30 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       `,
       description: 'backfill: reconnect orphaned Twilio call/recording activities to their contact (task #844)',
     },
+    {
+      sql: `ALTER TABLE users ADD COLUMN IF NOT EXISTS google_calendar_connected boolean NOT NULL DEFAULT false`,
+      description: 'users.google_calendar_connected (per-user Google Calendar OAuth, task #858)',
+    },
+    {
+      sql: `ALTER TABLE users ADD COLUMN IF NOT EXISTS google_calendar_refresh_token text`,
+      description: 'users.google_calendar_refresh_token (encrypted, separate from gmail, task #858)',
+    },
+    {
+      sql: `ALTER TABLE users ADD COLUMN IF NOT EXISTS google_calendar_email text`,
+      description: 'users.google_calendar_email (connected Google Calendar account email, task #858)',
+    },
+    {
+      sql: `ALTER TABLE contractors ADD COLUMN IF NOT EXISTS appointment_duration_minutes integer NOT NULL DEFAULT 60`,
+      description: 'contractors.appointment_duration_minutes (configurable appointment length, task #858)',
+    },
+    {
+      sql: `ALTER TABLE contractors ADD COLUMN IF NOT EXISTS appointment_buffer_minutes integer NOT NULL DEFAULT 30`,
+      description: 'contractors.appointment_buffer_minutes (configurable buffer between appointments, task #858)',
+    },
+    {
+      sql: `ALTER TABLE scheduled_bookings ADD COLUMN IF NOT EXISTS google_calendar_event_id text`,
+      description: 'scheduled_bookings.google_calendar_event_id (Google Calendar event id for booking, task #858)',
+    },
   ];
 
 export async function applyColumnMigrations(

@@ -192,6 +192,7 @@ export const scheduledBookings = pgTable("scheduled_bookings", {
   assignedSalespersonId: varchar("assigned_salesperson_id").notNull().references(() => users.id),
   contactId: varchar("contact_id").references(() => contacts.id, { onDelete: "set null" }),
   housecallProEventId: text("housecall_pro_event_id"), // HCP calendar event ID
+  googleCalendarEventId: text("google_calendar_event_id"), // Google Calendar event ID (task #858)
   title: text("title").notNull(),
   startTime: timestamp("start_time").notNull(),
   endTime: timestamp("end_time").notNull(),

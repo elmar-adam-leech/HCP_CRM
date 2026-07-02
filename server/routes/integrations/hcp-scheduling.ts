@@ -10,6 +10,7 @@ import { asyncHandler } from "../../utils/async-handler";
 import { logger } from "../../utils/logger";
 import { createActivityAndBroadcast } from "../../utils/activity";
 import { housecallSchedulingService } from "../../housecall-scheduling-service";
+import { getAppointmentSettings } from "../../scheduling/availability";
 import { getWebhookHealthStatus, getWebhookStatus, triggerManualBackfill } from "../../services/hcp-webhook-health";
 import crypto from "crypto";
 
@@ -47,6 +48,11 @@ export function registerHcpSchedulingRoutes(app: Express): void {
 
     const slots = await housecallSchedulingService.getUnifiedAvailability(req.user.contractorId, start, end, timezone);
 
+    // Surface the tenant's configured appointment length + buffer so the UI
+    // renders slots that match what the booking write path actually uses
+    // (task #858 — these are no longer hardcoded).
+    const { durationMinutes, bufferMinutes } = await getAppointmentSettings(req.user.contractorId);
+
     // Optionally filter by a specific salesperson
     const filterSalespersonId = salespersonId as string | undefined;
 
@@ -57,8 +63,8 @@ export function registerHcpSchedulingRoutes(app: Express): void {
     res.json({
       startDate: start.toISOString(),
       endDate: end.toISOString(),
-      slotDurationMinutes: 60,
-      bufferMinutes: 30,
+      slotDurationMinutes: durationMinutes,
+      bufferMinutes,
       slots: filteredSlots.map(slot => ({
         start: slot.start.toISOString(),
         end: slot.end.toISOString(),

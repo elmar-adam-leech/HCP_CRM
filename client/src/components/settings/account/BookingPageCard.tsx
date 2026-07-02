@@ -16,6 +16,8 @@ interface BookingSlugData {
   bookingUrl: string | null;
   bookingRedirectUrl: string | null;
   timezone: string | null;
+  appointmentDurationMinutes: number | null;
+  appointmentBufferMinutes: number | null;
 }
 
 const TIMEZONES = [
@@ -59,11 +61,15 @@ export function BookingPageCard() {
   const [bookingSlugInput, setBookingSlugInput] = useState<string | undefined>(undefined);
   const [redirectUrlInput, setRedirectUrlInput] = useState<string | undefined>(undefined);
   const [timezoneInput, setTimezoneInput] = useState<string | undefined>(undefined);
+  const [durationInput, setDurationInput] = useState<string | undefined>(undefined);
+  const [bufferInput, setBufferInput] = useState<string | undefined>(undefined);
 
   const browserTz = getBrowserTimezone();
   const effectiveBookingSlug = bookingSlugInput ?? bookingSlugData?.bookingSlug ?? '';
   const effectiveRedirectUrl = redirectUrlInput ?? bookingSlugData?.bookingRedirectUrl ?? '';
   const effectiveTimezone = timezoneInput ?? bookingSlugData?.timezone ?? browserTz;
+  const effectiveDuration = durationInput ?? String(bookingSlugData?.appointmentDurationMinutes ?? 60);
+  const effectiveBuffer = bufferInput ?? String(bookingSlugData?.appointmentBufferMinutes ?? 30);
 
   useEffect(() => {
     if (bookingSlugData?.timezone) {
@@ -72,11 +78,13 @@ export function BookingPageCard() {
   }, [bookingSlugData?.timezone]);
 
   const saveBookingSettingsMutation = useMutation({
-    mutationFn: async ({ bookingSlug, bookingRedirectUrl, timezone }: { bookingSlug: string; bookingRedirectUrl: string; timezone: string }) => {
+    mutationFn: async ({ bookingSlug, bookingRedirectUrl, timezone, appointmentDurationMinutes, appointmentBufferMinutes }: { bookingSlug: string; bookingRedirectUrl: string; timezone: string; appointmentDurationMinutes: number; appointmentBufferMinutes: number }) => {
       const response = await apiRequest('POST', '/api/booking-slug', {
         bookingSlug: bookingSlug.trim().toLowerCase() || null,
         bookingRedirectUrl: bookingRedirectUrl.trim() || null,
         timezone,
+        appointmentDurationMinutes,
+        appointmentBufferMinutes,
       });
       return response.json();
     },
@@ -84,6 +92,8 @@ export function BookingPageCard() {
       setBookingSlugInput(data.bookingSlug || '');
       setRedirectUrlInput(data.bookingRedirectUrl || '');
       if (data.timezone) setTimezoneInput(data.timezone);
+      if (data.appointmentDurationMinutes != null) setDurationInput(String(data.appointmentDurationMinutes));
+      if (data.appointmentBufferMinutes != null) setBufferInput(String(data.appointmentBufferMinutes));
       toast({
         title: "Booking Settings Updated",
         description: data.bookingUrl ? "Your public booking page settings have been saved." : "Public booking page has been disabled.",
@@ -166,8 +176,39 @@ export function BookingPageCard() {
             </p>
           </div>
 
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="appointment-duration">Appointment Length (minutes)</Label>
+              <Input
+                id="appointment-duration"
+                type="number"
+                min={5}
+                max={480}
+                step={5}
+                value={effectiveDuration}
+                onChange={(e) => setDurationInput(e.target.value)}
+                data-testid="input-appointment-duration"
+              />
+              <p className="text-xs text-muted-foreground">How long each appointment slot lasts.</p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="appointment-buffer">Buffer Between Appointments (minutes)</Label>
+              <Input
+                id="appointment-buffer"
+                type="number"
+                min={0}
+                max={240}
+                step={5}
+                value={effectiveBuffer}
+                onChange={(e) => setBufferInput(e.target.value)}
+                data-testid="input-appointment-buffer"
+              />
+              <p className="text-xs text-muted-foreground">Extra time reserved after each appointment before the next can be booked.</p>
+            </div>
+          </div>
+
           <Button
-            onClick={() => saveBookingSettingsMutation.mutate({ bookingSlug: effectiveBookingSlug, bookingRedirectUrl: effectiveRedirectUrl, timezone: effectiveTimezone })}
+            onClick={() => saveBookingSettingsMutation.mutate({ bookingSlug: effectiveBookingSlug, bookingRedirectUrl: effectiveRedirectUrl, timezone: effectiveTimezone, appointmentDurationMinutes: Number(effectiveDuration), appointmentBufferMinutes: Number(effectiveBuffer) })}
             disabled={saveBookingSettingsMutation.isPending}
             data-testid="button-save-booking-slug"
           >

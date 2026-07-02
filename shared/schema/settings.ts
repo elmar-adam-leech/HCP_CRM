@@ -43,6 +43,11 @@ export const contractors = pgTable("contractors", {
   // How long after a flagged outreach SMS the AI agent is allowed to engage
   // with an inbound reply. Default 72h. Tenant-tunable but not user-facing yet.
   aiSchedulingWindowHours: integer("ai_scheduling_window_hours").notNull().default(72),
+  // Configurable appointment length and buffer between appointments (task #858).
+  // Used by availability generation and when writing calendar events. Defaults
+  // match the historical hard-coded SLOT_DURATION_MINUTES / BUFFER_MINUTES.
+  appointmentDurationMinutes: integer("appointment_duration_minutes").notNull().default(60),
+  appointmentBufferMinutes: integer("appointment_buffer_minutes").notNull().default(30),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

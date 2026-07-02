@@ -1,5 +1,5 @@
 import { db } from '../db';
-import { scheduledBookings, contractors, estimates, hcpCalendarEvents } from '@shared/schema';
+import { scheduledBookings, contractors, estimates, hcpCalendarEvents, users } from '@shared/schema';
 import { eq, ne, and, gte, lte, isNotNull } from 'drizzle-orm';
 import type { BusyWindow, AvailableSlot, SalespersonInfo } from '../types/scheduling';
 import {
@@ -10,13 +10,14 @@ import {
 import { logger } from '../utils/logger';
 import { getSalespeople } from './queries';
 import { getCachedAvailability, setCachedAvailability, coalesceAvailabilityRequest } from '../services/availability-cache';
+import { googleCalendarService, GoogleCalendarAuthError } from '../google-calendar-service';
 
 const log = logger('SchedulingService');
 
 /**
- * Duration of each bookable slot in minutes.
- * Changing this affects how much calendar time is reserved per appointment.
- * It is not currently tenant-configurable.
+ * Default duration of each bookable slot in minutes. Tenant-configurable via
+ * contractors.appointment_duration_minutes (task #858); this is the fallback
+ * used when the column is unset.
  */
 const SLOT_DURATION_MINUTES = 60;
 
@@ -28,11 +29,32 @@ const SLOT_DURATION_MINUTES = 60;
 const SLOT_INTERVAL_MINUTES = 15;
 
 /**
- * Buffer applied before and after each busy window when checking availability.
- * This prevents back-to-back appointments with no travel / prep time.
- * Changing this also affects the DB query window in selectNextAvailableSalesperson.
+ * Default buffer applied before and after each busy window when checking
+ * availability. Prevents back-to-back appointments with no travel / prep time.
+ * Tenant-configurable via contractors.appointment_buffer_minutes (task #858);
+ * this is the fallback used when the column is unset.
  */
 export const BUFFER_MINUTES = 30;
+
+/**
+ * Read a tenant's configurable appointment length + buffer (task #858).
+ * Falls back to the historical constants when the columns are unset.
+ */
+export async function getAppointmentSettings(
+  tenantId: string,
+): Promise<{ durationMinutes: number; bufferMinutes: number }> {
+  const [row] = await db.select({
+    duration: contractors.appointmentDurationMinutes,
+    buffer: contractors.appointmentBufferMinutes,
+  })
+    .from(contractors)
+    .where(eq(contractors.id, tenantId))
+    .limit(1);
+  return {
+    durationMinutes: row?.duration ?? SLOT_DURATION_MINUTES,
+    bufferMinutes: row?.buffer ?? BUFFER_MINUTES,
+  };
+}
 
 /**
  * Arrival window communicated to HCP when scheduling an estimate option.
@@ -52,14 +74,63 @@ export function getDayOfWeekInTimezone(date: Date, timezone: string) { return ge
  * Expands a busy window by BUFFER_MINUTES on both start and end.
  * This ensures a 30-min separation before AND after any busy period.
  */
-export function expandBusyWindowWithBuffer(start: Date | string, end: Date | string): BusyWindow {
+export function expandBusyWindowWithBuffer(
+  start: Date | string,
+  end: Date | string,
+  bufferMinutes: number = BUFFER_MINUTES,
+): BusyWindow {
   const startTime = new Date(start);
   const endTime = new Date(end);
 
   return {
-    start: new Date(startTime.getTime() - BUFFER_MINUTES * 60 * 1000).toISOString(),
-    end: new Date(endTime.getTime() + BUFFER_MINUTES * 60 * 1000).toISOString(),
+    start: new Date(startTime.getTime() - bufferMinutes * 60 * 1000).toISOString(),
+    end: new Date(endTime.getTime() + bufferMinutes * 60 * 1000).toISOString(),
   };
+}
+
+/**
+ * Fetch a salesperson's busy windows from their connected Google Calendar
+ * (task #858). Returns raw (unbuffered) windows in the same shape as
+ * getBusyWindowsFromDb.
+ *
+ * Failure handling is deliberately non-fatal so a Google outage or a single
+ * revoked token never blocks booking against local/HCP availability:
+ *   - Revoked/expired token  → mark the user disconnected + return [].
+ *   - Any other (transient)  → log + return []. The salesperson keeps their
+ *                              local availability rather than being excluded.
+ */
+async function getGoogleBusyWindows(
+  sp: SalespersonInfo,
+  startDate: Date,
+  endDate: Date,
+): Promise<BusyWindow[]> {
+  if (!sp.googleCalendarConnected || !sp.googleCalendarRefreshToken) {
+    return [];
+  }
+  try {
+    const windows = await googleCalendarService.getBusyWindows(
+      sp.googleCalendarRefreshToken,
+      startDate,
+      endDate,
+    );
+    return windows.map(w => ({ start: w.start.toISOString(), end: w.end.toISOString() }));
+  } catch (err) {
+    if (err instanceof GoogleCalendarAuthError) {
+      log.warn(`[scheduling] Google Calendar token invalid for ${sp.name} — marking disconnected so the UI prompts a reconnect`);
+      try {
+        await db.update(users)
+          .set({ googleCalendarConnected: false })
+          .where(eq(users.id, sp.userId));
+        const { invalidateUserCache } = await import('../services/cache');
+        invalidateUserCache(sp.userId);
+      } catch (updateErr) {
+        log.error('[scheduling] Failed to flag Google Calendar as disconnected:', updateErr);
+      }
+      return [];
+    }
+    log.error(`[scheduling] Google Calendar busy-window fetch failed for ${sp.name} (non-fatal, skipping Google source):`, err instanceof Error ? err.message : err);
+    return [];
+  }
 }
 
 export function isSlotBusy(slotStart: Date, slotEnd: Date, busyWindows: BusyWindow[]): boolean {
@@ -220,16 +291,19 @@ export async function getUnifiedAvailability(
 
   log.info(`[scheduling] Found ${salespeople.length} salespeople for availability calculation. Timezone: ${timezone}`);
 
+  const { durationMinutes, bufferMinutes } = await getAppointmentSettings(tenantId);
+
   const salespersonBusyWindows = new Map<string, BusyWindow[]>();
 
-  const expandedStart = new Date(startDate.getTime() - BUFFER_MINUTES * 60 * 1000);
-  const expandedEnd = new Date(endDate.getTime() + BUFFER_MINUTES * 60 * 1000);
+  const expandedStart = new Date(startDate.getTime() - bufferMinutes * 60 * 1000);
+  const expandedEnd = new Date(endDate.getTime() + bufferMinutes * 60 * 1000);
 
-  // Query all three local DB sources concurrently — one promise per salesperson.
-  // No live HCP API calls; all data comes from the local DB.
+  // Query local DB sources + each connected Google Calendar concurrently —
+  // one promise per salesperson. HCP data comes from the local DB (synced);
+  // Google busy times are fetched live but fail soft (see getGoogleBusyWindows).
   const busyWindowResults = await Promise.all(
-    salespeople.map(sp =>
-      getBusyWindowsFromDb(
+    salespeople.map(async sp => {
+      const dbWindows = await getBusyWindowsFromDb(
         tenantId,
         sp.housecallProUserId ?? null,
         sp.userId,
@@ -238,8 +312,14 @@ export async function getUnifiedAvailability(
       ).catch(err => {
         log.error(`[scheduling] DB busy-window query failed for ${sp.name}, treating as unavailable:`, err);
         return null;
-      })
-    )
+      });
+      // A DB failure means we cannot trust this salesperson's availability at
+      // all, so bail out (they'll be excluded). Google is additive and never
+      // makes someone "more available", so its failure is non-fatal.
+      if (dbWindows === null) return null;
+      const googleWindows = await getGoogleBusyWindows(sp, expandedStart, expandedEnd);
+      return [...dbWindows, ...googleWindows];
+    })
   );
 
   for (let i = 0; i < salespeople.length; i++) {
@@ -254,7 +334,7 @@ export async function getUnifiedAvailability(
       continue;
     }
 
-    const allBusyWindows = rawBusyWindows.map(bw => expandBusyWindowWithBuffer(bw.start, bw.end));
+    const allBusyWindows = rawBusyWindows.map(bw => expandBusyWindowWithBuffer(bw.start, bw.end, bufferMinutes));
 
     salespersonBusyWindows.set(sp.userId, allBusyWindows);
     log.info(`[scheduling] Salesperson ${sp.name}: workingDays=${JSON.stringify(sp.workingDays)}, hours=${sp.workingHoursStart}-${sp.workingHoursEnd}, busyWindows=${allBusyWindows.length}`);
@@ -294,8 +374,8 @@ export async function getUnifiedAvailability(
       // ID to the existing map entry rather than creating a duplicate entry.
       let slotStart = new Date(dayStart);
 
-      while (slotStart.getTime() + SLOT_DURATION_MINUTES * 60 * 1000 <= dayEnd.getTime()) {
-        const slotEnd = new Date(slotStart.getTime() + SLOT_DURATION_MINUTES * 60 * 1000);
+      while (slotStart.getTime() + durationMinutes * 60 * 1000 <= dayEnd.getTime()) {
+        const slotEnd = new Date(slotStart.getTime() + durationMinutes * 60 * 1000);
 
         // Skip slots that have already started (can't book in the past)
         if (slotStart < now) {
@@ -344,7 +424,8 @@ export async function selectNextAvailableSalesperson(
   startTime: Date,
   timezoneParam?: string
 ): Promise<SalespersonInfo | null> {
-  const endTime = new Date(startTime.getTime() + SLOT_DURATION_MINUTES * 60 * 1000);
+  const { durationMinutes, bufferMinutes } = await getAppointmentSettings(tenantId);
+  const endTime = new Date(startTime.getTime() + durationMinutes * 60 * 1000);
 
   // Get the contractor's timezone if not provided
   let timezone = timezoneParam;
@@ -357,8 +438,8 @@ export async function selectNextAvailableSalesperson(
   }
 
   // Expand search window to include buffer periods for accurate conflict detection
-  const searchStart = new Date(startTime.getTime() - BUFFER_MINUTES * 60 * 1000);
-  const searchEnd = new Date(endTime.getTime() + BUFFER_MINUTES * 60 * 1000);
+  const searchStart = new Date(startTime.getTime() - bufferMinutes * 60 * 1000);
+  const searchEnd = new Date(endTime.getTime() + bufferMinutes * 60 * 1000);
 
   const salespeople = await getSalespeople(tenantId);
 
@@ -386,10 +467,11 @@ export async function selectNextAvailableSalesperson(
     return true;
   });
 
-  // Query local DB for all busy windows concurrently — no live HCP API calls.
+  // Query local DB + connected Google Calendars concurrently. HCP data is
+  // local (synced); Google busy times are fetched live but fail soft.
   const busyWindowResults = await Promise.all(
-    candidateSalespeople.map(sp =>
-      getBusyWindowsFromDb(
+    candidateSalespeople.map(async sp => {
+      const dbWindows = await getBusyWindowsFromDb(
         tenantId,
         sp.housecallProUserId ?? null,
         sp.userId,
@@ -398,8 +480,11 @@ export async function selectNextAvailableSalesperson(
       ).catch(err => {
         log.error(`[scheduling] DB busy-window query failed for ${sp.name}, treating as unavailable:`, err);
         return null;
-      })
-    )
+      });
+      if (dbWindows === null) return null;
+      const googleWindows = await getGoogleBusyWindows(sp, searchStart, searchEnd);
+      return [...dbWindows, ...googleWindows];
+    })
   );
 
   const availableSalespeople: SalespersonInfo[] = [];
@@ -411,7 +496,7 @@ export async function selectNextAvailableSalesperson(
     // null signals a DB query failure — treat as fully unavailable
     if (rawBusyWindows === null) continue;
 
-    const allBusyWindows = rawBusyWindows.map(bw => expandBusyWindowWithBuffer(bw.start, bw.end));
+    const allBusyWindows = rawBusyWindows.map(bw => expandBusyWindowWithBuffer(bw.start, bw.end, bufferMinutes));
 
     if (!isSlotBusy(startTime, endTime, allBusyWindows)) {
       availableSalespeople.push(sp);

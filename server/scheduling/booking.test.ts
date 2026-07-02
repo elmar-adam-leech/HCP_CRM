@@ -75,6 +75,7 @@ vi.mock('./queries', () => ({
 vi.mock('./availability', () => ({
   selectNextAvailableSalesperson: (...args: unknown[]) => selectNextAvailableSalespersonMock(...args),
   getAvailabilityForDate: vi.fn(),
+  getAppointmentSettings: vi.fn(async () => ({ durationMinutes: 60, bufferMinutes: 30 })),
 }));
 vi.mock('../services/availability-cache', () => ({
   invalidateAndRecompute: (...args: unknown[]) => invalidateAndRecomputeMock(...args),

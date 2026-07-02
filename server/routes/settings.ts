@@ -493,11 +493,33 @@ export function registerSettingsRoutes(app: Express): void {
       // the shared Contractor TypeScript type. The column is present at runtime.
       // Remove `as any` once the `timezone` field is added to the Contractor schema type.
       timezone: (contractor as any).timezone || null,
+      appointmentDurationMinutes: contractor.appointmentDurationMinutes ?? 60,
+      appointmentBufferMinutes: contractor.appointmentBufferMinutes ?? 30,
     });
   }));
 
   app.post("/api/booking-slug", requireManagerOrAdmin, asyncHandler(async (req, res) => {
-    const { bookingSlug, bookingRedirectUrl, timezone } = req.body;
+    const { bookingSlug, bookingRedirectUrl, timezone, appointmentDurationMinutes, appointmentBufferMinutes } = req.body;
+
+    let durationUpdate: number | undefined;
+    if (appointmentDurationMinutes !== undefined && appointmentDurationMinutes !== null) {
+      const dur = Number(appointmentDurationMinutes);
+      if (!Number.isInteger(dur) || dur < 5 || dur > 480) {
+        res.status(400).json({ message: "Appointment length must be a whole number of minutes between 5 and 480" });
+        return;
+      }
+      durationUpdate = dur;
+    }
+
+    let bufferUpdate: number | undefined;
+    if (appointmentBufferMinutes !== undefined && appointmentBufferMinutes !== null) {
+      const buf = Number(appointmentBufferMinutes);
+      if (!Number.isInteger(buf) || buf < 0 || buf > 240) {
+        res.status(400).json({ message: "Buffer time must be a whole number of minutes between 0 and 240" });
+        return;
+      }
+      bufferUpdate = buf;
+    }
 
     if (bookingSlug) {
       const slugRegex = /^[a-z0-9-]+$/;
@@ -534,6 +556,8 @@ export function registerSettingsRoutes(app: Express): void {
       bookingSlug: bookingSlug || null,
       bookingRedirectUrl: bookingRedirectUrl || null,
       ...(timezone ? { timezone } : {}),
+      ...(durationUpdate !== undefined ? { appointmentDurationMinutes: durationUpdate } : {}),
+      ...(bufferUpdate !== undefined ? { appointmentBufferMinutes: bufferUpdate } : {}),
     });
 
     if (!updated) {
@@ -553,6 +577,8 @@ export function registerSettingsRoutes(app: Express): void {
       // SAFE: same as above — `timezone` column exists at runtime but is not in the
       // Contractor TypeScript type yet. Remove once schema type is updated.
       timezone: (updated as any).timezone || null,
+      appointmentDurationMinutes: updated.appointmentDurationMinutes ?? 60,
+      appointmentBufferMinutes: updated.appointmentBufferMinutes ?? 30,
       message: bookingSlug ? "Booking settings updated successfully" : "Booking settings saved",
     });
   }));

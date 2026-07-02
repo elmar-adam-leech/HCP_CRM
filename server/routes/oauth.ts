@@ -4,6 +4,7 @@ import { users } from "@shared/schema";
 import { db } from "../db";
 import { eq } from "drizzle-orm";
 import { gmailService } from "../gmail-service";
+import { googleCalendarService } from "../google-calendar-service";
 import { AuthService, type AuthedRequest } from "../auth-service";
 type AuthenticatedRequest = AuthedRequest;
 import { asyncHandler } from "../utils/async-handler";
@@ -332,6 +333,135 @@ export function registerOAuthRoutes(app: Express): void {
     invalidateUserCache(req.user.userId);
 
     res.json({ message: "Gmail disconnected successfully" });
+  }));
+
+  // ── Google Calendar (per-user OAuth, task #858) ────────────────────────────
+  // Mirrors the per-user Gmail flow but with calendar scopes and its own
+  // columns/redirect. Separate from Gmail so a user can connect either/both.
+  app.get("/api/oauth/google-calendar/connect", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.user) {
+      res.status(401).json({ message: "Not authenticated" });
+      return;
+    }
+
+    if (!googleCalendarService.isConfigured()) {
+      res.status(500).json({
+        message: "Google Calendar integration not configured. Please set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET environment variables."
+      });
+      return;
+    }
+
+    try {
+      googleCalendarService.validateEncryptionKey();
+    } catch (error) {
+      res.status(500).json({
+        message: error instanceof Error ? error.message : "Encryption key not configured"
+      });
+      return;
+    }
+
+    const host = req.get('host');
+    if (!host) {
+      res.status(400).json({ message: "Unable to determine request host" });
+      return;
+    }
+
+    if (!googleCalendarService.validateHost(host)) {
+      log.error(`Invalid host: ${host}`);
+      res.status(403).json({
+        message: `Invalid domain. OAuth is only allowed from approved domains.`
+      });
+      return;
+    }
+
+    log.info(`Initiating Google Calendar OAuth for user ${req.user.userId} from host ${host}`);
+
+    const authUrl = await googleCalendarService.generateAuthUrl(req.user.userId, host);
+
+    if (!authUrl.startsWith('https://accounts.google.com/')) {
+      log.error(`Unexpected OAuth redirect URL generated: ${authUrl}`);
+      res.status(500).json({ message: "OAuth provider returned an unexpected redirect URL" });
+      return;
+    }
+
+    res.json({ authUrl });
+  }));
+
+  app.get("/api/oauth/google-calendar/callback", asyncHandler(async (req: Request, res: Response) => {
+    const { code, state } = req.query;
+
+    if (!code || !state) {
+      res.status(400).send('Missing authorization code or state parameter');
+      return;
+    }
+
+    const stateData = await googleCalendarService.getStateData(state as string);
+    if (!stateData) {
+      log.error('Invalid or expired Google Calendar state token');
+      res.status(403).send('Invalid or expired state parameter');
+      return;
+    }
+
+    const { userId, redirectHost } = stateData;
+    const protocol = redirectHost.startsWith('localhost') ? 'http' : 'https';
+
+    const user = await storage.getUser(userId);
+    if (!user) {
+      res.status(404).send('User not found');
+      return;
+    }
+
+    log.info(`Processing Google Calendar callback for user ${userId}, will redirect to ${redirectHost}`);
+
+    try {
+      const result = await googleCalendarService.exchangeCodeForTokens(code as string, redirectHost);
+
+      if (!result.refreshToken) {
+        log.error(`No refresh token received for user ${userId} (Google Calendar)`);
+        res.redirect(`${protocol}://${redirectHost}/settings?tab=integrations&google_calendar=error&reason=no_refresh_token`);
+        return;
+      }
+
+      await db.update(users)
+        .set({
+          googleCalendarConnected: true,
+          googleCalendarRefreshToken: result.refreshToken,
+          googleCalendarEmail: result.email,
+        })
+        .where(eq(users.id, userId));
+
+      log.info(`User ${userId} successfully connected Google Calendar`);
+
+      const { invalidateUserCache } = await import('../services/cache');
+      invalidateUserCache(userId);
+
+      res.redirect(`${protocol}://${redirectHost}/settings?tab=integrations&google_calendar=connected`);
+    } catch (error) {
+      log.error('Google Calendar OAuth callback error:', error);
+      res.redirect(`${protocol}://${redirectHost}/settings?tab=integrations&google_calendar=error`);
+    }
+  }));
+
+  app.post("/api/oauth/google-calendar/disconnect", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.user) {
+      res.status(401).json({ message: "Not authenticated" });
+      return;
+    }
+
+    await db.update(users)
+      .set({
+        googleCalendarConnected: false,
+        googleCalendarRefreshToken: null,
+        googleCalendarEmail: null,
+      })
+      .where(eq(users.id, req.user.userId));
+
+    log.info(`User ${req.user.userId} disconnected Google Calendar`);
+
+    const { invalidateUserCache } = await import('../services/cache');
+    invalidateUserCache(req.user.userId);
+
+    res.json({ message: "Google Calendar disconnected successfully" });
   }));
 
   app.get("/api/user/contractors", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {

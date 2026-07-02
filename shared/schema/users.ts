@@ -28,6 +28,12 @@ export const users = pgTable("users", {
   gmailEmail: text("gmail_email"), // The Gmail address this user connected
   gmailLastSyncAt: timestamp("gmail_last_sync_at"), // Last time we synced emails from Gmail
   gmailSyncHistoryId: text("gmail_sync_history_id"), // Gmail API history ID for incremental sync
+  // Per-user Google Calendar OAuth (task #858). Separate from Gmail so a user
+  // can connect either/both independently; the refresh token is AES-256-GCM
+  // encrypted just like gmailRefreshToken.
+  googleCalendarConnected: boolean("google_calendar_connected").default(false).notNull(),
+  googleCalendarRefreshToken: text("google_calendar_refresh_token"),
+  googleCalendarEmail: text("google_calendar_email"),
   // Legacy field — permission is now per-contractor in user_contractors.canManageIntegrations.
   // Kept for the same JWT-snapshot reason as `role` above.
   canManageIntegrations: boolean("can_manage_integrations").default(false).notNull(),
