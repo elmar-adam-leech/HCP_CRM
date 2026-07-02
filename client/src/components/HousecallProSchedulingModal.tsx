@@ -161,7 +161,7 @@ export function HousecallProSchedulingModal({ lead, isOpen, onClose, onScheduled
       if (!endHour || !endMinute) throw new Error('Invalid end time format');
       scheduledEnd.setHours(parseInt(endHour), parseInt(endMinute));
 
-      const response = await apiRequest('POST', `/api/leads/${lead.id}/schedule`, {
+      const response = await apiRequest('POST', `/api/contacts/${lead.id}/schedule`, {
         employeeId: data.employeeId,
         scheduledStart: scheduledStart.toISOString(),
         scheduledEnd: scheduledEnd.toISOString(),

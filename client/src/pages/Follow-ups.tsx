@@ -889,7 +889,13 @@ export default function FollowUps() {
           isOpen={schedulingModal.isOpen}
           onClose={() => setSchedulingModal({ isOpen: false })}
           lead={schedulingModal.item ? {
-            id: schedulingModal.item.id,
+            // The scheduling modal POSTs to /api/contacts/:id/schedule, so `id`
+            // must be the CONTACT id. For lead rows the follow-ups query returns
+            // the contact id as `id` (contactId is null); for estimate rows `id`
+            // is the estimate id and the contact id lives on `contactId`.
+            id: schedulingModal.item.type === 'lead'
+              ? schedulingModal.item.id
+              : (schedulingModal.item.contactId ?? schedulingModal.item.id),
             name: schedulingModal.item.name,
             email: schedulingModal.item.email || null,
             phone: schedulingModal.item.phone || null,
