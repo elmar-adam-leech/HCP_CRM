@@ -232,6 +232,12 @@ export async function configureTwilioWebhooks(
 
   const creds = await getTwilioCredentials(contractorId);
   const numbers = await storage.getTwilioPhoneNumbers(contractorId);
+  const contractor = await storage.getContractor(contractorId);
+  // 'external' = the contractor manages inbound call handling in Twilio themselves
+  // (e.g. a Studio Flow / IVR). We must NOT overwrite the number's VoiceUrl in
+  // that mode — but we ALWAYS set SmsUrl (inbound texts) and StatusCallback
+  // (call logging fires regardless of what answers the call).
+  const externalCallMode = contractor?.twilioInboundCallMode === 'external';
 
   const voiceUrl = `${base}/api/webhooks/twilio/voice/incoming/${encodeURIComponent(contractorId)}`;
   const smsUrl = `${base}/api/webhooks/twilio/sms/${encodeURIComponent(contractorId)}`;
@@ -245,14 +251,17 @@ export async function configureTwilioWebhooks(
   for (const num of numbers) {
     if (!num.isActive || !num.twilioSid) continue;
     if (num.phoneNumber) activeNumberE164.add(num.phoneNumber);
-    const response = await twilioForm(creds, `/IncomingPhoneNumbers/${encodeURIComponent(num.twilioSid)}.json`, {
-      VoiceUrl: voiceUrl,
-      VoiceMethod: 'POST',
+    const params: Record<string, string> = {
       StatusCallback: statusUrl,
       StatusCallbackMethod: 'POST',
       SmsUrl: smsUrl,
       SmsMethod: 'POST',
-    });
+    };
+    if (!externalCallMode) {
+      params.VoiceUrl = voiceUrl;
+      params.VoiceMethod = 'POST';
+    }
+    const response = await twilioForm(creds, `/IncomingPhoneNumbers/${encodeURIComponent(num.twilioSid)}.json`, params);
     if (!response.ok) {
       const text = await response.text();
       log.warn(`Failed to configure webhooks for ${num.phoneNumber} (${num.twilioSid}): ${response.status} ${text}`);
@@ -306,7 +315,7 @@ export async function configureTwilioWebhooks(
 
   await storage.upsertTwilioWebhookState({
     contractorId,
-    lastRegisteredVoiceUrl: voiceUrl,
+    lastRegisteredVoiceUrl: externalCallMode ? null : voiceUrl,
     lastRegisteredSmsUrl: smsUrl,
     configuredNumberSids: configuredSids,
     configuredMessagingServiceSids: messagingServiceSids,

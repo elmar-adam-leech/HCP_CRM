@@ -24,3 +24,22 @@ to the number-level `SmsUrl` so `verifyTwilioRequest` signature checks still pas
 (Twilio signs the exact URL it POSTs to). Never touch outbound/A2P config. Outbound
 SMS working tells you nothing about inbound — they use different config paths.
 `inspectTwilioInboundRouting()` is the read-only diagnostic.
+
+# Inbound CALLS: CRM does not need to own VoiceUrl to log calls
+
+Call activities are created by the number-level `StatusCallback` (voice status
+webhook), which fires no matter what answers the call — including a contractor's
+own Studio Flow/IVR. Contact matching for inbound uses the caller number (`from`),
+so it works in flow mode too.
+
+**Rule:** never unconditionally overwrite `VoiceUrl` during sync — contractors may
+run their own Studio Flow. `contractors.twilio_inbound_call_mode` ('crm' | 'external')
+gates this: in 'external' mode omit `VoiceUrl`/`VoiceMethod` from the per-number POST
+but ALWAYS set `SmsUrl` and `StatusCallback`.
+
+**Why:** a contractor's IVR was silently clobbered by "Sync Numbers & Webhooks",
+rerouting their inbound calls to ring a rep's cell directly.
+
+**How to apply:** `configureTwilioWebhooks` in `server/twilio/webhook-config.ts`;
+in 'external' mode CRM voicemail/recording TwiML is unused (recordings only exist
+if the Flow records) — that's expected, not an error.

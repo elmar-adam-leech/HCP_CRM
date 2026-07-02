@@ -29,6 +29,7 @@ interface TwilioNumber {
 interface TwilioSettings {
   defaultTwilioNumber: string | null;
   twilioRecordCalls: boolean;
+  twilioInboundCallMode: "crm" | "external";
 }
 
 interface InboundRoutingStatus {
@@ -377,6 +378,30 @@ export function TwilioCard() {
                 ))}
               </SelectContent>
             </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-sm font-medium">Incoming call handling</Label>
+            <Select
+              value={settings?.twilioInboundCallMode ?? "crm"}
+              onValueChange={(value) =>
+                settingsMutation.mutate({ twilioInboundCallMode: value as "crm" | "external" })
+              }
+              disabled={settingsMutation.isPending}
+            >
+              <SelectTrigger data-testid="select-twilio-inbound-call-mode">
+                <SelectValue placeholder="Select how incoming calls are handled" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="crm">CRM answers calls (ring a rep, voicemail fallback)</SelectItem>
+                <SelectItem value="external">Keep my Twilio setup (Studio Flow/IVR)</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {(settings?.twilioInboundCallMode ?? "crm") === "external"
+                ? 'With "Keep my Twilio setup", Sync will not touch call routing — your Studio Flow or IVR keeps answering. The CRM still logs incoming calls and handles texts. CRM voicemail and call recording are not used; recordings only appear if your Flow records.'
+                : "The CRM answers incoming calls by ringing a rep, with a voicemail fallback. Sync sets call routing on your numbers."}
+            </p>
           </div>
 
           <div className="flex items-center justify-between gap-2">

@@ -1433,6 +1433,10 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       description: 'user_contractors.twilio_default_number (per-user Twilio send/call number, task #822)',
     },
     {
+      sql: `ALTER TABLE contractors ADD COLUMN IF NOT EXISTS twilio_inbound_call_mode text NOT NULL DEFAULT 'crm'`,
+      description: "contractors.twilio_inbound_call_mode ('crm' = CRM answers inbound calls; 'external' = keep contractor's Twilio Studio Flow/IVR, task #853)",
+    },
+    {
       sql: `ALTER TABLE user_contractors ADD COLUMN IF NOT EXISTS twilio_phone_to_ring text`,
       description: "user_contractors.twilio_phone_to_ring (rep's personal phone for bridge calls, task #822)",
     },

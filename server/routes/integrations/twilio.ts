@@ -81,6 +81,7 @@ export function registerTwilioRoutes(app: Express): void {
       res.json({
         defaultTwilioNumber: contractor?.defaultTwilioNumber ?? null,
         twilioRecordCalls: contractor?.twilioRecordCalls ?? false,
+        twilioInboundCallMode: contractor?.twilioInboundCallMode ?? "crm",
       });
     }),
   );
@@ -89,13 +90,20 @@ export function registerTwilioRoutes(app: Express): void {
     "/api/twilio/settings",
     requireIntegrationManager,
     asyncHandler(async (req: AuthedRequest, res: Response) => {
-      const { defaultTwilioNumber, twilioRecordCalls } = req.body ?? {};
+      const { defaultTwilioNumber, twilioRecordCalls, twilioInboundCallMode } = req.body ?? {};
       const updates: Record<string, unknown> = {};
       if (defaultTwilioNumber !== undefined) {
         updates.defaultTwilioNumber = defaultTwilioNumber || null;
       }
       if (twilioRecordCalls !== undefined) {
         updates.twilioRecordCalls = Boolean(twilioRecordCalls);
+      }
+      if (twilioInboundCallMode !== undefined) {
+        if (twilioInboundCallMode !== "crm" && twilioInboundCallMode !== "external") {
+          res.status(400).json({ message: "twilioInboundCallMode must be 'crm' or 'external'" });
+          return;
+        }
+        updates.twilioInboundCallMode = twilioInboundCallMode;
       }
       if (Object.keys(updates).length === 0) {
         res.status(400).json({ message: "No valid settings provided" });
@@ -108,6 +116,7 @@ export function registerTwilioRoutes(app: Express): void {
       res.json({
         defaultTwilioNumber: contractor?.defaultTwilioNumber ?? null,
         twilioRecordCalls: contractor?.twilioRecordCalls ?? false,
+        twilioInboundCallMode: contractor?.twilioInboundCallMode ?? "crm",
       });
     }),
   );

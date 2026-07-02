@@ -19,6 +19,7 @@ export const contractors = pgTable("contractors", {
   // Twilio (task #822) — parallel calling/SMS provider.
   defaultTwilioNumber: text("default_twilio_number"), // Organization-wide default Twilio phone number
   twilioRecordCalls: boolean("twilio_record_calls").default(false).notNull(), // Record inbound+outbound calls (OFF by default, consent-gated)
+  twilioInboundCallMode: text("twilio_inbound_call_mode").default("crm").notNull(), // 'crm' = CRM answers inbound calls (ring rep + voicemail) | 'external' = keep contractor's Twilio setup (e.g. Studio Flow); CRM still logs via StatusCallback
   estimateArchiveDays: integer("estimate_archive_days"), // nullable — null = show all, N = only show estimates from last N days
   logoUrl: text("logo_url"), // Company logo: https URL or data:image/...;base64,... (nullable)
   brandColor: text("brand_color"), // Optional brand/accent color (hex, e.g. "#3366ff") used to theme the public booking page
