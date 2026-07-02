@@ -319,6 +319,63 @@ export class GoogleCalendarService {
     }
   }
 
+  /**
+   * Fetch the current state of a single event on the user's primary calendar,
+   * used by the reverse-sync reconciliation (task #862) to detect reschedules
+   * and cancellations made directly in Google Calendar.
+   *
+   * Returns:
+   *   - `{ status: 'deleted' }` when Google no longer has the event (404/410).
+   *   - `{ status: 'cancelled' }` when the event still exists but was cancelled.
+   *   - `{ status, startTime, endTime }` for a live event. `startTime`/`endTime`
+   *     are omitted for all-day events (which carry `start.date`, not
+   *     `start.dateTime`) so the caller leaves timed bookings untouched.
+   *
+   * Throws GoogleCalendarAuthError on revoked/expired tokens so the caller can
+   * mark the user disconnected; throws other errors for transient failures so
+   * the caller can retry on the next pass.
+   */
+  async getEvent(refreshToken: string, eventId: string): Promise<{
+    status: 'confirmed' | 'tentative' | 'cancelled' | 'deleted';
+    startTime?: Date;
+    endTime?: Date;
+  }> {
+    try {
+      const calendar = this.createCalendarClient(refreshToken);
+      const response = await calendar.events.get({
+        calendarId: 'primary',
+        eventId,
+      });
+      const data = response.data;
+      const rawStatus = data.status;
+      const status: 'confirmed' | 'tentative' | 'cancelled' =
+        rawStatus === 'cancelled' || rawStatus === 'tentative' ? rawStatus : 'confirmed';
+
+      const startDateTime = data.start?.dateTime;
+      const endDateTime = data.end?.dateTime;
+
+      return {
+        status,
+        startTime: startDateTime ? new Date(startDateTime) : undefined,
+        endTime: endDateTime ? new Date(endDateTime) : undefined,
+      };
+    } catch (error: any) {
+      const code = error?.code ?? error?.response?.status;
+      // A deleted event returns 404 (Not Found) or 410 (Gone). Treat both as a
+      // hard delete so the caller can cancel the CRM booking. Check this BEFORE
+      // isAuthError so a 404/410 is never misread as an auth failure.
+      if (code === 404 || code === 410) {
+        return { status: 'deleted' };
+      }
+      if (isAuthError(error)) {
+        log.error('[Google Calendar] Auth error fetching event:', error?.message);
+        throw new GoogleCalendarAuthError(error?.message || 'Google Calendar authorization expired');
+      }
+      log.error('[Google Calendar] Error fetching event:', error?.message);
+      throw error;
+    }
+  }
+
   async checkConnection(refreshToken: string): Promise<{ connected: boolean; email?: string; error?: string }> {
     try {
       const calendar = this.createCalendarClient(refreshToken);

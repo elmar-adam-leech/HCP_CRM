@@ -30,6 +30,7 @@
  *   ad-spend    — pull ad spend for the ROI report              (~every 6 h)
  *   cleanup     — delete orphaned messages/activities + webhooks (~daily)
  *   maintenance — consolidated daily maintenance pass            (~daily, off-peak)
+ *   gcal-reconcile — reverse-sync bookings vs Google Calendar    (~every 15 min)
  *
  * NOTE: this entrypoint intentionally does NOT call initDb() — it never runs
  * DDL (the web app owns schema migrations on boot). The DB pool is live as soon
@@ -106,6 +107,11 @@ async function runMaintenance(): Promise<void> {
   await runDailyMaintenance();
 }
 
+async function runGcalReconcile(): Promise<void> {
+  const { reconcileGoogleCalendarBookings } = await import("./sync/google-calendar-reconciliation");
+  await reconcileGoogleCalendarBookings();
+}
+
 const JOBS: Record<string, JobFn> = {
   sync: runSync,
   sales: runSales,
@@ -115,6 +121,7 @@ const JOBS: Record<string, JobFn> = {
   "ad-spend": runAdSpend,
   cleanup: runCleanup,
   maintenance: runMaintenance,
+  "gcal-reconcile": runGcalReconcile,
 };
 
 async function main(): Promise<void> {

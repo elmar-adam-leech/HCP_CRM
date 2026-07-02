@@ -15,6 +15,7 @@ import { startMaintenanceJob, stopMaintenanceJob } from "./services/maintenance-
 import { dialpadEventPoller } from "./jobs/dialpad-event-poller";
 import { stopWebSocket } from "./websocket";
 import { AdSpendSyncJob } from "./services/ad-spend-sync-job";
+import { GoogleCalendarReconcileJob } from "./services/google-calendar-reconcile-job";
 import { sql } from "drizzle-orm";
 import { CredentialService } from "./credential-service";
 import { recordRequest, normalizePath } from "./services/latency-stats";
@@ -387,6 +388,16 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
     log("AdSpendSyncJob registered (runs every 6 h)");
   }
 
+  // Reverse-sync scheduled bookings against Google Calendar (task #862) so a
+  // rep's reschedule / cancellation made directly in Google is reflected on the
+  // CRM booking. The pass is a single indexed query that no-ops when no
+  // Google-connected bookings exist.
+  const googleCalendarReconcileJob = new GoogleCalendarReconcileJob();
+  if (RUN_IN_APP_JOBS) {
+    googleCalendarReconcileJob.start();
+    log("GoogleCalendarReconcileJob registered (runs every 15 min)");
+  }
+
   // Sales-process cron: adaptive self-scheduling poller for due auto-mode
   // tasks (sleeps until the next task is due, capped at 5 min; nudged on
   // materialization).
@@ -508,6 +519,7 @@ async function migrateDialpadWebhookApiKeys(): Promise<void> {
       // 4. Stop background services (order mirrors reverse-startup for safety)
       stopMaintenanceJob();
       adSpendSyncJob.stop();
+      googleCalendarReconcileJob.stop();
       salesProcessCron.stop();
       dialpadEventPoller.stop();
       stopHcpWebhookHealthCheck();
