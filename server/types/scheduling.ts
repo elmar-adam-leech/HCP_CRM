@@ -14,6 +14,24 @@ export interface AvailableSlot {
   availableSalespersonIds: string[];
 }
 
+/**
+ * A single entry rendered on the read-only unified day schedule (task #861).
+ * `source` distinguishes CRM-created bookings from external Google Calendar
+ * busy blocks so the UI can label them clearly. Google entries are opaque
+ * busy windows (no title/attendees) to preserve teammates' event privacy.
+ */
+export interface CalendarEvent {
+  source: 'crm' | 'google';
+  id: string;
+  title: string;
+  start: string;
+  end: string;
+  salespersonId: string | null;
+  salespersonName: string | null;
+  status?: string | null;
+  customerName?: string | null;
+}
+
 export interface AddressComponents {
   street: string;
   city: string;

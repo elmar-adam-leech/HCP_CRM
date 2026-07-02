@@ -18,6 +18,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { formatDateScheduling } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { AddressAutocomplete, AddressComponents, AddressAutocompleteRef } from "@/components/ui/AddressAutocomplete";
+import { DaySchedulePanel } from "@/components/DaySchedulePanel";
 import type { SchedulingLead } from "@/hooks/useCommunicationActions";
 
 interface Salesperson {
@@ -438,6 +439,16 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
                 </FormItem>
               )}
             />
+
+            {selectedDate && (
+              <div className="border rounded-md p-3">
+                <DaySchedulePanel
+                  date={selectedDate}
+                  salespersonId={selectedSalespersonId || undefined}
+                  showSalespersonName={!selectedSalespersonId}
+                />
+              </div>
+            )}
 
             {selectedDate && (
               <FormField

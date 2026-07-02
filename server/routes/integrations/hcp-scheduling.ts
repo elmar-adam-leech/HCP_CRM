@@ -74,6 +74,38 @@ export function registerHcpSchedulingRoutes(app: Express): void {
     });
   }));
 
+  // Read-only unified day schedule (task #861): CRM bookings + connected reps'
+  // Google Calendar busy blocks, clearly labelled by `source`. Used by the
+  // scheduling modal so bookers can see existing commitments at a glance.
+  app.get("/api/scheduling/day-schedule", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    const { startDate, endDate, salespersonId } = req.query;
+
+    if (!startDate || !endDate) {
+      res.status(400).json({ message: "startDate and endDate are required" });
+      return;
+    }
+
+    const start = new Date(startDate as string);
+    const end = new Date(endDate as string);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      res.status(400).json({ message: "startDate and endDate must be valid dates" });
+      return;
+    }
+
+    const events = await housecallSchedulingService.getCalendarEvents(
+      req.user.contractorId,
+      start,
+      end,
+      typeof salespersonId === 'string' && salespersonId ? salespersonId : undefined,
+    );
+
+    res.json({
+      startDate: start.toISOString(),
+      endDate: end.toISOString(),
+      events,
+    });
+  }));
+
   app.post("/api/scheduling/book", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const { startTime, title, customerName, customerEmail, customerPhone, customerAddress, customerAddressComponents, notes, contactId, salespersonId, housecallProEmployeeId, timeZone } = req.body;
 

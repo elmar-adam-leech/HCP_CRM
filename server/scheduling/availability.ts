@@ -1,14 +1,14 @@
 import { db } from '../db';
 import { scheduledBookings, contractors, estimates, hcpCalendarEvents, users } from '@shared/schema';
 import { eq, ne, and, gte, lte, isNotNull } from 'drizzle-orm';
-import type { BusyWindow, AvailableSlot, SalespersonInfo } from '../types/scheduling';
+import type { BusyWindow, AvailableSlot, SalespersonInfo, CalendarEvent } from '../types/scheduling';
 import {
   parseWorkingHours as parseWorkingHoursUtil,
   createDateInTimezone as createDateInTimezoneUtil,
   getDayOfWeekInTimezone as getDayOfWeekInTimezoneUtil,
 } from '../utils/time';
 import { logger } from '../utils/logger';
-import { getSalespeople } from './queries';
+import { getSalespeople, getBookings } from './queries';
 import { getCachedAvailability, setCachedAvailability, coalesceAvailabilityRequest } from '../services/availability-cache';
 import { googleCalendarService, GoogleCalendarAuthError } from '../google-calendar-service';
 
@@ -417,6 +417,85 @@ export async function getUnifiedAvailability(
 
   log.info(`[scheduling] Generated ${availableSlots.length} available slots`);
   return availableSlots;
+}
+
+/**
+ * Build the read-only unified day schedule (task #861): CRM-native bookings
+ * merged with each connected salesperson's Google Calendar busy blocks so reps
+ * can see external commitments (theirs and teammates') alongside CRM
+ * appointments and spot double-booking at a glance.
+ *
+ * Guarantees:
+ *   - Respects per-user connection status — reps who haven't connected Google
+ *     contribute only their CRM bookings (no Google source).
+ *   - Google fetch is fail-soft (see getGoogleBusyWindows) so an outage or a
+ *     single revoked token never blocks the CRM data.
+ *   - Google busy blocks that fall entirely inside a CRM booking for the same
+ *     salesperson are suppressed to avoid showing the same appointment twice
+ *     (task #858 mirrors CRM bookings into Google, which would otherwise echo).
+ */
+export async function getCalendarEvents(
+  tenantId: string,
+  startDate: Date,
+  endDate: Date,
+  salespersonId?: string,
+): Promise<CalendarEvent[]> {
+  const events: CalendarEvent[] = [];
+
+  // 1. CRM-native bookings (exclude cancelled).
+  const bookings = await getBookings(tenantId, startDate, endDate);
+  const crmBySalesperson = new Map<string, { start: number; end: number }[]>();
+  for (const b of bookings) {
+    if (salespersonId && b.salespersonId !== salespersonId) continue;
+    if (b.status === 'cancelled') continue;
+    events.push({
+      source: 'crm',
+      id: b.id,
+      title: b.title || b.customerName || 'Appointment',
+      start: b.startTime.toISOString(),
+      end: b.endTime.toISOString(),
+      salespersonId: b.salespersonId,
+      salespersonName: b.salespersonName,
+      status: b.status,
+      customerName: b.customerName,
+    });
+    const list = crmBySalesperson.get(b.salespersonId) ?? [];
+    list.push({ start: b.startTime.getTime(), end: b.endTime.getTime() });
+    crmBySalesperson.set(b.salespersonId, list);
+  }
+
+  // 2. External Google Calendar busy blocks for connected salespeople only.
+  let salespeople = await getSalespeople(tenantId);
+  if (salespersonId) salespeople = salespeople.filter(sp => sp.userId === salespersonId);
+  const connected = salespeople.filter(sp => sp.googleCalendarConnected && sp.googleCalendarRefreshToken);
+
+  const googleResults = await Promise.all(
+    connected.map(async sp => {
+      const windows = await getGoogleBusyWindows(sp, startDate, endDate);
+      const crmWindows = crmBySalesperson.get(sp.userId) ?? [];
+      return windows
+        .filter(w => {
+          const gStart = new Date(w.start).getTime();
+          const gEnd = new Date(w.end).getTime();
+          // Suppress Google echoes of CRM bookings (busy block fully covered
+          // by a CRM appointment for the same salesperson).
+          return !crmWindows.some(c => gStart >= c.start && gEnd <= c.end);
+        })
+        .map((w, idx): CalendarEvent => ({
+          source: 'google',
+          id: `google-${sp.userId}-${idx}-${w.start}`,
+          title: 'Busy',
+          start: w.start,
+          end: w.end,
+          salespersonId: sp.userId,
+          salespersonName: sp.name,
+        }));
+    })
+  );
+  for (const list of googleResults) events.push(...list);
+
+  events.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+  return events;
 }
 
 export async function selectNextAvailableSalesperson(

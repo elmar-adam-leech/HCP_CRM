@@ -3,6 +3,7 @@ import { getSalespeople, getTeamMembers, getBookings } from './scheduling/querie
 import {
   getAvailabilityForDate,
   getUnifiedAvailability,
+  getCalendarEvents,
   selectNextAvailableSalesperson,
 } from './scheduling/availability';
 import { bookAppointment, cancelBooking } from './scheduling/booking';
@@ -34,6 +35,9 @@ export class HousecallSchedulingService {
   }
   getUnifiedAvailability(tenantId: string, startDate: Date, endDate: Date, timezone?: string) {
     return getUnifiedAvailability(tenantId, startDate, endDate, timezone);
+  }
+  getCalendarEvents(tenantId: string, startDate: Date, endDate: Date, salespersonId?: string) {
+    return getCalendarEvents(tenantId, startDate, endDate, salespersonId);
   }
   selectNextAvailableSalesperson(tenantId: string, startTime: Date, timezone?: string) {
     return selectNextAvailableSalesperson(tenantId, startTime, timezone);
