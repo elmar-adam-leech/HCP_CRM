@@ -1,3 +1,4 @@
 - [Lead pipeline stage derivation](lead-pipeline-stage.md) — Leads page/dashboard stage is a DERIVED projection from `leads`, not raw `contacts.status`; scope rules + enum-cast gotcha.
 - [Schema migrations location](schema-migrations-location.md) — column/index migrations live in `server/schema-drift.ts` columnMigrations, NOT `server/db.ts` (replit.md is outdated on this).
 - [Twilio inbound SMS routing](twilio-inbound-routing.md) — numbers in a Messaging Service ignore number-level SmsUrl; set Service InboundRequestUrl directly (not UseInboundWebhookOnNumber deferral).
+- [jsdom Radix Select + day-picker tests](jsdom-radix-daypicker-tests.md) — polyfill scrollIntoView/pointer-capture before render or Radix Select crashes the whole tree; nav to next month for enabled days.
