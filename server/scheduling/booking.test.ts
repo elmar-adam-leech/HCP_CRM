@@ -20,6 +20,7 @@ const {
   insertReturningMock,
   insertValuesSpy,
   updateMock,
+  updateSetSpy,
   getSalespeopleMock,
   selectNextAvailableSalespersonMock,
   resolveHcpCustomerMock,
@@ -27,29 +28,49 @@ const {
   createCrmEstimateMock,
   markContactScheduledMock,
   invalidateAndRecomputeMock,
-} = vi.hoisted(() => ({
-  selectMock: vi.fn(),
-  insertReturningMock: vi.fn(),
-  // Captures the values passed to db.insert(...).values(...) so tests can
-  // assert the persisted scheduled_bookings.source.
-  insertValuesSpy: vi.fn(),
-  updateMock: vi.fn(),
-  getSalespeopleMock: vi.fn(),
-  selectNextAvailableSalespersonMock: vi.fn(),
-  resolveHcpCustomerMock: vi.fn(),
-  createOrConvertHcpEstimateMock: vi.fn(),
-  createCrmEstimateMock: vi.fn(),
-  markContactScheduledMock: vi.fn().mockResolvedValue(undefined),
-  invalidateAndRecomputeMock: vi.fn(),
-}));
+  createEventMock,
+  GoogleCalendarAuthErrorMock,
+} = vi.hoisted(() => {
+  // Real Error subclass so booking.ts's `err instanceof GoogleCalendarAuthError`
+  // check matches the error the tests throw from the mocked createEvent.
+  class GoogleCalendarAuthErrorMock extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'GoogleCalendarAuthError';
+    }
+  }
+  return {
+    selectMock: vi.fn(),
+    insertReturningMock: vi.fn(),
+    // Captures the values passed to db.insert(...).values(...) so tests can
+    // assert the persisted scheduled_bookings.source.
+    insertValuesSpy: vi.fn(),
+    updateMock: vi.fn(),
+    // Captures the values passed to db.update(...).set(...) so tests can assert
+    // the Google Calendar disconnect write.
+    updateSetSpy: vi.fn(),
+    getSalespeopleMock: vi.fn(),
+    selectNextAvailableSalespersonMock: vi.fn(),
+    resolveHcpCustomerMock: vi.fn(),
+    createOrConvertHcpEstimateMock: vi.fn(),
+    createCrmEstimateMock: vi.fn(),
+    markContactScheduledMock: vi.fn().mockResolvedValue(undefined),
+    invalidateAndRecomputeMock: vi.fn(),
+    createEventMock: vi.fn(),
+    GoogleCalendarAuthErrorMock,
+  };
+});
 
 // Minimal Drizzle mock: chained builders return self until terminal awaitable.
-function chain(result: unknown, opts?: { isInsert?: boolean }) {
+function chain(result: unknown, opts?: { isInsert?: boolean; isUpdate?: boolean }) {
   const p: any = Promise.resolve(result);
   p.from = () => p;
   p.where = () => p;
   p.limit = () => p;
-  p.set = () => p;
+  p.set = (vals: unknown) => {
+    if (opts?.isUpdate) updateSetSpy(vals);
+    return p;
+  };
   p.values = (vals: unknown) => {
     if (opts?.isInsert) insertValuesSpy(vals);
     return p;
@@ -64,9 +85,16 @@ vi.mock('../db', () => ({
     insert: () => chain(undefined, { isInsert: true }),
     update: () => {
       updateMock();
-      return chain(undefined);
+      return chain(undefined, { isUpdate: true });
     },
   },
+}));
+
+vi.mock('../google-calendar-service', () => ({
+  googleCalendarService: {
+    createEvent: (...args: unknown[]) => createEventMock(...args),
+  },
+  GoogleCalendarAuthError: GoogleCalendarAuthErrorMock,
 }));
 
 vi.mock('./queries', () => ({
@@ -123,6 +151,90 @@ beforeEach(() => {
   resolveHcpCustomerMock.mockResolvedValue(null);
   createOrConvertHcpEstimateMock.mockResolvedValue(null);
   createCrmEstimateMock.mockResolvedValue(undefined);
+  createEventMock.mockResolvedValue('gcal-event-1');
+});
+
+// A salesperson who has connected their Google Calendar — enables the calendar
+// write branch in bookAppointment.
+const GCAL_SALESPERSON = {
+  ...SALESPERSON,
+  googleCalendarConnected: true,
+  googleCalendarRefreshToken: 'encrypted-refresh-token',
+};
+
+describe('bookAppointment — Google Calendar write must not silently fail (task #863)', () => {
+  it('stores the returned Google Calendar event id on the booking when the write succeeds', async () => {
+    selectNextAvailableSalespersonMock.mockResolvedValue(GCAL_SALESPERSON);
+    createEventMock.mockResolvedValue('gcal-event-xyz');
+
+    const result = await bookAppointment(TENANT, {
+      startTime: new Date('2026-05-15T15:00:00Z'),
+      title: 'Estimate visit',
+      customerName: 'Reema Saeed',
+      customerEmail: 'reema@example.com',
+      contactId: CONTACT_ID,
+      timezone: 'America/New_York',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.googleCalendarEventId).toBe('gcal-event-xyz');
+
+    // The event was created against the rep's stored refresh token.
+    expect(createEventMock).toHaveBeenCalledTimes(1);
+    const [refreshTokenArg, eventArg] = createEventMock.mock.calls[0];
+    expect(refreshTokenArg).toBe(GCAL_SALESPERSON.googleCalendarRefreshToken);
+    expect(eventArg.summary).toBe('Estimate visit');
+
+    // And the id is persisted on the scheduled_bookings row.
+    expect(insertValuesSpy).toHaveBeenCalledTimes(1);
+    const inserted = insertValuesSpy.mock.calls[0][0];
+    expect(inserted.googleCalendarEventId).toBe('gcal-event-xyz');
+  });
+
+  it('aborts the booking loudly when a generic Google Calendar write fails', async () => {
+    selectNextAvailableSalespersonMock.mockResolvedValue(GCAL_SALESPERSON);
+    createEventMock.mockRejectedValue(new Error('503 backend error'));
+
+    await expect(
+      bookAppointment(TENANT, {
+        startTime: new Date('2026-05-15T15:00:00Z'),
+        title: 'Estimate visit',
+        customerName: 'Reema Saeed',
+        contactId: CONTACT_ID,
+        timezone: 'America/New_York',
+      }),
+    ).rejects.toThrow('Failed to create the event in Google Calendar. Please try again.');
+
+    // The booking must NOT proceed past the failed calendar write: no contact
+    // flipped to scheduled, no scheduled_bookings row inserted.
+    expect(markContactScheduledMock).not.toHaveBeenCalled();
+    expect(insertValuesSpy).not.toHaveBeenCalled();
+    // A generic failure is not an auth failure, so the connection is untouched.
+    expect(updateSetSpy).not.toHaveBeenCalled();
+  });
+
+  it('marks the rep disconnected and surfaces a reconnect message on a Google Calendar auth error', async () => {
+    selectNextAvailableSalespersonMock.mockResolvedValue(GCAL_SALESPERSON);
+    createEventMock.mockRejectedValue(new GoogleCalendarAuthErrorMock('invalid_grant'));
+
+    await expect(
+      bookAppointment(TENANT, {
+        startTime: new Date('2026-05-15T15:00:00Z'),
+        title: 'Estimate visit',
+        customerName: 'Reema Saeed',
+        contactId: CONTACT_ID,
+        timezone: 'America/New_York',
+      }),
+    ).rejects.toThrow(/reconnect Google Calendar/i);
+
+    // The rep's connection was flipped to disconnected so the UI prompts a reconnect.
+    expect(updateSetSpy).toHaveBeenCalledTimes(1);
+    expect(updateSetSpy.mock.calls[0][0]).toEqual({ googleCalendarConnected: false });
+
+    // Booking still aborts before any local side effects.
+    expect(markContactScheduledMock).not.toHaveBeenCalled();
+    expect(insertValuesSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('bookAppointment — activity attribution by scheduleSource', () => {
