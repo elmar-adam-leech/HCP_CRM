@@ -1441,6 +1441,10 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       description: "user_contractors.twilio_phone_to_ring (rep's personal phone for bridge calls, task #822)",
     },
     {
+      sql: `ALTER TABLE contractors ADD COLUMN IF NOT EXISTS twilio_ring_tree jsonb`,
+      description: 'contractors.twilio_ring_tree (inbound-call ring order config; NULL = default first-user-with-phone behavior, task #854)',
+    },
+    {
       sql: `CREATE TABLE IF NOT EXISTS "twilio_phone_numbers" (
         "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
         "contractor_id" varchar NOT NULL REFERENCES "contractors"("id"),

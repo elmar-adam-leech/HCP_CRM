@@ -11,6 +11,7 @@ import { syncTwilioNumbers } from "../../twilio/numbers";
 import { configureTwilioWebhooks, inspectTwilioInboundRouting } from "../../twilio/webhook-config";
 import { fetchTwilioRecording } from "../../twilio/recordings";
 import { isIntegrationEnabledCached } from "../../services/cache";
+import { twilioRingTreeSchema } from "@shared/schema";
 
 const log = logger("TwilioRoutes");
 
@@ -82,6 +83,7 @@ export function registerTwilioRoutes(app: Express): void {
         defaultTwilioNumber: contractor?.defaultTwilioNumber ?? null,
         twilioRecordCalls: contractor?.twilioRecordCalls ?? false,
         twilioInboundCallMode: contractor?.twilioInboundCallMode ?? "crm",
+        twilioRingTree: contractor?.twilioRingTree ?? null,
       });
     }),
   );
@@ -90,7 +92,7 @@ export function registerTwilioRoutes(app: Express): void {
     "/api/twilio/settings",
     requireIntegrationManager,
     asyncHandler(async (req: AuthedRequest, res: Response) => {
-      const { defaultTwilioNumber, twilioRecordCalls, twilioInboundCallMode } = req.body ?? {};
+      const { defaultTwilioNumber, twilioRecordCalls, twilioInboundCallMode, twilioRingTree } = req.body ?? {};
       const updates: Record<string, unknown> = {};
       if (defaultTwilioNumber !== undefined) {
         updates.defaultTwilioNumber = defaultTwilioNumber || null;
@@ -105,6 +107,21 @@ export function registerTwilioRoutes(app: Express): void {
         }
         updates.twilioInboundCallMode = twilioInboundCallMode;
       }
+      if (twilioRingTree !== undefined) {
+        if (twilioRingTree === null) {
+          updates.twilioRingTree = null; // clear → default behavior
+        } else {
+          const parsed = twilioRingTreeSchema.safeParse(twilioRingTree);
+          if (!parsed.success) {
+            const issue = parsed.error.issues[0];
+            res.status(400).json({
+              message: `Invalid ring order: ${issue?.message ?? "invalid format"}`,
+            });
+            return;
+          }
+          updates.twilioRingTree = parsed.data;
+        }
+      }
       if (Object.keys(updates).length === 0) {
         res.status(400).json({ message: "No valid settings provided" });
         return;
@@ -117,6 +134,7 @@ export function registerTwilioRoutes(app: Express): void {
         defaultTwilioNumber: contractor?.defaultTwilioNumber ?? null,
         twilioRecordCalls: contractor?.twilioRecordCalls ?? false,
         twilioInboundCallMode: contractor?.twilioInboundCallMode ?? "crm",
+        twilioRingTree: contractor?.twilioRingTree ?? null,
       });
     }),
   );

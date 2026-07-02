@@ -41,6 +41,7 @@ export function registerUserRoutes(app: Express): void {
         role: userContractors.role,
         contractorId: userContractors.contractorId,
         dialpadDefaultNumber: userContractors.dialpadDefaultNumber,
+        twilioPhoneToRing: userContractors.twilioPhoneToRing,
         canManageIntegrations: userContractors.canManageIntegrations,
         allowedIntegrations: userContractors.allowedIntegrations,
         mfaEnabled: users.mfaEnabled,

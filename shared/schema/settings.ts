@@ -20,6 +20,7 @@ export const contractors = pgTable("contractors", {
   defaultTwilioNumber: text("default_twilio_number"), // Organization-wide default Twilio phone number
   twilioRecordCalls: boolean("twilio_record_calls").default(false).notNull(), // Record inbound+outbound calls (OFF by default, consent-gated)
   twilioInboundCallMode: text("twilio_inbound_call_mode").default("crm").notNull(), // 'crm' = CRM answers inbound calls (ring rep + voicemail) | 'external' = keep contractor's Twilio setup (e.g. Studio Flow); CRM still logs via StatusCallback
+  twilioRingTree: jsonb("twilio_ring_tree"), // Ring-order config for inbound calls (task #854). Shape: TwilioRingTree. NULL = default behavior (first user with a phone → voicemail).
   estimateArchiveDays: integer("estimate_archive_days"), // nullable — null = show all, N = only show estimates from last N days
   logoUrl: text("logo_url"), // Company logo: https URL or data:image/...;base64,... (nullable)
   brandColor: text("brand_color"), // Optional brand/accent color (hex, e.g. "#3366ff") used to theme the public booking page
@@ -51,6 +52,31 @@ export const insertContractorSchema = createInsertSchema(contractors).omit({
 });
 export type InsertContractor = z.infer<typeof insertContractorSchema>;
 export type Contractor = typeof contractors.$inferSelect;
+
+// ── Twilio inbound ring tree (task #854) ────────────────────────────────────
+// Each step rings all its members SIMULTANEOUSLY (multiple <Number> nouns in
+// one <Dial>); steps run IN ORDER (sequential fallthrough). Members can be a
+// CRM user (their twilioPhoneToRing is resolved at call time) or a raw phone
+// number (e.g., an office landline).
+export const twilioRingStepSchema = z
+  .object({
+    numbers: z.array(z.string().trim().min(3).max(20)).max(5).default([]),
+    userIds: z.array(z.string().trim().min(1).max(64)).max(5).default([]),
+    timeoutSeconds: z.number().int().min(5).max(60),
+  })
+  .refine((s) => s.numbers.length + s.userIds.length >= 1, {
+    message: "Each ring step needs at least one member",
+  })
+  .refine((s) => s.numbers.length + s.userIds.length <= 5, {
+    message: "Each ring step can have at most 5 members",
+  });
+
+export const twilioRingTreeSchema = z.object({
+  steps: z.array(twilioRingStepSchema).min(1).max(5),
+  voicemailGreeting: z.string().trim().max(500).optional(),
+});
+export type TwilioRingStep = z.infer<typeof twilioRingStepSchema>;
+export type TwilioRingTree = z.infer<typeof twilioRingTreeSchema>;
 
 // Terminology settings table for customizable navigation labels per contractor
 export const terminologySettings = pgTable("terminology_settings", {

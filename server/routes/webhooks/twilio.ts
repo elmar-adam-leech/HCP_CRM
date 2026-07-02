@@ -17,6 +17,12 @@ import {
   emptyTwiml,
 } from "../../twilio/utils";
 import { getPublicBaseUrl } from "../../utils/public-base-url";
+import {
+  parseRingTree,
+  buildRingTreeStepTwiml,
+  buildRingStepCallbackTwiml,
+  MAX_RING_STEPS,
+} from "../../twilio/ring-tree";
 
 const log = logger('TwilioWebhook');
 
@@ -53,6 +59,16 @@ async function matchContact(phone: string, contractorId: string) {
   let contact = normalized ? await storage.getContactByPhone(normalized, contractorId) : undefined;
   if (!contact && phone) contact = await storage.getContactByPhone(phone, contractorId);
   return contact;
+}
+
+/** Build a userId → twilioPhoneToRing map for ring-tree resolution. */
+async function getUserPhoneMap(contractorId: string): Promise<Map<string, string | null | undefined>> {
+  const map = new Map<string, string | null | undefined>();
+  try {
+    const users = await storage.getContractorUsers(contractorId);
+    for (const u of users) map.set(u.userId, u.twilioPhoneToRing);
+  } catch { /* empty map — steps fall through to voicemail */ }
+  return map;
 }
 
 /** Map a Twilio CallStatus to a human outcome label. */
@@ -136,7 +152,35 @@ export function registerTwilioWebhookRoutes(app: Express): void {
       const contractor = await storage.getContractor(contractorId);
       const record = !!contractor?.twilioRecordCalls;
 
-      // Find a rep phone to ring (first user with a configured "phone to ring").
+      const base = getPublicBaseUrl();
+      const recordingCallbackUrl = base
+        ? `${base}/api/webhooks/twilio/voice/recording/${encodeURIComponent(contractorId)}`
+        : undefined;
+      const consentMessage = record
+        ? 'This call may be recorded for quality and training purposes.'
+        : undefined;
+
+      // Ring tree configured (task #854): render step 0; the <Dial action>
+      // callback walks the remaining steps sequentially.
+      const ringTree = parseRingTree(contractor?.twilioRingTree);
+      if (ringTree && base) {
+        const userPhones = await getUserPhoneMap(contractorId);
+        const twiml = buildRingTreeStepTwiml({
+          tree: ringTree,
+          stepIndex: 0,
+          userPhones,
+          record,
+          recordingCallbackUrl,
+          consentMessage,
+          ringStepActionUrl: `${base}/api/webhooks/twilio/voice/ring-step/${encodeURIComponent(contractorId)}`,
+          voicemailCallbackUrl: recordingCallbackUrl,
+        });
+        res.set(TWIML_HEADERS).status(200).send(twiml);
+        return;
+      }
+
+      // Default behavior (no ring tree): ring the first user with a
+      // configured "phone to ring", then fall back to voicemail.
       let forwardTo: string | undefined;
       try {
         const users = await storage.getContractorUsers(contractorId);
@@ -144,17 +188,72 @@ export function registerTwilioWebhookRoutes(app: Express): void {
         if (withPhone?.twilioPhoneToRing) forwardTo = normalizePhoneNumber(withPhone.twilioPhoneToRing);
       } catch { /* fall through to voicemail */ }
 
+      const twiml = buildInboundTwiml({
+        forwardTo,
+        record,
+        recordingCallbackUrl,
+        consentMessage,
+        voicemailMessage: 'Please leave a message after the tone.',
+        voicemailCallbackUrl: recordingCallbackUrl,
+      });
+      res.set(TWIML_HEADERS).status(200).send(twiml);
+    }),
+  );
+
+  // ---- Ring-tree fallthrough: <Dial action> callback after each ring step ----
+  // Twilio POSTs here when a step's <Dial> finishes. DialCallStatus="completed"
+  // means a rep answered (hang up — done); anything else falls through to the
+  // next step, or voicemail once the steps are exhausted. The step index rides
+  // the query string, which is covered by Twilio's request signature.
+  app.post(
+    "/api/webhooks/twilio/voice/ring-step/:tenantId",
+    webhookRateLimiter,
+    form,
+    asyncHandler(async (req: Request, res: Response) => {
+      const contractorId = req.params.tenantId;
+      if (!(await verifyTwilioRequest(req, contractorId))) {
+        res.status(403).type('text/xml').send(emptyTwiml());
+        return;
+      }
+
+      const contractor = await storage.getContractor(contractorId);
+      const record = !!contractor?.twilioRecordCalls;
       const base = getPublicBaseUrl();
       const recordingCallbackUrl = base
         ? `${base}/api/webhooks/twilio/voice/recording/${encodeURIComponent(contractorId)}`
         : undefined;
 
-      const twiml = buildInboundTwiml({
-        forwardTo,
+      const ringTree = parseRingTree(contractor?.twilioRingTree);
+      if (!ringTree || !base) {
+        // Config removed/invalid mid-call — drop to voicemail rather than 500.
+        const twiml = buildInboundTwiml({
+          record: false,
+          voicemailMessage: 'Please leave a message after the tone.',
+          voicemailCallbackUrl: recordingCallbackUrl,
+        });
+        res.set(TWIML_HEADERS).status(200).send(twiml);
+        return;
+      }
+
+      // Clamp/validate the step index from the query string.
+      const rawStep = Number.parseInt(String(req.query.step ?? ''), 10);
+      const stepIndex = Number.isFinite(rawStep)
+        ? Math.min(Math.max(rawStep, 0), MAX_RING_STEPS)
+        : ringTree.steps.length; // unparseable → voicemail
+
+      const userPhones = await getUserPhoneMap(contractorId);
+      const twiml = buildRingStepCallbackTwiml({
+        dialCallStatus: typeof req.body.DialCallStatus === 'string' ? req.body.DialCallStatus : undefined,
+        tree: ringTree,
+        stepIndex,
+        userPhones,
         record,
         recordingCallbackUrl,
-        consentMessage: record ? 'This call may be recorded for quality and training purposes.' : undefined,
-        voicemailMessage: 'Please leave a message after the tone.',
+        // Consent was already spoken on the first leg; never repeat it here
+        // (buildRingTreeStepTwiml only speaks it at stepIndex 0 anyway, and
+        // this callback always carries step >= 1).
+        consentMessage: undefined,
+        ringStepActionUrl: `${base}/api/webhooks/twilio/voice/ring-step/${encodeURIComponent(contractorId)}`,
         voicemailCallbackUrl: recordingCallbackUrl,
       });
       res.set(TWIML_HEADERS).status(200).send(twiml);

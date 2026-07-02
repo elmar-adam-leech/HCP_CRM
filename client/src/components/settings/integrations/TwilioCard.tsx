@@ -19,6 +19,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useProviderConfig } from "@/hooks/use-provider-config";
 import { useIntegrationCard, getStatusIcon, getStatusText } from "@/hooks/use-integration-card";
 import { IntegrationCardShell } from "./IntegrationCardShell";
+import { TwilioRingTreeEditor, type RingTree } from "./TwilioRingTreeEditor";
 
 interface TwilioNumber {
   id: string;
@@ -30,6 +31,7 @@ interface TwilioSettings {
   defaultTwilioNumber: string | null;
   twilioRecordCalls: boolean;
   twilioInboundCallMode: "crm" | "external";
+  twilioRingTree: RingTree | null;
 }
 
 interface InboundRoutingStatus {
@@ -402,6 +404,20 @@ export function TwilioCard() {
                 ? 'With "Keep my Twilio setup", Sync will not touch call routing — your Studio Flow or IVR keeps answering. The CRM still logs incoming calls and handles texts. CRM voicemail and call recording are not used; recordings only appear if your Flow records.'
                 : "The CRM answers incoming calls by ringing a rep, with a voicemail fallback. Sync sets call routing on your numbers."}
             </p>
+          </div>
+
+          <div className="pt-3 border-t">
+            {(settings?.twilioInboundCallMode ?? "crm") === "crm" ? (
+              <TwilioRingTreeEditor
+                value={settings?.twilioRingTree ?? null}
+                onSave={(tree) => settingsMutation.mutate({ twilioRingTree: tree })}
+                isSaving={settingsMutation.isPending}
+              />
+            ) : (
+              <p className="text-xs text-muted-foreground" data-testid="text-ring-tree-external-note">
+                The incoming call ring order is not used while "Keep my Twilio setup" is selected — your Studio Flow or IVR controls how calls ring.
+              </p>
+            )}
           </div>
 
           <div className="flex items-center justify-between gap-2">

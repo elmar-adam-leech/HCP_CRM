@@ -8,6 +8,7 @@ export type UserSummary = {
   role: string;
   contractorId: string;
   dialpadDefaultNumber?: string | null;
+  twilioPhoneToRing?: string | null;
   canManageIntegrations?: boolean;
   allowedIntegrations?: string[] | null;
   mfaEnabled?: boolean;
