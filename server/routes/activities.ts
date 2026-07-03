@@ -26,6 +26,19 @@ const activitiesQuerySchema = z.object({
   cursor:     z.string().optional(),
 });
 
+// Query params for GET /api/calls (Calls history section, task #876).
+const callsQuerySchema = z.object({
+  direction:  z.enum(['inbound', 'outbound']).optional(),
+  assignment: z.enum(['assigned', 'unassigned']).optional(),
+  limit:      z.coerce.number().int().min(1).max(200).optional(),
+  cursor:     z.string().optional(),
+});
+
+// Body for POST /api/calls/:id/link.
+const callLinkSchema = z.object({
+  contactId: z.string().min(1, "contactId is required"),
+});
+
 export function registerActivityRoutes(app: Express): void {
   app.get("/api/activities", asyncHandler(async (req, res) => {
     const parsed = activitiesQuerySchema.safeParse(req.query);
@@ -125,6 +138,80 @@ export function registerActivityRoutes(app: Express): void {
       activityId: req.params.id,
     });
     res.json({ message: "Activity deleted successfully" });
+  }));
+
+  // --- Calls history section (task #876) ---------------------------------
+  // Tenant-wide list of `call` activities (including UNASSIGNED inbound calls
+  // that matched no contact), newest first, with direction + assignment
+  // filters and (createdAt, id) keyset pagination. Scoped to the session's
+  // active contractor exactly like the rest of the CRM.
+  app.get("/api/calls", asyncHandler(async (req, res) => {
+    const parsed = callsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid query parameters" });
+      return;
+    }
+    const { direction, assignment, limit, cursor } = parsed.data;
+    const pageLimit = limit || 50;
+    const rows = await storage.getCallActivities(req.user.contractorId, {
+      direction,
+      assignment,
+      limit: pageLimit + 1,
+      cursor,
+    });
+    const hasMore = rows.length > pageLimit;
+    if (hasMore) rows.pop();
+    let nextCursor: string | null = null;
+    if (hasMore && rows.length > 0) {
+      const last = rows[rows.length - 1];
+      nextCursor = encodeActivityCursor(last.createdAt, last.id);
+    }
+    res.json({ calls: rows, nextCursor });
+  }));
+
+  // Link an UNASSIGNED call activity to a contact. Regular users may do this
+  // (unlike PUT /api/activities/:id which is manager/admin-only) because it is
+  // the final step of the create-contact-from-call flow. Only calls that are
+  // currently unassigned can be linked here — already-linked calls are out of
+  // scope (no reassignment).
+  app.post("/api/calls/:id/link", asyncHandler(async (req, res) => {
+    const parsed = callLinkSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid request body" });
+      return;
+    }
+    const { contactId } = parsed.data;
+
+    const activity = await storage.getActivity(req.params.id, req.user.contractorId);
+    if (!activity || activity.type !== 'call') {
+      res.status(404).json({ message: "Call not found" });
+      return;
+    }
+    if (activity.contactId) {
+      res.status(409).json({ message: "This call is already linked to a contact" });
+      return;
+    }
+
+    const contact = await storage.getContact(contactId, req.user.contractorId);
+    if (!contact) {
+      res.status(404).json({ message: "Contact not found" });
+      return;
+    }
+
+    const updated = await storage.updateActivity(req.params.id, { contactId }, req.user.contractorId);
+    if (!updated) {
+      res.status(404).json({ message: "Call not found" });
+      return;
+    }
+    await storage.markContactContacted(contactId, req.user.contractorId, req.user.userId);
+    await storage.markLeadContacted(contactId, req.user.contractorId, req.user.userId);
+
+    broadcastToContractor(req.user.contractorId, {
+      type: 'activity_updated',
+      activityId: updated.id,
+      contactId,
+    });
+    res.json(updated);
   }));
 
   app.post("/api/admin/cleanup-orphaned-activities", requireAdmin, asyncHandler(async (req, res) => {

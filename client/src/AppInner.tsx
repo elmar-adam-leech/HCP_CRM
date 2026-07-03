@@ -40,6 +40,7 @@ const DialpadHealth = lazy(() => import("@/pages/DialpadHealth"));
 const FacebookSetup = lazy(() => import("@/pages/FacebookSetup"));
 const SendGridSetup = lazy(() => import("@/pages/SendGridSetup"));
 const Contacts = lazy(() => import("@/pages/Contacts"));
+const Calls = lazy(() => import("@/pages/Calls"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 const AuditLog = lazy(() => import("@/pages/AuditLog"));
 
@@ -107,6 +108,11 @@ function DashboardPage() {
 function ContactsPage() {
   const { isAuthenticated } = useAuth();
   return isAuthenticated ? <ErrorBoundary><Contacts /></ErrorBoundary> : <LoginFallbackPage />;
+}
+
+function CallsPage() {
+  const { isAuthenticated } = useAuth();
+  return isAuthenticated ? <ErrorBoundary><Calls /></ErrorBoundary> : <LoginFallbackPage />;
 }
 
 function LeadsPage() {
@@ -229,6 +235,7 @@ function Router() {
 
         {/* Protected routes - redirect to login if not authenticated */}
         <Route path="/contacts" component={ContactsPage} />
+        <Route path="/calls" component={CallsPage} />
         <Route path="/leads" component={LeadsPage} />
         <Route path="/follow-ups" component={FollowUpsPage} />
         <Route path="/estimates" component={EstimatesPage} />

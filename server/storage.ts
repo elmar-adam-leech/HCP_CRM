@@ -425,6 +425,12 @@ export interface IStorage {
     limit?: number;
     cursor?: string;
   }): Promise<Activity[]>;
+  getCallActivities(contractorId: string, options?: {
+    direction?: 'inbound' | 'outbound';
+    assignment?: 'assigned' | 'unassigned';
+    limit?: number;
+    cursor?: string;
+  }): Promise<Array<Activity & { otherPartyNumber: string | null }>>;
   getActivity(id: string, contractorId: string): Promise<Activity | undefined>;
   createActivity(activity: Omit<InsertActivity, 'contractorId'>, contractorId: string): Promise<Activity>;
   bulkCreateActivities(activities: Array<Omit<InsertActivity, 'contractorId'>>, contractorId: string): Promise<Activity[]>;

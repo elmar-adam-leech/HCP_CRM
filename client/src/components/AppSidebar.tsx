@@ -12,6 +12,7 @@ import {
   Workflow,
   Clock,
   BookUser,
+  Phone,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
@@ -70,6 +71,11 @@ const getMenuItems = (terminology?: Partial<TerminologySettings>) => [
     title: "Contacts",
     url: "/contacts",
     icon: BookUser,
+  },
+  {
+    title: "Calls",
+    url: "/calls",
+    icon: Phone,
   },
   {
     title: "Follow-Ups",

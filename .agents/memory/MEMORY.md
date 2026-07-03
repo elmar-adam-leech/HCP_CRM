@@ -2,3 +2,4 @@
 - [Schema migrations location](schema-migrations-location.md) — column/index migrations live in `server/schema-drift.ts` columnMigrations, NOT `server/db.ts` (replit.md is outdated on this).
 - [Twilio inbound SMS routing](twilio-inbound-routing.md) — numbers in a Messaging Service ignore number-level SmsUrl; set Service InboundRequestUrl directly (not UseInboundWebhookOnNumber deferral).
 - [jsdom Radix Select + day-picker tests](jsdom-radix-daypicker-tests.md) — polyfill scrollIntoView/pointer-capture before render or Radix Select crashes the whole tree; nav to next month for enabled days.
+- [Calls history page](calls-history-page.md) — /api/calls lists type='call' activities incl. unassigned (contactId NULL); otherPartyNumber derived server-side from metadata by direction.

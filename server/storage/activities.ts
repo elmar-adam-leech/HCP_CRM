@@ -122,6 +122,109 @@ async function getActivities(contractorId: string, options: {
   return enriched as unknown as Activity[];
 }
 
+/**
+ * Tenant-wide call history for the Calls page.
+ *
+ * Unlike getActivities(), this does NOT require a linked contact/estimate/job —
+ * it intentionally includes UNASSIGNED calls (contactId IS NULL), which are the
+ * inbound calls from numbers that matched no contact. Results are call-only,
+ * newest first, with the same (createdAt, id) keyset cursor pagination.
+ *
+ * `otherPartyNumber` is derived server-side from the call metadata:
+ *   - inbound  → the customer is the `from_number`
+ *   - outbound → the customer is the `to_number` (Twilio stores the true
+ *     customer here even for bridged calls; the rep's leg is never persisted)
+ * with fallbacks for provider-specific field names, and finally the linked
+ * contact's first phone. This is the number pre-filled into the
+ * create-contact-from-call flow.
+ */
+async function getCallActivities(contractorId: string, options: {
+  direction?: 'inbound' | 'outbound';
+  assignment?: 'assigned' | 'unassigned';
+  limit?: number;
+  cursor?: string;
+} = {}): Promise<Array<Activity & { otherPartyNumber: string | null }>> {
+  const conditions = [
+    eq(activities.contractorId, contractorId),
+    eq(activities.type, 'call'),
+  ];
+
+  if (options.direction) {
+    conditions.push(sql`(${activities.metadata}::jsonb)->>'direction' = ${options.direction}`);
+  }
+  if (options.assignment === 'assigned') {
+    conditions.push(isNotNull(activities.contactId));
+  } else if (options.assignment === 'unassigned') {
+    conditions.push(sql`${activities.contactId} IS NULL`);
+  }
+
+  if (options.cursor) {
+    const decoded = decodeCursor(options.cursor);
+    if (decoded) {
+      conditions.push(sql`(${activities.createdAt}, ${activities.id}) < (${new Date(decoded.ts)}, ${decoded.id})`);
+    }
+  }
+
+  const result = await db.select({
+    id: activities.id, type: activities.type, title: activities.title, content: activities.content,
+    metadata: activities.metadata,
+    contactId: activities.contactId, estimateId: activities.estimateId, jobId: activities.jobId,
+    userId: activities.userId, contractorId: activities.contractorId,
+    externalId: activities.externalId, externalSource: activities.externalSource,
+    createdAt: activities.createdAt, updatedAt: activities.updatedAt, userName: users.name,
+    contactName: contacts.name,
+    contactType: contacts.type,
+    contactPhones: contacts.phones,
+  }).from(activities)
+    .leftJoin(users, eq(activities.userId, users.id))
+    .leftJoin(contacts, eq(activities.contactId, contacts.id))
+    .where(and(...conditions))
+    .orderBy(desc(activities.createdAt), desc(activities.id))
+    .limit(options.limit || 50);
+
+  const enriched = result.map((row) => {
+    // activities.metadata is a text column that holds JSON; depending on the
+    // ingestion path it may arrive already parsed (jsonb-style object) or as a
+    // raw JSON string. Normalize before deriving otherPartyNumber, or unassigned
+    // calls (no linked-contact phone fallback) would lose their number entirely.
+    let meta: Record<string, unknown> = {};
+    if (row.metadata && typeof row.metadata === 'object') {
+      meta = row.metadata as Record<string, unknown>;
+    } else if (typeof row.metadata === 'string') {
+      try {
+        const parsed = JSON.parse(row.metadata);
+        if (parsed && typeof parsed === 'object') meta = parsed as Record<string, unknown>;
+      } catch {
+        meta = {};
+      }
+    }
+    const str = (v: unknown): string | null =>
+      typeof v === 'string' && v.trim().length > 0 ? v : null;
+    const direction = str(meta.direction);
+    // Prefer the direction-appropriate leg, then provider-specific fallbacks,
+    // then the linked contact's first phone.
+    const otherPartyNumber =
+      (direction === 'outbound' ? str(meta.to_number) : str(meta.from_number)) ||
+      str(meta.customerNumber) ||
+      str(meta.contactPhone) ||
+      str(meta.external_number) ||
+      (Array.isArray(row.contactPhones) ? str(row.contactPhones[0]) : null);
+
+    let entityName: string | null = row.contactName ?? null;
+    if (!entityName && row.externalSource === 'dialpad') {
+      const fallback = typeof meta.contactName === 'string' ? meta.contactName : null;
+      if (fallback) entityName = fallback;
+    }
+    const entityType: 'lead' | 'customer' | null = row.contactId
+      ? (row.contactType === 'customer' ? 'customer' : 'lead')
+      : null;
+
+    return { ...row, otherPartyNumber, entityName, entityType };
+  });
+
+  return enriched as unknown as Array<Activity & { otherPartyNumber: string | null }>;
+}
+
 async function getActivity(id: string, contractorId: string): Promise<Activity | undefined> {
   const result = await db.select().from(activities).where(and(
     eq(activities.id, id),
@@ -339,6 +442,7 @@ async function deleteActivity(id: string, contractorId: string): Promise<boolean
 
 export const activityMethods = {
   getActivities,
+  getCallActivities,
   getActivity,
   createActivity,
   bulkCreateActivities,
