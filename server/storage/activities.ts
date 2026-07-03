@@ -141,6 +141,10 @@ async function getActivities(contractorId: string, options: {
 async function getCallActivities(contractorId: string, options: {
   direction?: 'inbound' | 'outbound';
   assignment?: 'assigned' | 'unassigned';
+  /** Inclusive lower bound on createdAt (UTC instant for the start of the range). */
+  startTs?: Date;
+  /** Exclusive upper bound on createdAt (UTC instant for the start of the day AFTER the range). */
+  endTs?: Date;
   limit?: number;
   cursor?: string;
 } = {}): Promise<Array<Activity & { otherPartyNumber: string | null }>> {
@@ -151,6 +155,12 @@ async function getCallActivities(contractorId: string, options: {
 
   if (options.direction) {
     conditions.push(sql`(${activities.metadata}::jsonb)->>'direction' = ${options.direction}`);
+  }
+  if (options.startTs) {
+    conditions.push(sql`${activities.createdAt} >= ${options.startTs}`);
+  }
+  if (options.endTs) {
+    conditions.push(sql`${activities.createdAt} < ${options.endTs}`);
   }
   if (options.assignment === 'assigned') {
     conditions.push(isNotNull(activities.contactId));

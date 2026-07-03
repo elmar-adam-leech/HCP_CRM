@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import {
   Phone,
@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
@@ -22,7 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { apiRequest } from "@/lib/queryClient";
-import { formatPhoneNumber } from "@/lib/utils";
+import { formatPhoneNumber, todayYmdInTimezone } from "@/lib/utils";
 import { CreateContactFromCallDialog } from "@/components/calls/CreateContactFromCallDialog";
 
 type RecordingDetail = {
@@ -49,6 +50,46 @@ interface CallsResponse {
 
 type DirectionFilter = "all" | "inbound" | "outbound";
 type AssignmentFilter = "all" | "assigned" | "unassigned";
+type DateFilter = "all" | "today" | "7d" | "30d" | "month" | "custom";
+
+const PAGE_SIZE = 10;
+
+// Shift a "YYYY-MM-DD" calendar day by `days` using UTC math (no local-timezone
+// drift), returning "YYYY-MM-DD". Keeps preset ranges anchored to the same
+// calendar the server interprets them in (the contractor's timezone).
+function shiftYmd(ymd: string, days: number): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const shifted = new Date(Date.UTC(y, m - 1, d + days));
+  return shifted.toISOString().slice(0, 10);
+}
+
+// Resolve a preset (or custom range) into inclusive start/end calendar days.
+// `today` must already be the current day in the contractor's timezone so the
+// range matches how the server interprets the YYYY-MM-DD bounds.
+function resolveDateRange(
+  filter: DateFilter,
+  customStart: string,
+  customEnd: string,
+  today: string,
+): { startDate?: string; endDate?: string } {
+  switch (filter) {
+    case "today":
+      return { startDate: today, endDate: today };
+    case "7d":
+      return { startDate: shiftYmd(today, -6), endDate: today };
+    case "30d":
+      return { startDate: shiftYmd(today, -29), endDate: today };
+    case "month":
+      return { startDate: `${today.slice(0, 7)}-01`, endDate: today };
+    case "custom":
+      return {
+        startDate: customStart || undefined,
+        endDate: customEnd || undefined,
+      };
+    default:
+      return {};
+  }
+}
 
 // Normalize metadata that may arrive as a JSON string (legacy text column) or
 // an already-parsed object (jsonb).
@@ -238,7 +279,16 @@ function CallRowCard({ call, onCreateContact }: { call: CallRow; onCreateContact
 export default function Calls() {
   const [direction, setDirection] = useState<DirectionFilter>("all");
   const [assignment, setAssignment] = useState<AssignmentFilter>("all");
+  const [dateFilter, setDateFilter] = useState<DateFilter>("all");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
   const [createContactFor, setCreateContactFor] = useState<CallRow | null>(null);
+
+  const { data: bookingConfig } = useQuery<{ timezone: string | null }>({
+    queryKey: ["/api/booking-slug"],
+  });
+  const today = todayYmdInTimezone(bookingConfig?.timezone);
+  const { startDate, endDate } = resolveDateRange(dateFilter, customStart, customEnd, today);
 
   const {
     data,
@@ -249,13 +299,15 @@ export default function Calls() {
     isFetchingNextPage,
     refetch,
   } = useInfiniteQuery<CallsResponse>({
-    queryKey: ["/api/calls", { direction, assignment }],
+    queryKey: ["/api/calls", { direction, assignment, startDate, endDate }],
     initialPageParam: null as string | null,
     queryFn: async ({ pageParam }) => {
       const url = new URL("/api/calls", window.location.origin);
       if (direction !== "all") url.searchParams.set("direction", direction);
       if (assignment !== "all") url.searchParams.set("assignment", assignment);
-      url.searchParams.set("limit", "50");
+      if (startDate) url.searchParams.set("startDate", startDate);
+      if (endDate) url.searchParams.set("endDate", endDate);
+      url.searchParams.set("limit", String(PAGE_SIZE));
       if (pageParam) url.searchParams.set("cursor", pageParam as string);
       const res = await apiRequest("GET", url.pathname + url.search);
       return res.json();
@@ -293,6 +345,42 @@ export default function Calls() {
             <SelectItem value="unassigned">Unassigned</SelectItem>
           </SelectContent>
         </Select>
+        <Select value={dateFilter} onValueChange={(v) => setDateFilter(v as DateFilter)}>
+          <SelectTrigger className="w-40" data-testid="select-date-range">
+            <SelectValue placeholder="Date" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All time</SelectItem>
+            <SelectItem value="today">Today</SelectItem>
+            <SelectItem value="7d">Last 7 days</SelectItem>
+            <SelectItem value="30d">Last 30 days</SelectItem>
+            <SelectItem value="month">This month</SelectItem>
+            <SelectItem value="custom">Custom range</SelectItem>
+          </SelectContent>
+        </Select>
+        {dateFilter === "custom" && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              type="date"
+              value={customStart}
+              max={customEnd || undefined}
+              onChange={(e) => setCustomStart(e.target.value)}
+              className="w-40"
+              data-testid="input-date-start"
+              aria-label="Start date"
+            />
+            <span className="text-muted-foreground text-sm">to</span>
+            <Input
+              type="date"
+              value={customEnd}
+              min={customStart || undefined}
+              onChange={(e) => setCustomEnd(e.target.value)}
+              className="w-40"
+              data-testid="input-date-end"
+              aria-label="End date"
+            />
+          </div>
+        )}
       </div>
 
       {isLoading ? (
@@ -310,7 +398,9 @@ export default function Calls() {
         </Card>
       ) : calls.length === 0 ? (
         <Card className="p-8 text-center">
-          <p className="text-muted-foreground" data-testid="text-no-calls">No calls found.</p>
+          <p className="text-muted-foreground" data-testid="text-no-calls">
+            {dateFilter !== "all" ? "No calls in this range." : "No calls found."}
+          </p>
         </Card>
       ) : (
         <div className="space-y-3">

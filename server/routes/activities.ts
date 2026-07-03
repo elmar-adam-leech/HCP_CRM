@@ -7,7 +7,18 @@ import { requireManagerOrAdmin, requireAdmin } from "../auth-service";
 import { broadcastToContractor } from "../websocket";
 import { messageCleanupService } from "../services/message-cleanup";
 import { encodeActivityCursor } from "../storage/activities";
+import { createDateInTimezone } from "../utils/time";
 import { z } from "zod";
+
+// Convert a calendar day ("YYYY-MM-DD") + IANA timezone into the UTC instant for
+// the START of that day (offset by `dayOffset` days) in that timezone. Anchoring
+// at noon UTC keeps the calendar day stable across the US timezones this CRM
+// serves before createDateInTimezone walks it back to local midnight.
+function ymdToUtcDayStart(ymd: string, dayOffset: number, timezone: string): Date {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const noonAnchor = new Date(Date.UTC(y, m - 1, d + dayOffset, 12, 0, 0));
+  return createDateInTimezone(noonAnchor, 0, 0, timezone);
+}
 
 // Zod schema for the GET /api/activities query parameters.
 // Previously these were manually cast with parseInt/as-string, which silently
@@ -27,9 +38,13 @@ const activitiesQuerySchema = z.object({
 });
 
 // Query params for GET /api/calls (Calls history section, task #876).
+const ymdRegex = /^\d{4}-\d{2}-\d{2}$/;
 const callsQuerySchema = z.object({
   direction:  z.enum(['inbound', 'outbound']).optional(),
   assignment: z.enum(['assigned', 'unassigned']).optional(),
+  // Inclusive calendar-day range (interpreted in the contractor's timezone).
+  startDate:  z.string().regex(ymdRegex, "startDate must be YYYY-MM-DD").optional(),
+  endDate:    z.string().regex(ymdRegex, "endDate must be YYYY-MM-DD").optional(),
   limit:      z.coerce.number().int().min(1).max(200).optional(),
   cursor:     z.string().optional(),
 });
@@ -151,11 +166,28 @@ export function registerActivityRoutes(app: Express): void {
       res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid query parameters" });
       return;
     }
-    const { direction, assignment, limit, cursor } = parsed.data;
+    const { direction, assignment, startDate, endDate, limit, cursor } = parsed.data;
     const pageLimit = limit || 50;
+
+    // Resolve the date range in the contractor's timezone so "Today"/day
+    // boundaries match the rep's local calendar, not the server's UTC clock.
+    let startTs: Date | undefined;
+    let endTs: Date | undefined;
+    if (startDate || endDate) {
+      const contractor = await storage.getContractor(req.user.contractorId);
+      const timezone = (contractor && 'timezone' in contractor && typeof (contractor as { timezone?: unknown }).timezone === 'string'
+        ? (contractor as { timezone: string }).timezone
+        : null) || 'America/New_York';
+      if (startDate) startTs = ymdToUtcDayStart(startDate, 0, timezone);
+      // Exclusive upper bound = start of the day AFTER endDate.
+      if (endDate) endTs = ymdToUtcDayStart(endDate, 1, timezone);
+    }
+
     const rows = await storage.getCallActivities(req.user.contractorId, {
       direction,
       assignment,
+      startTs,
+      endTs,
       limit: pageLimit + 1,
       cursor,
     });

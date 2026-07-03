@@ -428,6 +428,8 @@ export interface IStorage {
   getCallActivities(contractorId: string, options?: {
     direction?: 'inbound' | 'outbound';
     assignment?: 'assigned' | 'unassigned';
+    startTs?: Date;
+    endTs?: Date;
     limit?: number;
     cursor?: string;
   }): Promise<Array<Activity & { otherPartyNumber: string | null }>>;
