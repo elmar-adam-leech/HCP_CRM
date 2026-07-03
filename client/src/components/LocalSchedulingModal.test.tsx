@@ -97,6 +97,8 @@ function renderModal() {
   });
   // Seed the salespeople query so no fetch is needed for it.
   queryClient.setQueryData(['/api/scheduling/salespeople'], [SALESPERSON]);
+  // Seed the booking-slug query (contractor timezone for the calendar boundary).
+  queryClient.setQueryData(['/api/booking-slug'], { timezone: null });
 
   return render(
     <QueryClientProvider client={queryClient}>

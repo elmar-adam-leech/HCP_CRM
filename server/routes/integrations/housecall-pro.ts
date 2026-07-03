@@ -1,5 +1,7 @@
 import type { Express, Response } from "express";
 import { housecallProService } from "../../hcp/index";
+import { storage } from "../../storage";
+import type { Contractor } from "@shared/schema";
 import { requireIntegrationManager, type AuthedRequest } from "../../auth-service";
 import { asyncHandler } from "../../utils/async-handler";
 import { isIntegrationEnabledCached } from "../../services/cache";
@@ -116,10 +118,13 @@ export function registerHousecallProRoutes(app: Express): void {
     // free gaps, so the staff-facing modal can render "Booked" badges while
     // keeping conflicting times selectable.
     if (includeConflicts === 'true') {
+      const contractor = await storage.getContractor(req.user.contractorId) as Contractor | null;
+      const timezone = contractor?.timezone || 'America/New_York';
       const candidateResult = await housecallProService.getEstimatorTimeCandidates(
         req.user.contractorId,
         date,
-        estimatorIdArray
+        estimatorIdArray,
+        timezone
       );
 
       if (!candidateResult.success) {

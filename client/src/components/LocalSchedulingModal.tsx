@@ -15,7 +15,7 @@ import { Separator } from "@/components/ui/separator";
 import { Calendar as CalendarIcon, Clock, User, MapPin, Phone, Mail, Loader2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-import { formatDateScheduling } from "@/lib/utils";
+import { formatDateScheduling, localYmd, todayYmdInTimezone } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { AddressAutocomplete, AddressComponents, AddressAutocompleteRef } from "@/components/ui/AddressAutocomplete";
 import { DaySchedulePanel } from "@/components/DaySchedulePanel";
@@ -106,6 +106,14 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
   }, [selectedDate, selectedSalespersonId, form]);
 
   const formattedDate = selectedDate ? format(selectedDate, 'yyyy-MM-dd') : '';
+
+  // Task #877: anchor the calendar's "today" boundary to the contractor's
+  // timezone (not the staff member's browser timezone) so same-day selection
+  // near midnight / across timezones is correct.
+  const { data: bookingSlugData } = useQuery<{ timezone: string | null }>({
+    queryKey: ['/api/booking-slug'],
+  });
+  const contractorTodayYmd = todayYmdInTimezone(bookingSlugData?.timezone);
 
   // Task #859: internal flexible scheduling. Fetch EVERY candidate time across
   // the selected salesperson's working window (not just free gaps), each flagged
@@ -425,7 +433,7 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
                         mode="single"
                         selected={field.value}
                         onSelect={field.onChange}
-                        disabled={(date) => date < new Date() || date < new Date(new Date().setHours(0, 0, 0, 0))}
+                        disabled={(date) => localYmd(date) < contractorTodayYmd}
                         className="rounded-md"
                         data-testid="calendar-date-picker"
                       />

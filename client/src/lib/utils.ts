@@ -74,6 +74,37 @@ export function formatDateTime(dateStr: string | null | undefined): string {
   return new Date(dateStr).toLocaleString();
 }
 
+/**
+ * Return a calendar date's year-month-day as displayed in the browser's local
+ * timezone (which is how react-day-picker builds the Date for each square),
+ * formatted as "YYYY-MM-DD" for safe lexicographic comparison.
+ */
+export function localYmd(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/**
+ * Current calendar date ("YYYY-MM-DD") in the given IANA timezone. Falls back to
+ * the browser timezone if `timezone` is missing or invalid. Used by the internal
+ * scheduling calendars so "today" is anchored to the contractor's timezone, not
+ * the staff member's browser timezone (task #877).
+ */
+export function todayYmdInTimezone(timezone?: string | null): string {
+  const opts: Intl.DateTimeFormatOptions = {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  };
+  try {
+    return new Intl.DateTimeFormat("en-CA", { ...opts, timeZone: timezone || undefined }).format(new Date());
+  } catch {
+    return new Intl.DateTimeFormat("en-CA", opts).format(new Date());
+  }
+}
+
 export function formatPhoneNumber(phone: string): string {
   const cleaned = phone.replace(/\D/g, '');
   if (cleaned.length === 11 && cleaned.startsWith('1')) {

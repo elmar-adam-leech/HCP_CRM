@@ -99,7 +99,8 @@ export class HcpSchedulingModule extends HcpBaseClient {
   async getEstimatorTimeCandidates(
     tenantId: string,
     date: string,
-    estimatorIds?: string[]
+    estimatorIds?: string[],
+    timezone: string = 'America/New_York'
   ): Promise<HousecallProResponse<{
     employee_id: string;
     employee_name: string;
@@ -127,6 +128,13 @@ export class HcpSchedulingModule extends HcpBaseClient {
       const businessHours = { start: '08:00', end: '17:00' };
       const intervalMinutes = 30;
       const durationMinutes = 60;
+
+      // Same-day handling (task #877): when the requested date is *today* in the
+      // contractor's timezone, drop candidate slots whose start time has already
+      // passed so staff aren't offered times in the past. `nowMinutes` is null
+      // on any other day (all slots are offered).
+      const { dateStr: todayStr, minutes: nowMinutes } = this.nowInTimezone(timezone);
+      const minStartMinutes = date === todayStr ? nowMinutes : null;
 
       const availability = [];
 
@@ -158,6 +166,10 @@ export class HcpSchedulingModule extends HcpBaseClient {
         for (let t = businessStart; t + durationMinutes <= businessEnd; t += intervalMinutes) {
           const slotStart = t;
           const slotEnd = t + durationMinutes;
+          // Skip already-passed times when the requested day is today.
+          if (minStartMinutes !== null && slotStart < minStartMinutes) {
+            continue;
+          }
           const conflict = busyWindows.some(w => slotStart < w.end && slotEnd > w.start);
           slots.push({
             start_time: this.minutesToTime(slotStart),
@@ -440,6 +452,29 @@ export class HcpSchedulingModule extends HcpBaseClient {
   private timeToMinutes(time: string): number {
     const [hours, minutes] = time.split(':').map(Number);
     return hours * 60 + minutes;
+  }
+
+  /**
+   * Current wall-clock date + minutes-of-day in the given IANA timezone.
+   * Used by same-day scheduling (task #877) to determine whether the requested
+   * date is "today" for the contractor and, if so, which slots have passed.
+   */
+  private nowInTimezone(timezone: string): { dateStr: string; minutes: number } {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date());
+    const map: Record<string, string> = {};
+    for (const p of parts) map[p.type] = p.value;
+    let hour = parseInt(map.hour ?? '0', 10);
+    if (hour === 24) hour = 0; // some runtimes emit "24" for midnight
+    const minutes = hour * 60 + parseInt(map.minute ?? '0', 10);
+    return { dateStr: `${map.year}-${map.month}-${map.day}`, minutes };
   }
 
   private isoToMinutes(isoString: string): number {

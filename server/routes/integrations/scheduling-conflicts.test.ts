@@ -226,7 +226,7 @@ describe('GET /api/housecall-pro/availability?includeConflicts=true (task #871)'
 
     // The includeConflicts branch must call the candidate method, not the
     // free-gap availability method.
-    expect(getEstimatorTimeCandidatesMock).toHaveBeenCalledWith('tenant-1', '2027-07-08', undefined);
+    expect(getEstimatorTimeCandidatesMock).toHaveBeenCalledWith('tenant-1', '2027-07-08', undefined, 'America/New_York');
   });
 
   it('forwards a comma-separated estimatorIds filter', async () => {
@@ -240,7 +240,7 @@ describe('GET /api/housecall-pro/availability?includeConflicts=true (task #871)'
       '/api/housecall-pro/availability?date=2027-07-08&includeConflicts=true&estimatorIds=emp-1,emp-2',
     );
     expect(r.status).toBe(200);
-    expect(getEstimatorTimeCandidatesMock).toHaveBeenCalledWith('tenant-1', '2027-07-08', ['emp-1', 'emp-2']);
+    expect(getEstimatorTimeCandidatesMock).toHaveBeenCalledWith('tenant-1', '2027-07-08', ['emp-1', 'emp-2'], 'America/New_York');
   });
 
   it('returns 403 when the HCP integration is disabled', async () => {

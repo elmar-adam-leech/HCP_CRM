@@ -18,7 +18,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Calendar as CalendarIcon, Clock, User, AlertCircle, CheckCircle2 } from "lucide-react";
 import { format } from "date-fns";
 import { z } from "zod";
-import { cn } from "@/lib/utils";
+import { cn, localYmd, todayYmdInTimezone } from "@/lib/utils";
 
 // Use the database Lead type from schema instead of defining our own
 interface ModalLead {
@@ -91,6 +91,15 @@ export function HousecallProSchedulingModal({ lead, isOpen, onClose, onScheduled
     queryKey: ['/api/housecall-pro/status'],
     enabled: isOpen,
   });
+
+  // Task #877: anchor the calendar's "today" boundary to the contractor's
+  // timezone (not the staff member's browser timezone) so same-day selection
+  // near midnight / across timezones is correct.
+  const { data: bookingSlugData } = useQuery<{ timezone: string | null }>({
+    queryKey: ['/api/booking-slug'],
+    enabled: isOpen,
+  });
+  const contractorTodayYmd = todayYmdInTimezone(bookingSlugData?.timezone);
 
   // Get employees when ready to schedule - filter to estimators only
   const { data: allEmployees, isLoading: employeesLoading } = useQuery<Employee[]>({
@@ -388,7 +397,7 @@ export function HousecallProSchedulingModal({ lead, isOpen, onClose, onScheduled
                     mode="single"
                     selected={field.value}
                     onSelect={field.onChange}
-                    disabled={(date) => date < new Date()}
+                    disabled={(date) => localYmd(date) < contractorTodayYmd}
                     initialFocus
                   />
                 </PopoverContent>
