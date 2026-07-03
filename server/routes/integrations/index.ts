@@ -3,7 +3,7 @@ import { storage } from "../../storage";
 import { isIntegrationEnabledCached, invalidateContractorCache } from "../../services/cache";
 import { dialpadEnhancedService } from "../../dialpad";
 import { providerService, INTEGRATION_NAMES, isIntegrationName } from "../../providers/provider-service";
-import { requireManagerOrAdmin, type AuthedRequest } from "../../auth-service";
+import { requireManagerOrAdmin, canAccessIntegration, type AuthedRequest } from "../../auth-service";
 import { CredentialService } from "../../credential-service";
 import { asyncHandler } from "../../utils/async-handler";
 import { logger } from "../../utils/logger";
@@ -15,14 +15,6 @@ const log = logger('Integrations');
 
 function hasGeneralIntegrationAccess(user: { role: string; canManageIntegrations: boolean }): boolean {
   return user.role === 'admin' || user.role === 'super_admin' || user.role === 'manager' || user.canManageIntegrations === true;
-}
-
-function canAccessIntegration(user: { role: string; canManageIntegrations: boolean; allowedIntegrations?: string[] | null }, integrationKey: string): boolean {
-  if (user.role === 'admin' || user.role === 'super_admin' || user.role === 'manager') return true;
-  if (!user.canManageIntegrations) return false;
-  const allowed = user.allowedIntegrations;
-  if (!allowed || allowed.length === 0) return true;
-  return allowed.includes(integrationKey);
 }
 
 export function registerIntegrationRoutes(app: Express): void {

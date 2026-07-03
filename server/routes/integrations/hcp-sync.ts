@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { storage } from "../../storage";
 import { isIntegrationEnabledCached } from "../../services/cache";
 import { housecallProService } from "../../hcp/index";
-import { requireAdmin, requireIntegrationManager } from "../../auth-service";
+import { requireAdmin, requireIntegrationAccess } from "../../auth-service";
 import { syncStatus, setSyncStatus, lastSyncLoaded } from "../../sync-status-store";
 import { mapHcpEstimateStatus } from "../../sync/housecall-pro";
 import { extractHcpAmount, resolveHcpEstimateStatus } from "../../sync/hcp-mappers";
@@ -21,7 +21,7 @@ import { backfillContactLeadSourcesFromHcp } from "../../sync/hcp-backfill-found
 const log = logger('HcpSync');
 
 export function registerHcpSyncRoutes(app: Express): void {
-  app.post("/api/housecall-pro/sync", requireIntegrationManager, asyncHandler(async (req, res) => {
+  app.post("/api/housecall-pro/sync", requireIntegrationAccess('housecall-pro'), asyncHandler(async (req, res) => {
     const contractorId = req.user.contractorId;
     const syncType = (req.query.type as string) || 'all';
 
@@ -498,7 +498,7 @@ export function registerHcpSyncRoutes(app: Express): void {
    */
   app.post(
     "/api/integrations/hcp/backfill-lead-sources",
-    requireIntegrationManager,
+    requireIntegrationAccess('housecall-pro'),
     asyncHandler(async (req, res) => {
       const contractorId = req.user.contractorId;
       const enabled = await isIntegrationEnabledCached(contractorId, 'housecall-pro');

@@ -1,6 +1,6 @@
-import type { Express, Request, Response, NextFunction, RequestHandler } from 'express';
+import type { Express, Request, Response } from 'express';
 import crypto from 'crypto';
-import { type AuthedRequest } from '../../auth-service';
+import { type AuthedRequest, requireIntegrationAccess } from '../../auth-service';
 import { httpJson } from '../../utils/http';
 import { CredentialService } from '../../credential-service';
 import { asyncHandler } from '../../utils/async-handler';
@@ -27,22 +27,11 @@ const log = logger('FacebookIntegration');
 const FB_API_VERSION = 'v25.0';
 
 /**
- * Middleware that allows access to managers/admins OR any user with canManageIntegrations=true.
- * Used for Facebook endpoints so that users explicitly granted integration management access
- * can manage the Facebook connection regardless of their role.
+ * Authorizes access to Facebook integration endpoints. Managers/admins always pass;
+ * delegated users (canManageIntegrations) must also have 'facebook-leads' in their
+ * allowedIntegrations allowlist (a null/empty allowlist means "all integrations").
  */
-const requireFacebookAccess: RequestHandler = (req: Request, res: Response, next: NextFunction): void => {
-  const user = (req as AuthedRequest).user;
-  if (!user) {
-    res.status(401).json({ message: 'Authentication required' });
-    return;
-  }
-  if (['manager', 'admin', 'super_admin'].includes(user.role) || user.canManageIntegrations) {
-    next();
-  } else {
-    res.status(403).json({ message: 'You do not have permission to manage the Facebook integration' });
-  }
-};
+const requireFacebookAccess = requireIntegrationAccess('facebook-leads');
 
 function getBaseUrl(req: Request): string {
   const proto = (req.get('x-forwarded-proto') || req.protocol) as string;

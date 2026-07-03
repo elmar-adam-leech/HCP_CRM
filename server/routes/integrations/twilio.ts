@@ -3,7 +3,7 @@ import { storage } from "../../storage";
 import {
   type AuthedRequest,
   requireAuth,
-  requireIntegrationManager,
+  requireIntegrationAccess,
 } from "../../auth-service";
 import { asyncHandler } from "../../utils/async-handler";
 import { logger } from "../../utils/logger";
@@ -29,7 +29,7 @@ export function registerTwilioRoutes(app: Express): void {
   // Re-sync numbers from Twilio and (re)configure webhooks for each
   app.post(
     "/api/twilio/sync",
-    requireIntegrationManager,
+    requireIntegrationAccess('twilio'),
     asyncHandler(async (req: AuthedRequest, res: Response) => {
       const sync = await syncTwilioNumbers(req.user.contractorId);
       let configured = 0;
@@ -55,7 +55,7 @@ export function registerTwilioRoutes(app: Express): void {
   // numbers and any Messaging Service that owns them, without changing anything.
   app.get(
     "/api/twilio/inbound-routing",
-    requireIntegrationManager,
+    requireIntegrationAccess('twilio'),
     asyncHandler(async (req: AuthedRequest, res: Response) => {
       try {
         const status = await inspectTwilioInboundRouting(req.user.contractorId);
@@ -76,7 +76,7 @@ export function registerTwilioRoutes(app: Express): void {
   // Contractor-level Twilio settings (admin/manager only)
   app.get(
     "/api/twilio/settings",
-    requireIntegrationManager,
+    requireIntegrationAccess('twilio'),
     asyncHandler(async (req: AuthedRequest, res: Response) => {
       const contractor = await storage.getContractor(req.user.contractorId);
       res.json({
@@ -90,7 +90,7 @@ export function registerTwilioRoutes(app: Express): void {
 
   app.patch(
     "/api/twilio/settings",
-    requireIntegrationManager,
+    requireIntegrationAccess('twilio'),
     asyncHandler(async (req: AuthedRequest, res: Response) => {
       const { defaultTwilioNumber, twilioRecordCalls, twilioInboundCallMode, twilioRingTree } = req.body ?? {};
       const updates: Record<string, unknown> = {};

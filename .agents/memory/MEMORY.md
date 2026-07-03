@@ -4,3 +4,4 @@
 - [jsdom Radix Select + day-picker tests](jsdom-radix-daypicker-tests.md) — polyfill scrollIntoView/pointer-capture before render or Radix Select crashes the whole tree; nav to next month for enabled days.
 - [Calls history page](calls-history-page.md) — /api/calls lists type='call' activities incl. unassigned (contactId NULL); otherPartyNumber derived server-side from metadata by direction.
 - [npm audit nested transitive vuln](npm-audit-nested-transitive-vuln.md) — bumping a top-level dep can leave a stale vulnerable version nested under a devDependency; run `npm dedupe` and re-audit.
+- [Per-integration authorization](integration-authorization.md) — use `requireIntegrationAccess(key)`/`canAccessIntegration()` from auth-service.ts for integration-specific routes, not the coarser `requireIntegrationManager`.

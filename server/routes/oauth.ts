@@ -5,7 +5,7 @@ import { db } from "../db";
 import { eq } from "drizzle-orm";
 import { gmailService } from "../gmail-service";
 import { googleCalendarService } from "../google-calendar-service";
-import { AuthService, type AuthedRequest } from "../auth-service";
+import { AuthService, canAccessIntegration, type AuthedRequest } from "../auth-service";
 type AuthenticatedRequest = AuthedRequest;
 import { asyncHandler } from "../utils/async-handler";
 import { syncScheduler } from "../sync-scheduler";
@@ -17,9 +17,7 @@ const log = logger('OAuthRoutes');
 export function registerOAuthRoutes(app: Express): void {
   app.get("/api/settings/shared-email", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user) { res.status(401).json({ message: "Not authenticated" }); return; }
-    const role = req.user.role;
-    const isAdmin = role === 'admin' || role === 'super_admin' || role === 'manager';
-    if (!isAdmin && !req.user.canManageIntegrations) {
+    if (!canAccessIntegration(req.user, 'gmail')) {
       res.status(403).json({ message: "Only managers and admins can view the shared company email settings" });
       return;
     }
@@ -45,9 +43,7 @@ export function registerOAuthRoutes(app: Express): void {
 
   app.post("/api/settings/shared-email/sync", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user) { res.status(401).json({ message: "Not authenticated" }); return; }
-    const role = req.user.role;
-    const isAdmin = role === 'admin' || role === 'super_admin' || role === 'manager';
-    if (!isAdmin && !req.user.canManageIntegrations) {
+    if (!canAccessIntegration(req.user, 'gmail')) {
       res.status(403).json({ message: "Only managers and admins can trigger a shared email sync" });
       return;
     }
@@ -77,9 +73,7 @@ export function registerOAuthRoutes(app: Express): void {
 
   app.get("/api/settings/shared-email/oauth/start", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user) { res.status(401).json({ message: "Not authenticated" }); return; }
-    const role = req.user.role;
-    const isAdmin = role === 'admin' || role === 'super_admin' || role === 'manager';
-    if (!isAdmin && !req.user.canManageIntegrations) {
+    if (!canAccessIntegration(req.user, 'gmail')) {
       res.status(403).json({ message: "Only managers and admins can connect the shared company email" });
       return;
     }
@@ -108,9 +102,7 @@ export function registerOAuthRoutes(app: Express): void {
 
   app.delete("/api/settings/shared-email", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user) { res.status(401).json({ message: "Not authenticated" }); return; }
-    const role = req.user.role;
-    const isAdmin = role === 'admin' || role === 'super_admin' || role === 'manager';
-    if (!isAdmin && !req.user.canManageIntegrations) {
+    if (!canAccessIntegration(req.user, 'gmail')) {
       res.status(403).json({ message: "Only managers and admins can disconnect the shared company email" });
       return;
     }

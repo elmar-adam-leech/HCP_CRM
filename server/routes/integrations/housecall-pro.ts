@@ -2,7 +2,7 @@ import type { Express, Response } from "express";
 import { housecallProService } from "../../hcp/index";
 import { storage } from "../../storage";
 import type { Contractor } from "@shared/schema";
-import { requireIntegrationManager, type AuthedRequest } from "../../auth-service";
+import { requireIntegrationAccess, type AuthedRequest } from "../../auth-service";
 import { asyncHandler } from "../../utils/async-handler";
 import { isIntegrationEnabledCached } from "../../services/cache";
 import { logger } from "../../utils/logger";
@@ -198,12 +198,12 @@ export function registerHousecallProRoutes(app: Express): void {
     res.json(scheduledEstimates);
   }));
 
-  app.get("/api/integrations/housecall-pro/lead-source", requireIntegrationManager, asyncHandler(async (req: AuthedRequest, res: Response) => {
+  app.get("/api/integrations/housecall-pro/lead-source", requireIntegrationAccess('housecall-pro'), asyncHandler(async (req: AuthedRequest, res: Response) => {
     const creds = await CredentialService.getCredentialsWithFallback(req.user.contractorId, 'housecall-pro');
     res.json({ leadSource: creds.lead_source || null });
   }));
 
-  app.post("/api/integrations/housecall-pro/lead-source", requireIntegrationManager, asyncHandler(async (req: AuthedRequest, res: Response) => {
+  app.post("/api/integrations/housecall-pro/lead-source", requireIntegrationAccess('housecall-pro'), asyncHandler(async (req: AuthedRequest, res: Response) => {
     const schema = z.object({ leadSource: z.string() });
     const parsed = parseBody(schema, req, res);
     if (!parsed) return;
@@ -216,7 +216,7 @@ export function registerHousecallProRoutes(app: Express): void {
     res.json({ success: true });
   }));
 
-  app.get("/api/integrations/housecall-pro/lead-sources", requireIntegrationManager, asyncHandler(async (req: AuthedRequest, res: Response) => {
+  app.get("/api/integrations/housecall-pro/lead-sources", requireIntegrationAccess('housecall-pro'), asyncHandler(async (req: AuthedRequest, res: Response) => {
     const creds = await CredentialService.getServiceCredentials(req.user.contractorId, 'housecall-pro');
     let sources: string[] = [];
     if (creds.lead_sources_cache) {
@@ -236,7 +236,7 @@ export function registerHousecallProRoutes(app: Express): void {
     res.json({ sources });
   }));
 
-  app.post("/api/integrations/housecall-pro/lead-sources/refresh", requireIntegrationManager, asyncHandler(async (req: AuthedRequest, res: Response) => {
+  app.post("/api/integrations/housecall-pro/lead-sources/refresh", requireIntegrationAccess('housecall-pro'), asyncHandler(async (req: AuthedRequest, res: Response) => {
     await syncHcpLeadSources(req.user.contractorId);
     const freshCreds = await CredentialService.getServiceCredentials(req.user.contractorId, 'housecall-pro');
     let sources: string[] = [];
@@ -246,7 +246,7 @@ export function registerHousecallProRoutes(app: Express): void {
     res.json({ sources });
   }));
 
-  app.get("/api/settings/hcp-lead-source-mapping", requireIntegrationManager, asyncHandler(async (req: AuthedRequest, res: Response) => {
+  app.get("/api/settings/hcp-lead-source-mapping", requireIntegrationAccess('housecall-pro'), asyncHandler(async (req: AuthedRequest, res: Response) => {
     const creds = await CredentialService.getServiceCredentials(req.user.contractorId, 'housecall-pro');
     let mapping: Record<string, string> = {};
     if (creds.lead_source_mapping) {
@@ -256,7 +256,7 @@ export function registerHousecallProRoutes(app: Express): void {
     res.json({ mapping, defaultLeadSource });
   }));
 
-  app.patch("/api/settings/hcp-lead-source-mapping", requireIntegrationManager, asyncHandler(async (req: AuthedRequest, res: Response) => {
+  app.patch("/api/settings/hcp-lead-source-mapping", requireIntegrationAccess('housecall-pro'), asyncHandler(async (req: AuthedRequest, res: Response) => {
     const schema = z.object({
       mapping: z.record(z.string()).optional(),
       defaultLeadSource: z.string().nullable().optional(),

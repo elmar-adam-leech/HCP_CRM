@@ -627,3 +627,47 @@ export const requireIntegrationManager = (req: AuthenticatedRequest, res: Respon
   }
   next();
 };
+
+/**
+ * Fine-grained check: does this user have access to a *specific* integration key?
+ *
+ * Managers/admins/super_admins always have access. A delegated user (canManageIntegrations)
+ * is restricted to their `allowedIntegrations` allowlist — a null/empty allowlist means
+ * "all integrations" (matches the intended product model documented in the admin UI).
+ *
+ * This is the single source of truth for per-integration authorization. Any route that
+ * manages a specific integration (Facebook, Google Local Services, Housecall Pro, Twilio,
+ * shared Gmail, etc.) MUST use this (via `requireIntegrationAccess`) rather than the
+ * broader `requireIntegrationManager`, which only checks the coarse `canManageIntegrations`
+ * flag and does not respect the per-user allowlist.
+ */
+export function canAccessIntegration(
+  user: { role: string; canManageIntegrations: boolean; allowedIntegrations?: string[] | null },
+  integrationKey: string,
+): boolean {
+  if (user.role === 'admin' || user.role === 'super_admin' || user.role === 'manager') return true;
+  if (!user.canManageIntegrations) return false;
+  const allowed = user.allowedIntegrations;
+  if (!allowed || allowed.length === 0) return true;
+  return allowed.includes(integrationKey);
+}
+
+/**
+ * Middleware factory: authorize a request against a specific integration key using
+ * `canAccessIntegration`. Use this in place of `requireIntegrationManager` for any
+ * integration-specific route (sync, settings, employee mapping, connect/disconnect, etc.)
+ * so a delegated user's `allowedIntegrations` allowlist is actually enforced.
+ */
+export const requireIntegrationAccess = (integrationKey: string) => {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      res.status(401).json({ message: 'Unauthorized' });
+      return;
+    }
+    if (!canAccessIntegration(req.user, integrationKey)) {
+      res.status(403).json({ message: 'You do not have permission to manage this integration.' });
+      return;
+    }
+    next();
+  };
+};

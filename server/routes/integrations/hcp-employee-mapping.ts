@@ -3,7 +3,7 @@ import { z } from "zod";
 import { db } from "../../db";
 import { employees, userContractors, users } from "@shared/schema";
 import { and, eq, asc } from "drizzle-orm";
-import { requireIntegrationManager, type AuthedRequest } from "../../auth-service";
+import { requireIntegrationAccess, type AuthedRequest } from "../../auth-service";
 import { asyncHandler } from "../../utils/async-handler";
 import { parseBody } from "../../utils/validate-body";
 import { logger } from "../../utils/logger";
@@ -23,7 +23,7 @@ export function registerHcpEmployeeMappingRoutes(app: Express): void {
   // user_contractor link (if any) and the linked user's display info.
   app.get(
     "/api/integrations/hcp/employees",
-    requireIntegrationManager,
+    requireIntegrationAccess('housecall-pro'),
     asyncHandler(async (req: AuthedRequest, res: Response) => {
       const tenantId = req.user.contractorId;
       const rows = await db
@@ -58,7 +58,7 @@ export function registerHcpEmployeeMappingRoutes(app: Express): void {
   // users.
   app.get(
     "/api/integrations/hcp/salesperson-options",
-    requireIntegrationManager,
+    requireIntegrationAccess('housecall-pro'),
     asyncHandler(async (req: AuthedRequest, res: Response) => {
       const tenantId = req.user.contractorId;
       const rows = await db
@@ -85,7 +85,7 @@ export function registerHcpEmployeeMappingRoutes(app: Express): void {
   // userContractorId: null to clear the link.
   app.patch(
     "/api/integrations/hcp/employees/:id",
-    requireIntegrationManager,
+    requireIntegrationAccess('housecall-pro'),
     asyncHandler(async (req: AuthedRequest, res: Response) => {
       const tenantId = req.user.contractorId;
       const employeeId = req.params.id;
@@ -142,7 +142,7 @@ export function registerHcpEmployeeMappingRoutes(app: Express): void {
   // tenant. Returns the count of rows updated for each entity.
   app.post(
     "/api/integrations/hcp/backfill-assignments",
-    requireIntegrationManager,
+    requireIntegrationAccess('housecall-pro'),
     asyncHandler(async (req: AuthedRequest, res: Response) => {
       const tenantId = req.user.contractorId;
       log.info(`[backfill-assignments] starting for tenant=${tenantId}`);

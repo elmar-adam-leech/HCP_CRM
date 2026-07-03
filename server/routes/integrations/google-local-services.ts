@@ -22,9 +22,9 @@
  *   GOOGLE_LOCAL_SERVICES_DEVELOPER_TOKEN
  *   JWT_SECRET (for signed OAuth state — same as Facebook integration)
  */
-import type { Express, Request, Response, RequestHandler } from 'express';
+import type { Express, Request, Response } from 'express';
 import crypto from 'crypto';
-import { type AuthedRequest } from '../../auth-service';
+import { type AuthedRequest, requireIntegrationAccess } from '../../auth-service';
 import { CredentialService } from '../../credential-service';
 import { asyncHandler } from '../../utils/async-handler';
 import { logger } from '../../utils/logger';
@@ -56,15 +56,12 @@ const log = logger('GoogleLocalServicesIntegration');
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const SCOPE = 'https://www.googleapis.com/auth/adwords';
 
-const requireGlsAccess: RequestHandler = (req: Request, res: Response, next) => {
-  const user = (req as AuthedRequest).user;
-  if (!user) { res.status(401).json({ message: 'Authentication required' }); return; }
-  if (['manager', 'admin', 'super_admin'].includes(user.role) || user.canManageIntegrations) {
-    next();
-    return;
-  }
-  res.status(403).json({ message: 'You do not have permission to manage the Google Local Services integration' });
-};
+/**
+ * Authorizes access to Google Local Services integration endpoints. Managers/admins
+ * always pass; delegated users (canManageIntegrations) must also have GLS_SERVICE in
+ * their allowedIntegrations allowlist (a null/empty allowlist means "all integrations").
+ */
+const requireGlsAccess = requireIntegrationAccess(GLS_SERVICE);
 
 function getBaseUrl(req: Request): string {
   const proto = (req.get('x-forwarded-proto') || req.protocol) as string;
