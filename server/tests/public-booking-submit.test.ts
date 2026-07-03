@@ -250,10 +250,11 @@ describe('POST /api/public/book/:slug — duplicate-contact prevention', () => {
     expect(bookAppointmentMock.mock.calls[0][1].contactId).toBe('contact-A');
   });
 
-  it('(b) no token + both email AND phone match the same stored contact reuses it (task #792)', async () => {
-    // Without a short-code token, the email+phone fallback kicks in: the
-    // matched contact carries BOTH submitted identifiers, so we reuse rather
-    // than duplicate.
+  it('(b) no token + both email AND phone match the same stored contact still creates a fresh contact (task #887)', async () => {
+    // Task #887: email+phone are not proof of ownership on this unauthenticated
+    // public route. Even when both submitted identifiers match a stored
+    // contact, without a valid bookingCode token the request MUST create a
+    // fresh contact rather than reuse/mutate the existing CRM record.
     storageMock.findMatchingContact.mockResolvedValue('existing-1');
     storageMock.getContactByBookingCode.mockResolvedValue(undefined);
     storageMock.getContact.mockResolvedValue({
@@ -264,13 +265,14 @@ describe('POST /api/public/book/:slug — duplicate-contact prevention', () => {
       address: '123 Maple St, Springfield, IL 62701',
       street: '123 Maple St',
     });
+    storageMock.createContact.mockResolvedValue({ id: 'new-1', name: 'Reema Saeed' });
     const app = makeApp();
     const r = await postBook(app, { ...baseBody });
     expect(r.status).toBe(200);
-    expect(r.body.booking.contactId).toBe('existing-1');
-    expect(storageMock.createContact).not.toHaveBeenCalled();
-    expect(storageMock.getContact).toHaveBeenCalledWith('existing-1', TENANT_ID);
-    expect(bookAppointmentMock.mock.calls[0][1].contactId).toBe('existing-1');
+    expect(r.body.booking.contactId).toBe('new-1');
+    expect(storageMock.createContact).toHaveBeenCalledTimes(1);
+    expect(storageMock.updateContact).not.toHaveBeenCalled();
+    expect(bookAppointmentMock.mock.calls[0][1].contactId).toBe('new-1');
   });
 
   it('(c) no link + ONLY email matches (phone does not) still creates a fresh contact (security guardrail)', async () => {

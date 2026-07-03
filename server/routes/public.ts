@@ -414,61 +414,29 @@ export function registerPublicRoutes(app: Express): void {
     //      types email/phone for contact B still books against A — the
     //      submitted identifiers are NEVER allowed to redirect the booking
     //      to a different contact than the token holds.
-    //   2. No token + submitted email AND phone BOTH appear on the same
-    //      stored contact → reuse that contact. Both identifiers together
-    //      are strong enough evidence of ownership for the booking flow.
-    //   3. Anything weaker (no token + only one identifier matches, or no
-    //      match at all) → create a fresh contact so no status transitions,
-    //      workflow side-effects, or field mutations are applied to any
-    //      pre-existing CRM record. (Security guardrail from task #776.)
+    //   2. Anything else (no token, regardless of whether submitted email
+    //      and/or phone happen to match a stored contact) → create a fresh
+    //      contact so no status transitions, workflow side-effects, or field
+    //      mutations are applied to any pre-existing CRM record.
     //
-    // The previous implementation gated the token check on findMatchingContact
-    // returning the same id, which meant a token for contact A could be
-    // silently discarded when the submitted identifiers matched contact B.
-    // That left the request to fall through to createContact (or, under task
-    // #792's first draft, to the email+phone fallback against B), routing
-    // status/workflow side effects to the wrong contact. The token now wins
-    // outright.
+    // Task #887: the previous implementation also reused (and let the caller
+    // mutate the address of) an existing contact when the submitted email AND
+    // phone both matched a stored record, on the theory that both identifiers
+    // together were "strong enough evidence of ownership". They are not —
+    // email addresses and phone numbers are not secrets, and this let anyone
+    // who knew a customer's contact details book against that customer's CRM
+    // record and overwrite their saved address without ever holding the
+    // private booking link. A valid `bookingCode` token is the only accepted
+    // proof of ownership for reusing/mutating an existing contact; every other
+    // case creates a brand-new contact, exactly like the no-match case always
+    // did.
     let tokenContact: Awaited<ReturnType<typeof storage.getContactByBookingCode>> | null = null;
     if (bookingCode) {
       tokenContact = (await storage.getContactByBookingCode(bookingCode as string, contractor.id)) ?? null;
     }
 
-    // Email+phone fallback is only consulted when there is no valid token.
-    let bothIdentifiersMatchContactId: string | null = null;
-    if (!tokenContact && email && phone) {
-      const submittedEmailLower = String(email).toLowerCase();
-      const submittedPhoneDigits = String(phone).replace(/\D/g, '');
-      const submittedPhoneNorm = submittedPhoneDigits.length > 10
-        ? submittedPhoneDigits.slice(-10)
-        : submittedPhoneDigits;
-      if (submittedPhoneNorm.length > 0) {
-        const candidateId = await storage.findMatchingContact(contractor.id, emails, phones);
-        if (candidateId) {
-          const existing = await storage.getContact(candidateId, contractor.id);
-          if (existing) {
-            const emailMatch = (existing.emails ?? []).some(
-              (e) => typeof e === 'string' && e.toLowerCase() === submittedEmailLower,
-            );
-            const phoneMatch = (existing.phones ?? []).some((p) => {
-              if (typeof p !== 'string') return false;
-              const d = p.replace(/\D/g, '');
-              if (d.length === 0) return false;
-              const n = d.length > 10 ? d.slice(-10) : d;
-              return n === submittedPhoneNorm;
-            });
-            if (emailMatch && phoneMatch) {
-              bothIdentifiersMatchContactId = candidateId;
-            }
-          }
-        }
-      }
-    }
-
-    const reuseContactId: string | null =
-      tokenContact ? tokenContact.id : bothIdentifiersMatchContactId;
-    const matchedVia: 'token' | 'email+phone' | 'none' =
-      tokenContact ? 'token' : bothIdentifiersMatchContactId ? 'email+phone' : 'none';
+    const reuseContactId: string | null = tokenContact ? tokenContact.id : null;
+    const matchedVia: 'token' | 'none' = tokenContact ? 'token' : 'none';
 
     let contactId: string;
     let createdNewContact = false;
