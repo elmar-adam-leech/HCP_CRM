@@ -322,18 +322,18 @@ export async function getSalespersonDaySlots(
   const [year, month, day] = dateStr.split('-').map(Number);
   const noonAnchor = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
 
-  const dayOfWeek = getDayOfWeekInTimezone(noonAnchor, timezone);
-  if (!sp.workingDays.includes(dayOfWeek)) {
-    return { slots: [], durationMinutes, bufferMinutes };
-  }
+  // Task #889: the INTERNAL calendar lets reps book ANY time after now — not
+  // just within the salesperson's configured working days/hours. Generate
+  // candidate start times across the WHOLE calendar day (00:00 → 24:00 in the
+  // contractor's timezone) and filter to times at or after the current moment
+  // below. Working-day / working-hour restrictions are deliberately NOT applied
+  // here; they remain in force only on the public availability path.
+  const dayStart = createDateInTimezone(noonAnchor, 0, 0, timezone);
+  const nextNoonAnchor = new Date(Date.UTC(year, month - 1, day + 1, 12, 0, 0));
+  const dayEnd = createDateInTimezone(nextNoonAnchor, 0, 0, timezone);
 
-  const workStart = parseWorkingHours(sp.workingHoursStart || "08:00");
-  const workEnd = parseWorkingHours(sp.workingHoursEnd || "17:00");
-  const dayStart = createDateInTimezone(noonAnchor, workStart.hours, workStart.minutes, timezone);
-  const dayEnd = createDateInTimezone(noonAnchor, workEnd.hours, workEnd.minutes, timezone);
-
-  // Widen the busy-window query so appointments starting just before the work
-  // day (whose buffer/tail could overlap early slots) are still fetched.
+  // Widen the busy-window query so appointments starting just before the day
+  // (whose buffer/tail could overlap early slots) are still fetched.
   const queryStart = new Date(dayStart.getTime() - bufferMinutes * 60 * 1000);
   const queryEnd = new Date(dayEnd.getTime() + bufferMinutes * 60 * 1000);
 

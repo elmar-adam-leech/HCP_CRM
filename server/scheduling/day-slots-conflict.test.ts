@@ -1,14 +1,17 @@
 /**
- * Regression coverage for internal flexible scheduling (task #859 → #871).
+ * Regression coverage for internal flexible scheduling (task #859 → #889).
  *
  * `getSalespersonDaySlots` powers the in-app booker's time picker. Unlike the
- * public availability path (which returns only free gaps), it must return EVERY
- * candidate start time across the salesperson's working window and FLAG the ones
- * that overlap an existing appointment with `conflict: true` — WITHOUT omitting
- * them. Staff are intentionally allowed to double-book a busy time.
+ * public availability path (which returns only free gaps within working hours),
+ * it must return EVERY candidate start time across the WHOLE calendar day
+ * (00:00 → 24:00, task #889 — no longer restricted to working days/hours),
+ * keeping only times at or after now, and FLAG the ones that overlap an existing
+ * appointment with `conflict: true` — WITHOUT omitting them. Staff are
+ * intentionally allowed to book any time going forward, including off-hours and
+ * non-working days, and to double-book a busy time.
  *
  * These tests pin that contract so a future change cannot quietly re-hide or
- * drop conflicting times.
+ * drop conflicting times, or re-impose working-hour limits.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -101,10 +104,11 @@ describe('getSalespersonDaySlots — conflict flagging (task #871)', () => {
     expect(durationMinutes).toBe(60);
     expect(bufferMinutes).toBe(30);
 
-    // 08:00–17:00 working window, 60-min slots stepped every 15 min: the last
-    // slot that still fits is 16:00–17:00. That is 33 candidate times, none of
-    // which are omitted regardless of conflict.
-    expect(slots.length).toBe(33);
+    // Full 00:00–24:00 calendar day, 60-min slots stepped every 15 min: the
+    // last slot that still fits is 23:00–24:00. That is 93 candidate times
+    // (00:00 → 23:00 inclusive, every 15 min), none of which are omitted
+    // regardless of conflict. Working hours no longer bound the internal picker.
+    expect(slots.length).toBe(93);
 
     // The list must contain BOTH conflicting and free candidate times.
     const conflicting = slots.filter(s => s.conflict);
@@ -136,7 +140,7 @@ describe('getSalespersonDaySlots — conflict flagging (task #871)', () => {
 
     const { slots } = await getSalespersonDaySlots(TENANT, DATE, SALESPERSON_ID, TZ);
 
-    expect(slots.length).toBe(33);
+    expect(slots.length).toBe(93);
     expect(slots.every(s => s.conflict === false)).toBe(true);
   });
 
@@ -146,5 +150,31 @@ describe('getSalespersonDaySlots — conflict flagging (task #871)', () => {
 
     const { slots } = await getSalespersonDaySlots(TENANT, DATE, 'unknown-sp', TZ);
     expect(slots).toEqual([]);
+  });
+
+  it('offers off-hours times (before work-start and after work-end) — internal picker ignores working hours (task #889)', async () => {
+    selectMock
+      .mockReturnValueOnce([{ duration: 60, buffer: 30 }])
+      .mockReturnValueOnce([]); // no bookings
+
+    const { slots } = await getSalespersonDaySlots(TENANT, DATE, SALESPERSON_ID, TZ);
+
+    const isoStarts = new Set(slots.map(s => s.start.toISOString()));
+    // 00:00 EDT (04:00 UTC) — before the 08:00 work-start — is now selectable.
+    expect(isoStarts.has('2027-07-08T04:00:00.000Z')).toBe(true);
+    // 20:00 EDT (00:00 UTC next day) — after the 17:00 work-end — is now selectable.
+    expect(isoStarts.has('2027-07-09T00:00:00.000Z')).toBe(true);
+  });
+
+  it('offers times on a non-working day — internal picker ignores working days (task #889)', async () => {
+    selectMock
+      .mockReturnValueOnce([{ duration: 60, buffer: 30 }])
+      .mockReturnValueOnce([]); // no bookings
+
+    // 2027-07-10 is a Saturday (day 6), which is NOT in workingDays [1..5].
+    const { slots } = await getSalespersonDaySlots(TENANT, '2027-07-10', SALESPERSON_ID, TZ);
+
+    expect(slots.length).toBe(93);
+    expect(slots.every(s => s.conflict === false)).toBe(true);
   });
 });
