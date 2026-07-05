@@ -73,7 +73,7 @@ const getMenuItems = (terminology?: Partial<TerminologySettings>) => [
     icon: BookUser,
   },
   {
-    title: "Calls",
+    title: "Call Log",
     url: "/calls",
     icon: Phone,
   },
