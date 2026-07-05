@@ -10,7 +10,7 @@ import { logger } from "../../utils/logger";
 import { syncTwilioNumbers } from "../../twilio/numbers";
 import { configureTwilioWebhooks, inspectTwilioInboundRouting } from "../../twilio/webhook-config";
 import { fetchTwilioRecording } from "../../twilio/recordings";
-import { isIntegrationEnabledCached } from "../../services/cache";
+import { isIntegrationEnabledCached, cacheInvalidation } from "../../services/cache";
 import { twilioRingTreeSchema } from "@shared/schema";
 
 const log = logger("TwilioRoutes");
@@ -172,6 +172,13 @@ export function registerTwilioRoutes(app: Express): void {
         req.user.userId,
         req.user.contractorId,
         updates as never,
+      );
+      // The membership row (twilioPhoneToRing / twilioDefaultNumber) is served
+      // from getUserContractorCached via /api/auth/me. Invalidate it so the
+      // saved value is reflected immediately on refresh instead of after TTL.
+      cacheInvalidation.invalidateUserContractor(
+        req.user.userId,
+        req.user.contractorId,
       );
       res.json({
         twilioDefaultNumber: updated?.twilioDefaultNumber ?? null,
