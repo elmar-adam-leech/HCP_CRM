@@ -150,7 +150,19 @@ export function registerTwilioRoutes(app: Express): void {
         updates.twilioDefaultNumber = twilioDefaultNumber || null;
       }
       if (twilioPhoneToRing !== undefined) {
-        updates.twilioPhoneToRing = twilioPhoneToRing || null;
+        const raw = typeof twilioPhoneToRing === "string" ? twilioPhoneToRing.trim() : "";
+        if (raw === "") {
+          updates.twilioPhoneToRing = null;
+        } else {
+          const digits = raw.replace(/\D/g, "");
+          if (digits.length < 10 || digits.length > 15) {
+            res.status(400).json({
+              message: "Enter a valid phone number, or leave blank to clear.",
+            });
+            return;
+          }
+          updates.twilioPhoneToRing = raw;
+        }
       }
       if (Object.keys(updates).length === 0) {
         res.status(400).json({ message: "No valid settings provided" });

@@ -20,6 +20,7 @@ import { useProviderConfig } from "@/hooks/use-provider-config";
 import { useIntegrationCard, getStatusIcon, getStatusText } from "@/hooks/use-integration-card";
 import { IntegrationCardShell } from "./IntegrationCardShell";
 import { TwilioRingTreeEditor, type RingTree } from "./TwilioRingTreeEditor";
+import { TwilioPhoneToRingField } from "./TwilioPhoneToRingField";
 
 interface TwilioNumber {
   id: string;
@@ -62,6 +63,12 @@ export function TwilioCard() {
 
   const isEnabled = integration?.isEnabled ?? false;
   const hasCredentials = integration?.hasCredentials ?? false;
+
+  // The per-rep "Phone to Ring" only matters when Twilio is the active calling
+  // provider (it's used by the Twilio bridge call).
+  const twilioIsCallingProvider = !!providerData?.configured?.find(
+    (p) => p.providerType === "calling" && p.isActive && p.callingProvider === "twilio",
+  );
 
   const { data: numbersData } = useQuery<{ numbers: TwilioNumber[] }>({
     queryKey: ["/api/twilio/numbers"],
@@ -309,6 +316,8 @@ export function TwilioCard() {
             <RefreshCw className={`h-4 w-4 mr-2 ${syncMutation.isPending ? "animate-spin" : ""}`} />
             {syncMutation.isPending ? "Syncing..." : "Sync Numbers & Webhooks"}
           </Button>
+
+          {twilioIsCallingProvider && <TwilioPhoneToRingField />}
 
           {isAdmin && (
             <div className="space-y-2" data-testid="twilio-inbound-routing">

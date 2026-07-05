@@ -116,3 +116,63 @@ export function formatPhoneNumber(phone: string): string {
   }
   return phone;
 }
+
+/**
+ * Returns true if the entry is a usable phone number or empty (empty clears the
+ * stored value). Validates by digit count (10-15 digits) rather than a brittle
+ * character-class regex, so any common formatting variation is accepted.
+ */
+export function isValidPhoneEntry(input: string): boolean {
+  const trimmed = input.trim();
+  if (trimmed === "") return true;
+  const digits = trimmed.replace(/\D/g, "");
+  return digits.length >= 10 && digits.length <= 15;
+}
+
+function groupUsDigits(d: string): string {
+  if (!d) return "";
+  if (d.length <= 3) return `(${d}`;
+  if (d.length <= 6) return `(${d.slice(0, 3)}) ${d.slice(3)}`;
+  return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6, 10)}`;
+}
+
+/**
+ * Progressively formats a phone number as the user types (and formats a
+ * complete stored value on load into one consistent style):
+ *  - US 10-digit numbers show as `(123) 456-7890`
+ *  - Numbers with a leading +1/country code keep the prefix: `+1 (123) 456-7890`
+ *  - Non-US / longer numbers fall back to a grouped display without breaking.
+ * Empty input stays empty (allowing the field to be cleared).
+ *
+ * Never truncates or invents digits: out-of-range input (e.g. more than 15
+ * digits) is preserved verbatim so validation can surface a clear error instead
+ * of the value being silently trimmed into a "valid" one.
+ */
+export function formatPhoneAsTyped(input: string): string {
+  const hasPlus = input.trimStart().startsWith("+");
+  const allDigits = input.replace(/\D/g, "");
+  if (!allDigits) return hasPlus ? "+" : "";
+
+  // Peel off a US "+1"/leading-1 country code so the national part can be
+  // grouped as a US number.
+  let prefix = "";
+  let national = allDigits;
+  if (
+    allDigits.startsWith("1") &&
+    (hasPlus || allDigits.length === 11)
+  ) {
+    prefix = "+1 ";
+    national = allDigits.slice(1);
+  }
+
+  // Apply US grouping only when the national part fits a US number (<=10 digits)
+  // and there's no non-US country code. Anything longer falls through to the raw
+  // fallback so lengths outside 10-15 stay visible to validation.
+  const isUsPath = prefix !== "" || !hasPlus;
+  if (isUsPath && national.length <= 10) {
+    return prefix + groupUsDigits(national);
+  }
+
+  // Fallback: keep every digit (never truncate); preserve a leading + if typed.
+  return (hasPlus ? "+" : "") + allDigits;
+}

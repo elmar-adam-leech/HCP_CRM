@@ -1,7 +1,6 @@
 import { AccountInfoCard } from "./AccountInfoCard";
 import { InstallAppCard } from "./InstallAppCard";
 import { CallingPreferenceCard } from "./CallingPreferenceCard";
-import { PhoneToRingCard } from "./PhoneToRingCard";
 import { BookingPageCard } from "./BookingPageCard";
 import { AiSchedulingAgentCard } from "./AiSchedulingAgentCard";
 import { TeamManagementCard } from "./TeamManagementCard";
@@ -17,7 +16,6 @@ export function AccountTab() {
       <AccountInfoCard />
       <InstallAppCard />
       <CallingPreferenceCard />
-      <PhoneToRingCard />
       <BookingPageCard />
       <AiSchedulingAgentCard />
       <TeamManagementCard />
