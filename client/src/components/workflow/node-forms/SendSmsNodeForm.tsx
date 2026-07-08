@@ -1,8 +1,11 @@
 import { useRef } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { formatPhoneNumber } from '@/lib/utils';
 import { VariableInputField, VariableTextareaField, AfterSendingSection, insertVariableAtCursor } from './shared-fields';
+import type { ResolvedDefaultFromNumber } from '../NodeEditDialog';
 
 interface SendSmsNodeFormProps {
   formData: Record<string, unknown>;
@@ -10,9 +13,11 @@ interface SendSmsNodeFormProps {
   entityType: "lead" | "estimate" | "job" | "customer";
   isAdmin: boolean;
   phoneNumbers: Array<{ id: string; phoneNumber: string; displayName?: string | null }>;
+  resolvedDefault?: ResolvedDefaultFromNumber;
+  resolvedDefaultLoading?: boolean;
 }
 
-export function SendSmsNodeForm({ formData, handleChange, entityType, isAdmin, phoneNumbers }: SendSmsNodeFormProps) {
+export function SendSmsNodeForm({ formData, handleChange, entityType, isAdmin, phoneNumbers, resolvedDefault, resolvedDefaultLoading }: SendSmsNodeFormProps) {
   const smsToRef = useRef<HTMLInputElement>(null);
   const messageRef = useRef<HTMLTextAreaElement>(null);
 
@@ -46,7 +51,22 @@ export function SendSmsNodeForm({ formData, handleChange, entityType, isAdmin, p
                 {phoneNumbers.map((phone) => <SelectItem key={phone.id} value={phone.phoneNumber}>{phone.displayName || phone.phoneNumber} ({phone.phoneNumber})</SelectItem>)}
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">By default, SMS messages use the workflow creator's default phone number</p>
+            {resolvedDefaultLoading ? (
+              <p className="text-xs text-muted-foreground" data-testid="text-sms-default-loading">Looking up default number…</p>
+            ) : resolvedDefault?.fromNumber ? (
+              <p className="text-xs text-muted-foreground" data-testid="text-sms-default-resolved">
+                Default: {resolvedDefault.displayName
+                  ? `${resolvedDefault.displayName} (${formatPhoneNumber(resolvedDefault.fromNumber)})`
+                  : formatPhoneNumber(resolvedDefault.fromNumber)}
+              </p>
+            ) : resolvedDefault?.error ? (
+              <p className="text-xs text-amber-600 dark:text-amber-400 flex items-start gap-1" data-testid="text-sms-default-warning">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                <span>No default From number could be resolved — texts from this step will fail until you pick a number above or set a default in Settings.</span>
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">By default, SMS messages use the workflow creator's default phone number</p>
+            )}
           </div>
         </div>
       )}

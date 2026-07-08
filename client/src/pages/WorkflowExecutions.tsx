@@ -25,6 +25,7 @@ import { formatDistanceToNow, differenceInHours, differenceInMinutes } from 'dat
 import { Link } from 'wouter';
 import { PageLayout } from '@/components/ui/page-layout';
 import { apiRequest } from '@/lib/queryClient';
+import { formatPhoneNumber } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 import type { Workflow } from '@/types/workflow';
 
@@ -464,6 +465,11 @@ export default function WorkflowExecutions() {
                 const diag = isCondition
                   ? (log.result as ConditionDiagnostic | undefined)
                   : undefined;
+                // Task #905: Send SMS steps record which numbers were used.
+                // Older logs lack these fields — the line is simply omitted.
+                const smsResult = log.actionType === 'send_sms'
+                  ? (log.result as { fromNumber?: string; toNumber?: string } | undefined)
+                  : undefined;
                 return (
                   <div key={log.stepId || idx} className="flex items-start gap-3 py-1.5">
                     {getStepIcon(log.status)}
@@ -520,6 +526,17 @@ export default function WorkflowExecutions() {
 {JSON.stringify(diag, null, 2)}
                           </pre>
                         </details>
+                      )}
+                      {smsResult?.fromNumber && (
+                        <p
+                          className="text-xs text-muted-foreground mt-0.5 break-words"
+                          data-testid={`text-sms-numbers-${log.stepId || idx}`}
+                        >
+                          From <span className="font-mono">{formatPhoneNumber(smsResult.fromNumber)}</span>
+                          {smsResult.toNumber && (
+                            <> → To <span className="font-mono">{formatPhoneNumber(smsResult.toNumber)}</span></>
+                          )}
+                        </p>
                       )}
                       {log.status === 'skipped' && (
                         <p className="text-xs text-muted-foreground mt-0.5">

@@ -1,7 +1,8 @@
 import type { Express, Response } from "express";
 import { storage } from "../storage";
 import { insertWorkflowSchema, insertWorkflowStepSchema, workflowActionTypeEnum, auditLogs, contacts } from "@shared/schema";
-import { requireManagerOrAdmin, type AuthedRequest } from "../auth-service";
+import { requireAdmin, requireManagerOrAdmin, type AuthedRequest } from "../auth-service";
+import { resolveDefaultFromNumber } from "../workflow-actions/send-sms";
 import { workflowEngine } from "../workflow-engine";
 import { asyncHandler } from "../utils/async-handler";
 import { broadcastToContractor } from "../websocket";
@@ -36,6 +37,61 @@ export function registerWorkflowRoutes(app: Express): void {
   app.get("/api/workflows/pending-approval", requireManagerOrAdmin, asyncHandler(async (req: AuthedRequest, res: Response) => {
     const workflows = await storage.getWorkflowsPendingApproval(req.user.contractorId);
     res.json(workflows);
+  }));
+
+  /**
+   * Resolved default "From" number preview for the Send SMS node dialog
+   * (task #905). Answers "if this workflow's SMS step doesn't pick a From
+   * number, which number will actually be used?" by running the SAME
+   * provider-aware resolution the send path uses (resolveDefaultFromNumber,
+   * task #902). Admin-only — matches the visibility of the From dropdown in
+   * the node dialog. `creatorId` is the workflow creator; defaults to the
+   * requesting user for not-yet-saved workflows.
+   *
+   * Returns { fromNumber, displayName? } on success, or
+   * { error } (still HTTP 200) when no default can be resolved so the UI can
+   * show a warning instead of treating it as a request failure.
+   */
+  app.get("/api/workflows/resolved-default-from-number", requireAdmin, asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const contractorId = req.user.contractorId;
+    const creatorId = typeof req.query.creatorId === 'string' && req.query.creatorId
+      ? req.query.creatorId
+      : req.user.userId;
+
+    const creator = await storage.getUser(creatorId);
+    if (!creator || creator.contractorId !== contractorId) {
+      // Creator not in this tenant — mirror the send-path failure message.
+      res.json({ error: 'Workflow creator not found' });
+      return;
+    }
+
+    const membership = await storage.getUserContractor(creatorId, contractorId);
+    const resolved = await resolveDefaultFromNumber(contractorId, {
+      dialpadDefault: membership?.dialpadDefaultNumber ?? creator.dialpadDefaultNumber,
+      twilioDefault: membership?.twilioDefaultNumber,
+    });
+    if ('error' in resolved) {
+      res.json({ error: resolved.error });
+      return;
+    }
+
+    // Best-effort friendly name lookup across both providers' number tables.
+    let displayName: string | undefined;
+    try {
+      const twilioRow = await storage.getTwilioPhoneNumberByNumber(contractorId, resolved.fromNumber);
+      if (twilioRow?.displayName) {
+        displayName = twilioRow.displayName;
+      } else {
+        const dialpadRow = await storage.getDialpadPhoneNumberByNumber(contractorId, resolved.fromNumber);
+        if (dialpadRow?.displayName && dialpadRow.displayName !== dialpadRow.phoneNumber) {
+          displayName = dialpadRow.displayName;
+        }
+      }
+    } catch (err) {
+      log.warn('Failed to look up display name for resolved default From number', { err });
+    }
+
+    res.json({ fromNumber: resolved.fromNumber, ...(displayName ? { displayName } : {}) });
   }));
 
   /**

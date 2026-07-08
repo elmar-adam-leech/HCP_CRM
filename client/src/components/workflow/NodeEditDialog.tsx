@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Node } from 'reactflow';
 import { useQuery } from '@tanstack/react-query';
+import { apiRequest } from '@/lib/queryClient';
 import { useTerminologyContext } from '@/contexts/TerminologyContext';
 import { useUsers } from '@/hooks/useUsers';
 import { useAvailableFromNumbers } from '@/hooks/useAvailableFromNumbers';
@@ -32,9 +33,17 @@ type NodeEditDialogProps = {
   onClose: () => void;
   onSave: (nodeId: string, newData: Record<string, unknown>) => void;
   onDelete?: (nodeId: string) => void;
+  /** The workflow creator's user id — their default From number is what an SMS step falls back to. Omitted for unsaved workflows (current user is the creator). */
+  workflowCreatorId?: string;
 };
 
-export default function NodeEditDialog({ node, open, onClose, onSave, onDelete }: NodeEditDialogProps) {
+export type ResolvedDefaultFromNumber = {
+  fromNumber?: string;
+  displayName?: string;
+  error?: string;
+};
+
+export default function NodeEditDialog({ node, open, onClose, onSave, onDelete, workflowCreatorId }: NodeEditDialogProps) {
   const [formData, setFormData] = useState<Record<string, unknown>>({});
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
@@ -49,6 +58,18 @@ export default function NodeEditDialog({ node, open, onClose, onSave, onDelete }
   // Provider-agnostic picker source — merges numbers from every enabled
   // calling/texting integration (Dialpad, Twilio, ...), task #902.
   const { data: phoneNumbers = [] } = useAvailableFromNumbers('sms', isAdmin && open);
+
+  // Task #905: show which number "Use workflow creator's default" actually
+  // resolves to, using the same provider-aware logic as the send path.
+  const { data: resolvedDefault, isLoading: resolvedDefaultLoading } = useQuery<ResolvedDefaultFromNumber>({
+    queryKey: ['/api/workflows/resolved-default-from-number', workflowCreatorId ?? 'self'],
+    queryFn: async () => {
+      const qs = workflowCreatorId ? `?creatorId=${encodeURIComponent(workflowCreatorId)}` : '';
+      const response = await apiRequest('GET', `/api/workflows/resolved-default-from-number${qs}`);
+      return response.json();
+    },
+    enabled: isAdmin && open && node?.type === 'sendSMS',
+  });
 
   // Shared hooks — share cache entries across the whole app
   const { data: usersData = [] } = useUsers();
@@ -93,7 +114,7 @@ export default function NodeEditDialog({ node, open, onClose, onSave, onDelete }
       case 'sendEmail':
         return <SendEmailNodeForm formData={formData} handleChange={handleChange} entityType={entityType} isAdmin={isAdmin} gmailUsers={gmailUsers} />;
       case 'sendSMS':
-        return <SendSmsNodeForm formData={formData} handleChange={handleChange} entityType={entityType} isAdmin={isAdmin} phoneNumbers={phoneNumbers} />;
+        return <SendSmsNodeForm formData={formData} handleChange={handleChange} entityType={entityType} isAdmin={isAdmin} phoneNumbers={phoneNumbers} resolvedDefault={resolvedDefault} resolvedDefaultLoading={resolvedDefaultLoading} />;
       case 'notification':
         return <NotificationNodeForm formData={formData} handleChange={handleChange} entityType={entityType} />;
       case 'updateEntity':

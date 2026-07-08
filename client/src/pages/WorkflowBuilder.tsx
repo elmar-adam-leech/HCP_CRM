@@ -522,6 +522,7 @@ export default function WorkflowBuilder() {
 
       <NodeEditDialog
         node={selectedNode}
+        workflowCreatorId={workflow?.createdBy}
         open={!!selectedNode}
         onClose={() => setSelectedNode(null)}
         onSave={handleNodeSave}

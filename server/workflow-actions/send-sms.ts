@@ -247,7 +247,15 @@ export async function handleSendSMS(
 
     return {
       success: true,
-      data: { contactId: resolvedContactId, messageId: result.messageId, ...(saveWarning ? { saveWarning } : {}) },
+      data: {
+        contactId: resolvedContactId,
+        messageId: result.messageId,
+        // Task #905: record which numbers were actually used so the
+        // execution step timeline can show "From … → To …".
+        fromNumber: processedFromNumber,
+        toNumber: processedTo,
+        ...(saveWarning ? { saveWarning } : {}),
+      },
     };
 
   } catch (error) {
