@@ -14,10 +14,13 @@ import { invalidateReportsCache } from "../services/report-cache";
 // predicate (independent of visit/work status), while scheduled/in_progress
 // additionally require documentSentAt IS NULL so estimates that have been sent
 // don't double-count in the visit-status tabs. Approved/rejected unchanged.
-function statusTabFilter(status: string) {
+export function statusTabFilter(status: string) {
   if (status === 'sent') {
+    // An estimate counts as "sent" when either the document-sent timestamp is
+    // set (HCP webhook/sync) OR its status was set to 'sent' (manual change
+    // where documentSentAt may still be NULL — task #898).
     return and(
-      sql`${estimates.documentSentAt} IS NOT NULL`,
+      sql`(${estimates.documentSentAt} IS NOT NULL OR ${estimates.status} = 'sent')`,
       sql`${estimates.status} NOT IN ('approved', 'rejected')`,
     )!;
   }
@@ -226,7 +229,7 @@ async function getEstimatesStatusCounts(contractorId: string, options: {
   }
   const result = await db.select({
     all: count(),
-    sent: sql<number>`COUNT(CASE WHEN ${estimates.documentSentAt} IS NOT NULL AND ${estimates.status} NOT IN ('approved','rejected') THEN 1 END)`,
+    sent: sql<number>`COUNT(CASE WHEN (${estimates.documentSentAt} IS NOT NULL OR ${estimates.status} = 'sent') AND ${estimates.status} NOT IN ('approved','rejected') THEN 1 END)`,
     scheduled: sql<number>`COUNT(CASE WHEN ${estimates.status} = 'scheduled' AND ${estimates.documentSentAt} IS NULL THEN 1 END)`,
     in_progress: sql<number>`COUNT(CASE WHEN ${estimates.status} = 'in_progress' AND ${estimates.documentSentAt} IS NULL THEN 1 END)`,
     approved: sql<number>`COUNT(CASE WHEN ${estimates.status} = 'approved' THEN 1 END)`,
@@ -317,6 +320,20 @@ async function updateEstimate(id: string, estimate: UpdateEstimate, contractorId
   // status. We compare to the existing row so subsequent edits (notes, etc.)
   // and re-affirmations of the same status don't bump the timestamp. Callers
   // can still pass an explicit approvedAt/rejectedAt to override (e.g. backfill).
+  // Task #898: manually marking an estimate as 'sent' also stamps the sticky
+  // document-sent timestamp (if not already set) so the Sent tab, badge, and
+  // count all agree. Never overwrites an existing value; callers may still
+  // pass an explicit documentSentAt (e.g. HCP webhook/sync).
+  if (cleanEstimate.status === 'sent' && cleanEstimate.documentSentAt === undefined) {
+    const existing = await db.select({ documentSentAt: estimates.documentSentAt })
+      .from(estimates)
+      .where(and(eq(estimates.id, id), eq(estimates.contractorId, contractorId)))
+      .limit(1);
+    if (existing[0] && !existing[0].documentSentAt) {
+      cleanEstimate.documentSentAt = new Date();
+    }
+  }
+
   if (cleanEstimate.status === 'approved' || cleanEstimate.status === 'rejected') {
     const existing = await db.select({
       status: estimates.status,

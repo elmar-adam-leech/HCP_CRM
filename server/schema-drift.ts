@@ -148,6 +148,16 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       description: 'spam_audit_log.inbox_id FK: recreate with ON DELETE CASCADE (task #895 — inbox disconnect 500)',
     },
     {
+      // Task #898 — estimates whose status was manually set to 'sent' never
+      // got a document_sent_at stamp, so they were invisible to the Sent tab
+      // and count. Backfill from updated_at (fallback created_at/now).
+      // Idempotent: only touches rows where document_sent_at IS NULL.
+      sql: `UPDATE estimates
+            SET document_sent_at = COALESCE(updated_at, created_at, NOW())
+            WHERE status = 'sent' AND document_sent_at IS NULL`,
+      description: "backfill: stamp document_sent_at on estimates with status 'sent' but no sent timestamp (task #898 — Sent filter mismatch)",
+    },
+    {
       sql: `CREATE INDEX IF NOT EXISTS spam_audit_log_contractor_id_idx ON spam_audit_log(contractor_id)`,
       description: 'spam_audit_log.contractor_id index',
     },
