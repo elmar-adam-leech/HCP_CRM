@@ -209,6 +209,17 @@ export class ProviderService {
   }
 
   /**
+   * Public accessor for the tenant's active provider name (with enablement
+   * checks). Used by callers that need to make provider-specific decisions
+   * BEFORE sending — e.g. the workflow SMS action resolving a default "From"
+   * number against the provider that will actually perform the send.
+   * Throws when no enabled provider exists for the type.
+   */
+  async getActiveProviderName(contractorId: string, providerType: 'email' | 'sms' | 'calling'): Promise<string> {
+    return this.getTenantProvider(contractorId, providerType);
+  }
+
+  /**
    * Get contractor's preferred provider for a service type, with enablement checks
    */
   private async getTenantProvider(contractorId: string, providerType: 'email' | 'sms' | 'calling'): Promise<string> {

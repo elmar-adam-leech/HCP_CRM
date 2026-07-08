@@ -30,6 +30,80 @@ function parseSendSmsConfig(raw: Record<string, unknown>): SendSmsConfig {
   };
 }
 
+/**
+ * Dependencies for resolveDefaultFromNumber — injectable for unit tests.
+ */
+export interface DefaultFromNumberDeps {
+  getActiveSmsProvider: (contractorId: string) => Promise<string>;
+  getTwilioNumber: (contractorId: string, phoneNumber: string) => Promise<unknown | undefined>;
+  getContractor: (contractorId: string) => Promise<{ defaultTwilioNumber?: string | null; defaultDialpadNumber?: string | null } | undefined>;
+}
+
+const realDeps: DefaultFromNumberDeps = {
+  getActiveSmsProvider: (contractorId) => providerService.getActiveProviderName(contractorId, 'sms'),
+  getTwilioNumber: (contractorId, phoneNumber) => storage.getTwilioPhoneNumberByNumber(contractorId, phoneNumber),
+  getContractor: (contractorId) => storage.getContractor(contractorId),
+};
+
+/**
+ * Resolve the default "From" number for a workflow SMS step when the node
+ * doesn't specify one. Provider-aware (task #902): the default is validated
+ * against the tenant's ACTIVE SMS provider so a Twilio-only tenant no longer
+ * fails just because the creator's saved default is a Dialpad number (or
+ * vice versa).
+ *
+ * Resolution order:
+ *  - Twilio active:  creator default IF it exists in the tenant's Twilio
+ *    numbers → org `defaultTwilioNumber` → error.
+ *  - Dialpad active: creator default (unvalidated — preserves pre-#902
+ *    behavior for existing Dialpad workflows) → org `defaultDialpadNumber`
+ *    → error.
+ *  - Other provider: creator default → error.
+ */
+export async function resolveDefaultFromNumber(
+  contractorId: string,
+  creatorDefault: string | null | undefined,
+  deps: DefaultFromNumberDeps = realDeps,
+): Promise<{ fromNumber: string } | { error: string }> {
+  let provider: string;
+  try {
+    provider = await deps.getActiveSmsProvider(contractorId);
+  } catch (err) {
+    return {
+      error: err instanceof Error
+        ? err.message
+        : 'No enabled SMS provider found for this company.',
+    };
+  }
+
+  if (provider === 'twilio') {
+    if (creatorDefault) {
+      const owned = await deps.getTwilioNumber(contractorId, creatorDefault);
+      if (owned) return { fromNumber: creatorDefault };
+    }
+    const contractor = await deps.getContractor(contractorId);
+    if (contractor?.defaultTwilioNumber) {
+      return { fromNumber: contractor.defaultTwilioNumber };
+    }
+    return {
+      error: 'No "From" phone number is configured on this SMS step. Please edit the workflow node and select a phone number, or set a default Twilio number in Settings.',
+    };
+  }
+
+  if (creatorDefault) return { fromNumber: creatorDefault };
+
+  if (provider === 'dialpad') {
+    const contractor = await deps.getContractor(contractorId);
+    if (contractor?.defaultDialpadNumber) {
+      return { fromNumber: contractor.defaultDialpadNumber };
+    }
+  }
+
+  return {
+    error: 'No "From" phone number is configured on this SMS step. Please edit the workflow node and select a phone number.',
+  };
+}
+
 export async function handleSendSMS(
   config: Record<string, unknown>,
   context: ExecutionContext
@@ -69,15 +143,12 @@ export async function handleSendSMS(
         return { success: false, error: 'Workflow creator not found' };
       }
 
-      if (creator.dialpadDefaultNumber) {
-        processedFromNumber = creator.dialpadDefaultNumber;
-        log.info(`SMS: fromNumber not set on node — using creator's default number (workflowId: ${context.workflowId})`);
-      } else {
-        return {
-          success: false,
-          error: 'No "From" phone number is configured on this SMS step. Please edit the workflow node and select a Dialpad phone number.',
-        };
+      const resolved = await resolveDefaultFromNumber(context.contractorId, creator.dialpadDefaultNumber);
+      if ('error' in resolved) {
+        return { success: false, error: resolved.error };
       }
+      processedFromNumber = resolved.fromNumber;
+      log.info(`SMS: fromNumber not set on node — resolved provider-aware default (workflowId: ${context.workflowId})`);
     }
 
     log.info(`Sending SMS (workflowId: ${context.workflowId}, executionId: ${context.executionId})`);

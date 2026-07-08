@@ -9,7 +9,7 @@ interface SendSmsNodeFormProps {
   handleChange: (field: string, value: unknown) => void;
   entityType: "lead" | "estimate" | "job" | "customer";
   isAdmin: boolean;
-  phoneNumbers: Array<{ id: string; phoneNumber: string; displayName: string | null }>;
+  phoneNumbers: Array<{ id: string; phoneNumber: string; displayName?: string | null }>;
 }
 
 export function SendSmsNodeForm({ formData, handleChange, entityType, isAdmin, phoneNumbers }: SendSmsNodeFormProps) {
