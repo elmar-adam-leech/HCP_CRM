@@ -39,6 +39,16 @@ export interface DefaultFromNumberDeps {
   getContractor: (contractorId: string) => Promise<{ defaultTwilioNumber?: string | null; defaultDialpadNumber?: string | null } | undefined>;
 }
 
+/**
+ * Creator's own saved defaults, one per provider. Sourced from the
+ * contractor-scoped membership row (`user_contractors`) so multi-company
+ * users get the right default for THIS company.
+ */
+export interface CreatorDefaults {
+  dialpadDefault?: string | null;
+  twilioDefault?: string | null;
+}
+
 const realDeps: DefaultFromNumberDeps = {
   getActiveSmsProvider: (contractorId) => providerService.getActiveProviderName(contractorId, 'sms'),
   getTwilioNumber: (contractorId, phoneNumber) => storage.getTwilioPhoneNumberByNumber(contractorId, phoneNumber),
@@ -62,7 +72,7 @@ const realDeps: DefaultFromNumberDeps = {
  */
 export async function resolveDefaultFromNumber(
   contractorId: string,
-  creatorDefault: string | null | undefined,
+  creatorDefaults: CreatorDefaults,
   deps: DefaultFromNumberDeps = realDeps,
 ): Promise<{ fromNumber: string } | { error: string }> {
   let provider: string;
@@ -77,9 +87,9 @@ export async function resolveDefaultFromNumber(
   }
 
   if (provider === 'twilio') {
-    if (creatorDefault) {
-      const owned = await deps.getTwilioNumber(contractorId, creatorDefault);
-      if (owned) return { fromNumber: creatorDefault };
+    if (creatorDefaults.twilioDefault) {
+      const owned = await deps.getTwilioNumber(contractorId, creatorDefaults.twilioDefault);
+      if (owned) return { fromNumber: creatorDefaults.twilioDefault };
     }
     const contractor = await deps.getContractor(contractorId);
     if (contractor?.defaultTwilioNumber) {
@@ -90,6 +100,7 @@ export async function resolveDefaultFromNumber(
     };
   }
 
+  const creatorDefault = creatorDefaults.dialpadDefault;
   if (creatorDefault) return { fromNumber: creatorDefault };
 
   if (provider === 'dialpad') {
@@ -143,7 +154,14 @@ export async function handleSendSMS(
         return { success: false, error: 'Workflow creator not found' };
       }
 
-      const resolved = await resolveDefaultFromNumber(context.contractorId, creator.dialpadDefaultNumber);
+      // Creator defaults are per-contractor (user_contractors), so a
+      // multi-company creator gets the right default for THIS company.
+      // Legacy users.dialpadDefaultNumber remains a fallback for old rows.
+      const membership = await storage.getUserContractor(context.workflowCreatorId, context.contractorId);
+      const resolved = await resolveDefaultFromNumber(context.contractorId, {
+        dialpadDefault: membership?.dialpadDefaultNumber ?? creator.dialpadDefaultNumber,
+        twilioDefault: membership?.twilioDefaultNumber,
+      });
       if ('error' in resolved) {
         return { success: false, error: resolved.error };
       }

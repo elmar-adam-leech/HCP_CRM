@@ -15,19 +15,19 @@ function deps(overrides: Partial<DefaultFromNumberDeps>): DefaultFromNumberDeps 
 describe('resolveDefaultFromNumber (task #902 provider-aware default)', () => {
   describe('Dialpad active', () => {
     it('uses the creator default unvalidated (pre-#902 behavior preserved)', async () => {
-      const r = await resolveDefaultFromNumber(C, '+15551230001', deps({}));
+      const r = await resolveDefaultFromNumber(C, { dialpadDefault: '+15551230001' }, deps({}));
       expect(r).toEqual({ fromNumber: '+15551230001' });
     });
 
     it('falls back to the org defaultDialpadNumber when creator has none', async () => {
-      const r = await resolveDefaultFromNumber(C, null, deps({
+      const r = await resolveDefaultFromNumber(C, {}, deps({
         getContractor: async () => ({ defaultDialpadNumber: '+15551230002' }),
       }));
       expect(r).toEqual({ fromNumber: '+15551230002' });
     });
 
     it('errors when neither creator nor org default exists', async () => {
-      const r = await resolveDefaultFromNumber(C, undefined, deps({}));
+      const r = await resolveDefaultFromNumber(C, {}, deps({}));
       expect(r).toHaveProperty('error');
       expect((r as { error: string }).error).toMatch(/No "From" phone number/);
     });
@@ -35,7 +35,7 @@ describe('resolveDefaultFromNumber (task #902 provider-aware default)', () => {
 
   describe('Twilio active', () => {
     it('uses the creator default when it belongs to the tenant Twilio numbers', async () => {
-      const r = await resolveDefaultFromNumber(C, '+15551230003', deps({
+      const r = await resolveDefaultFromNumber(C, { twilioDefault: '+15551230003' }, deps({
         getActiveSmsProvider: async () => 'twilio',
         getTwilioNumber: async (_c, n) => (n === '+15551230003' ? { id: 'tw1' } : undefined),
       }));
@@ -43,7 +43,7 @@ describe('resolveDefaultFromNumber (task #902 provider-aware default)', () => {
     });
 
     it('falls back to org defaultTwilioNumber when creator default is not a Twilio number', async () => {
-      const r = await resolveDefaultFromNumber(C, '+15551230004', deps({
+      const r = await resolveDefaultFromNumber(C, { twilioDefault: '+15551230004' }, deps({
         getActiveSmsProvider: async () => 'twilio',
         getTwilioNumber: async () => undefined,
         getContractor: async () => ({ defaultTwilioNumber: '+15551230005' }),
@@ -52,22 +52,39 @@ describe('resolveDefaultFromNumber (task #902 provider-aware default)', () => {
     });
 
     it('falls back to org defaultTwilioNumber when creator has no default at all', async () => {
-      const r = await resolveDefaultFromNumber(C, null, deps({
+      const r = await resolveDefaultFromNumber(C, {}, deps({
         getActiveSmsProvider: async () => 'twilio',
         getContractor: async () => ({ defaultTwilioNumber: '+15551230006' }),
       }));
       expect(r).toEqual({ fromNumber: '+15551230006' });
     });
 
+    it('prefers the creator Twilio default over the org default when both exist', async () => {
+      const r = await resolveDefaultFromNumber(C, { twilioDefault: '+15551230011', dialpadDefault: '+15551230012' }, deps({
+        getActiveSmsProvider: async () => 'twilio',
+        getTwilioNumber: async (_c, n) => (n === '+15551230011' ? { id: 'tw2' } : undefined),
+        getContractor: async () => ({ defaultTwilioNumber: '+15551230013' }),
+      }));
+      expect(r).toEqual({ fromNumber: '+15551230011' });
+    });
+
+    it('never uses the creator Dialpad default when Twilio is active', async () => {
+      const r = await resolveDefaultFromNumber(C, { dialpadDefault: '+15551230014' }, deps({
+        getActiveSmsProvider: async () => 'twilio',
+        getContractor: async () => ({ defaultTwilioNumber: '+15551230015' }),
+      }));
+      expect(r).toEqual({ fromNumber: '+15551230015' });
+    });
+
     it('errors clearly when nothing usable exists', async () => {
-      const r = await resolveDefaultFromNumber(C, '+15551230007', deps({
+      const r = await resolveDefaultFromNumber(C, { twilioDefault: '+15551230007' }, deps({
         getActiveSmsProvider: async () => 'twilio',
       }));
       expect((r as { error: string }).error).toMatch(/default Twilio number/);
     });
 
     it('never silently uses a non-Twilio creator default when Twilio is the active provider', async () => {
-      const r = await resolveDefaultFromNumber(C, '+15551230008', deps({
+      const r = await resolveDefaultFromNumber(C, { twilioDefault: '+15551230008' }, deps({
         getActiveSmsProvider: async () => 'twilio',
         getTwilioNumber: async () => undefined,
         getContractor: async () => ({ defaultTwilioNumber: null }),
@@ -78,7 +95,7 @@ describe('resolveDefaultFromNumber (task #902 provider-aware default)', () => {
 
   describe('no enabled provider', () => {
     it('surfaces the provider-service error message', async () => {
-      const r = await resolveDefaultFromNumber(C, '+15551230009', deps({
+      const r = await resolveDefaultFromNumber(C, { dialpadDefault: '+15551230009' }, deps({
         getActiveSmsProvider: async () => {
           throw new Error('No enabled sms providers found for contractor contractor-1.');
         },
@@ -89,14 +106,14 @@ describe('resolveDefaultFromNumber (task #902 provider-aware default)', () => {
 
   describe('other/unknown provider', () => {
     it('uses the creator default when present', async () => {
-      const r = await resolveDefaultFromNumber(C, '+15551230010', deps({
+      const r = await resolveDefaultFromNumber(C, { dialpadDefault: '+15551230010' }, deps({
         getActiveSmsProvider: async () => 'someother',
       }));
       expect(r).toEqual({ fromNumber: '+15551230010' });
     });
 
     it('errors when creator has no default', async () => {
-      const r = await resolveDefaultFromNumber(C, null, deps({
+      const r = await resolveDefaultFromNumber(C, {}, deps({
         getActiveSmsProvider: async () => 'someother',
       }));
       expect(r).toHaveProperty('error');
