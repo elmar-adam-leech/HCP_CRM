@@ -39,9 +39,21 @@ async function upsertLeadCaptureInbox(inbox: InsertLeadCaptureInbox): Promise<Le
 }
 
 async function deleteLeadCaptureInbox(contractorId: string): Promise<boolean> {
-  const result = await db.delete(leadCaptureInboxes)
-    .where(eq(leadCaptureInboxes.contractorId, contractorId));
-  return (result.rowCount ?? 0) > 0;
+  // spam_audit_log.inbox_id references lead_capture_inboxes.id; existing
+  // databases may still carry the FK without ON DELETE CASCADE, so delete
+  // the audit rows first inside a transaction to avoid an FK violation
+  // (production bug: disconnect returned 500 once any email was flagged).
+  return db.transaction(async (tx) => {
+    const inbox = await tx.select({ id: leadCaptureInboxes.id })
+      .from(leadCaptureInboxes)
+      .where(eq(leadCaptureInboxes.contractorId, contractorId))
+      .limit(1);
+    if (!inbox[0]) return false;
+    await tx.delete(spamAuditLog).where(eq(spamAuditLog.inboxId, inbox[0].id));
+    const result = await tx.delete(leadCaptureInboxes)
+      .where(eq(leadCaptureInboxes.id, inbox[0].id));
+    return (result.rowCount ?? 0) > 0;
+  });
 }
 
 async function updateLeadCaptureInboxSyncTime(contractorId: string): Promise<void> {

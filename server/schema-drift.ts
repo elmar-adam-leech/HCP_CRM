@@ -109,6 +109,45 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       description: 'spam_audit_log.inbox_id index',
     },
     {
+      // Task #895 — the original spam_audit_log.inbox_id FK had no ON DELETE
+      // behavior, so disconnecting a Lead Capture Inbox 500'd for any tenant
+      // with flagged emails. Swap the constraint (whatever its name) for one
+      // with ON DELETE CASCADE. Idempotent: skips when a cascading FK on
+      // inbox_id already exists.
+      sql: `DO $$
+      DECLARE
+        fk RECORD;
+      BEGIN
+        IF EXISTS (
+          SELECT 1
+          FROM pg_constraint c
+          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+          WHERE c.conrelid = 'spam_audit_log'::regclass
+            AND c.contype = 'f'
+            AND c.confrelid = 'lead_capture_inboxes'::regclass
+            AND a.attname = 'inbox_id'
+            AND c.confdeltype = 'c'
+        ) THEN
+          RETURN;
+        END IF;
+        FOR fk IN
+          SELECT c.conname
+          FROM pg_constraint c
+          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+          WHERE c.conrelid = 'spam_audit_log'::regclass
+            AND c.contype = 'f'
+            AND c.confrelid = 'lead_capture_inboxes'::regclass
+            AND a.attname = 'inbox_id'
+        LOOP
+          EXECUTE format('ALTER TABLE spam_audit_log DROP CONSTRAINT %I', fk.conname);
+        END LOOP;
+        ALTER TABLE spam_audit_log
+          ADD CONSTRAINT spam_audit_log_inbox_id_lead_capture_inboxes_id_fk
+          FOREIGN KEY (inbox_id) REFERENCES lead_capture_inboxes(id) ON DELETE CASCADE;
+      END $$`,
+      description: 'spam_audit_log.inbox_id FK: recreate with ON DELETE CASCADE (task #895 — inbox disconnect 500)',
+    },
+    {
       sql: `CREATE INDEX IF NOT EXISTS spam_audit_log_contractor_id_idx ON spam_audit_log(contractor_id)`,
       description: 'spam_audit_log.contractor_id index',
     },

@@ -188,7 +188,7 @@ export type LeadCaptureInbox = typeof leadCaptureInboxes.$inferSelect;
 
 export const spamAuditLog = pgTable("spam_audit_log", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  inboxId: varchar("inbox_id").notNull().references(() => leadCaptureInboxes.id),
+  inboxId: varchar("inbox_id").notNull().references(() => leadCaptureInboxes.id, { onDelete: 'cascade' }),
   contractorId: varchar("contractor_id").notNull().references(() => contractors.id),
   senderEmail: text("sender_email").notNull(),
   subject: text("subject").notNull(),
