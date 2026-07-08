@@ -215,9 +215,19 @@ export const invalidateContractorCache = (contractorId: string) => cacheInvalida
 
 // Cache workflow steps for 5 minutes.
 // Workflow steps are fetched on every execution but rarely change mid-run.
-// Manual cache invalidation via `invalidateWorkflowStepsCache` is called by
-// all step-modifying routes, so a 5-minute TTL is safe and reduces DB load
-// by ~5x compared to the previous 60-second TTL.
+// All step-modifying routes in server/routes/workflows.ts (step create, bulk
+// replace via the workflow-builder save, step update, step delete, and
+// workflow delete) call `invalidateWorkflowStepsCache` immediately after the
+// write, so a 5-minute TTL is safe and reduces DB load by ~5x compared to the
+// previous 60-second TTL. If you add any new code path that mutates workflow
+// steps, you MUST call `invalidateWorkflowStepsCache(workflowId)` after the
+// write or runs within the TTL window will use stale steps.
+//
+// Multi-process note: this is an in-memory cache, so invalidation only affects
+// the current process. That is fine today because (a) the web app is the only
+// long-lived process serving workflow runs, and (b) the standalone scheduled
+// worker (server/worker.ts) starts fresh per invocation, so its cache never
+// outlives a single run. No cross-process invalidation bus is needed.
 //
 // Key safety note: the cache key is `workflowId` only (no `contractorId`).
 // This is safe because workflowIds are globally unique UUIDs — two different

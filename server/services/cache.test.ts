@@ -29,6 +29,8 @@ import {
   getEnabledIntegrationsCached,
   invalidateUserCache,
   invalidateContractorCache,
+  getWorkflowStepsCached,
+  invalidateWorkflowStepsCache,
   cacheInvalidation,
 } from './cache';
 
@@ -71,6 +73,10 @@ describe('cache service', () => {
       dialpadDefaultNumber: '+15551234567',
       gmailConnected: true,
       gmailEmail: 'u@example.com',
+      googleCalendarConnected: false,
+      googleCalendarEmail: undefined,
+      passkeyCount: 0,
+      passkeyPromptDismissedAt: null,
     });
     await getUserSupplementalCached('u1');
     expect(storage.getUser).toHaveBeenCalledTimes(1);
@@ -87,6 +93,10 @@ describe('cache service', () => {
       dialpadDefaultNumber: undefined,
       gmailConnected: false,
       gmailEmail: undefined,
+      googleCalendarConnected: false,
+      googleCalendarEmail: undefined,
+      passkeyCount: 0,
+      passkeyPromptDismissedAt: null,
     });
     expect(storage.getUser).toHaveBeenCalledTimes(2);
   });
@@ -139,6 +149,36 @@ describe('cache service', () => {
     invalidateUserCache('u1');
     await getUserContractorsWithDetailsCached('u1');
     expect(storage.getUserContractors).toHaveBeenCalledTimes(2);
+  });
+
+  it('getWorkflowStepsCached: step update + invalidation makes the very next fetch return new steps (no 5-minute staleness)', async () => {
+    const oldSteps = [{ id: 's1', workflowId: 'w1', actionType: 'send_sms', actionConfig: '{"message":"OLD text"}', stepOrder: 0 }];
+    const newSteps = [{ id: 's1', workflowId: 'w1', actionType: 'send_sms', actionConfig: '{"message":"NEW text"}', stepOrder: 0 }];
+    (storage.getWorkflowSteps as any).mockResolvedValue(oldSteps);
+
+    // Prime the cache (simulates a workflow run reading steps).
+    const a = await getWorkflowStepsCached('w1');
+    expect(a).toEqual(oldSteps);
+
+    // Without invalidation, the cache serves the stale copy.
+    (storage.getWorkflowSteps as any).mockResolvedValue(newSteps);
+    const stale = await getWorkflowStepsCached('w1');
+    expect(stale).toEqual(oldSteps);
+    expect(storage.getWorkflowSteps).toHaveBeenCalledTimes(1);
+
+    // After a step save calls invalidateWorkflowStepsCache, the very next
+    // fetch hits the DB and returns the updated steps.
+    invalidateWorkflowStepsCache('w1');
+    const fresh = await getWorkflowStepsCached('w1');
+    expect(fresh).toEqual(newSteps);
+    expect(storage.getWorkflowSteps).toHaveBeenCalledTimes(2);
+
+    // Invalidation is scoped: another workflow's cache entry is untouched.
+    (storage.getWorkflowSteps as any).mockResolvedValue([{ id: 'x', workflowId: 'w2', stepOrder: 0 }]);
+    await getWorkflowStepsCached('w2');
+    invalidateWorkflowStepsCache('w1');
+    await getWorkflowStepsCached('w2');
+    expect(storage.getWorkflowSteps).toHaveBeenCalledTimes(3);
   });
 
   it('getUserContractorsWithDetailsCached: empty memberships short-circuit', async () => {

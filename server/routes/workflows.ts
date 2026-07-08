@@ -12,6 +12,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { parseBody } from "../utils/validate-body";
 import { logger } from '../utils/logger';
 import { enrichTestTriggerData } from "../utils/workflow/test-trigger-enrichment";
+import { invalidateWorkflowStepsCache } from "../services/cache";
 
 const log = logger('WorkflowRoutes');
 
@@ -170,6 +171,7 @@ export function registerWorkflowRoutes(app: Express): void {
       res.status(404).json({ error: 'Workflow not found' });
       return;
     }
+    invalidateWorkflowStepsCache(req.params.id);
     broadcastToContractor(req.user.contractorId, { type: 'workflow_deleted', workflowId: req.params.id });
     auditLog({
       contractorId: req.user.contractorId,
@@ -259,6 +261,7 @@ export function registerWorkflowRoutes(app: Express): void {
     }
 
     const step = await storage.createWorkflowStep(validation.data);
+    invalidateWorkflowStepsCache(req.params.workflowId);
     broadcastToContractor(req.user.contractorId, { type: 'workflow_updated', workflowId: req.params.workflowId });
     res.status(201).json(step);
   }));
@@ -291,6 +294,7 @@ export function registerWorkflowRoutes(app: Express): void {
     }
 
     const createdSteps = await storage.replaceWorkflowSteps(req.params.workflowId, validatedSteps);
+    invalidateWorkflowStepsCache(req.params.workflowId);
 
     broadcastToContractor(req.user.contractorId, { type: 'workflow_updated', workflowId: req.params.workflowId });
     res.json(createdSteps);
@@ -317,6 +321,7 @@ export function registerWorkflowRoutes(app: Express): void {
       res.status(404).json({ error: 'Workflow step not found' });
       return;
     }
+    invalidateWorkflowStepsCache(existingStep.workflowId);
     broadcastToContractor(req.user.contractorId, { type: 'workflow_updated', workflowId: existingStep.workflowId });
     res.json(step);
   }));
@@ -339,6 +344,7 @@ export function registerWorkflowRoutes(app: Express): void {
       res.status(404).json({ error: 'Workflow step not found' });
       return;
     }
+    invalidateWorkflowStepsCache(existingStep.workflowId);
     broadcastToContractor(req.user.contractorId, { type: 'workflow_updated', workflowId: existingStep.workflowId });
     res.json({ success: true });
   }));
