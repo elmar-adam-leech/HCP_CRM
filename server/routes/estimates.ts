@@ -233,9 +233,15 @@ export function registerEstimateRoutes(app: Express): void {
     // Status-only updates are allowed even on HCP-synced estimates. The
     // `statusManuallySet` flag (set below) ensures the next sync from HCP will
     // not overwrite the user's choice.
+    // Task #900: manually moving an estimate back to scheduled/in_progress
+    // also clears the sticky documentSentAt so it leaves the Sent tab. Only
+    // this manual route clears it — HCP sync/webhook paths never do.
+    const clearSent = status === 'scheduled' || status === 'in_progress'
+      ? { documentSentAt: null }
+      : {};
     const estimate = await storage.updateEstimate(
       req.params.id,
-      { status, statusManuallySet: true },
+      { status, statusManuallySet: true, ...clearSent },
       req.user.contractorId,
     );
     if (!estimate) {
@@ -285,6 +291,15 @@ export function registerEstimateRoutes(app: Express): void {
     }
     const updateData = parseBody(insertEstimateSchema.omit({ contractorId: true, contactId: true }).partial(), req, res);
     if (!updateData) return;
+    // Task #900: same un-send behavior as the status route — a manual edit
+    // that moves the estimate back to scheduled/in_progress clears the sticky
+    // documentSentAt (unless the caller explicitly provided one).
+    if (
+      (updateData.status === 'scheduled' || updateData.status === 'in_progress') &&
+      updateData.documentSentAt === undefined
+    ) {
+      updateData.documentSentAt = null;
+    }
     const estimate = await storage.updateEstimate(req.params.id, updateData, req.user.contractorId);
     if (!estimate) {
       res.status(404).json({ message: "Estimate not found" });

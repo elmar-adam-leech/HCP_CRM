@@ -324,6 +324,10 @@ async function updateEstimate(id: string, estimate: UpdateEstimate, contractorId
   // document-sent timestamp (if not already set) so the Sent tab, badge, and
   // count all agree. Never overwrites an existing value; callers may still
   // pass an explicit documentSentAt (e.g. HCP webhook/sync).
+  // Task #900: the REVERSE (clearing documentSentAt when moving back to
+  // scheduled/in_progress) is deliberately NOT done here — it happens at the
+  // manual route level (routes/estimates.ts PATCH /:id/status and PUT /:id)
+  // so HCP sync/webhook paths calling updateEstimate never clear the stamp.
   if (cleanEstimate.status === 'sent' && cleanEstimate.documentSentAt === undefined) {
     const existing = await db.select({ documentSentAt: estimates.documentSentAt })
       .from(estimates)

@@ -85,6 +85,32 @@ describe("updateEstimate documentSentAt stamping (task #898)", () => {
     expect(state.lastSetValues?.documentSentAt).toBe(provided);
   });
 
+  it("passes through an explicit documentSentAt: null (un-send, task #900)", async () => {
+    state.selectResults = [
+      [{ status: "sent" }],              // prior-status lookup
+    ];
+    state.updatedRow = { id: "est-1", status: "scheduled" };
+
+    await estimateMethods.updateEstimate(
+      "est-1",
+      { status: "scheduled", documentSentAt: null },
+      "tenant-1",
+    );
+
+    expect(state.lastSetValues?.documentSentAt).toBeNull();
+  });
+
+  it("re-stamps documentSentAt when re-marked sent after an un-send (task #900)", async () => {
+    state.selectResults = [
+      [{ status: "scheduled" }],         // prior-status lookup
+      [{ documentSentAt: null }],        // stamping lookup (cleared by un-send)
+    ];
+
+    await estimateMethods.updateEstimate("est-1", { status: "sent" }, "tenant-1");
+
+    expect(state.lastSetValues?.documentSentAt).toBeInstanceOf(Date);
+  });
+
   it("does not stamp for non-'sent' status updates", async () => {
     state.selectResults = [
       [{ status: "sent" }],              // prior-status lookup

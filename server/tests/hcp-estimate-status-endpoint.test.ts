@@ -136,6 +136,70 @@ describe('PATCH /api/estimates/:id/status', () => {
     expect(triggerWorkflowsForEvent).toHaveBeenCalledWith('estimate_status_changed', expect.anything(), TENANT);
   });
 
+  it("clears documentSentAt when manually moving back to scheduled (task #900)", async () => {
+    store.set('e3', {
+      id: 'e3', status: 'sent', externalSource: null,
+      statusManuallySet: false, contactId: 'c3', title: 't3',
+      documentSentAt: new Date('2026-07-01T00:00:00Z'),
+    } as unknown as FakeEstimate);
+
+    const res = await patchStatus('e3', { status: 'scheduled' });
+    expect(res.status).toBe(200);
+
+    expect(updateEstimate).toHaveBeenCalledWith(
+      'e3',
+      expect.objectContaining({ status: 'scheduled', statusManuallySet: true, documentSentAt: null }),
+      TENANT,
+    );
+    expect((store.get('e3') as unknown as { documentSentAt: Date | null }).documentSentAt).toBeNull();
+  });
+
+  it("does not touch documentSentAt for approved/rejected transitions (task #900)", async () => {
+    const sentAt = new Date('2026-07-01T00:00:00Z');
+    store.set('e4', {
+      id: 'e4', status: 'sent', externalSource: null,
+      statusManuallySet: false, contactId: 'c4', title: 't4',
+      documentSentAt: sentAt,
+    } as unknown as FakeEstimate);
+
+    await patchStatus('e4', { status: 'approved' });
+
+    const payload = updateEstimate.mock.calls[0][1];
+    expect('documentSentAt' in payload).toBe(false);
+    expect((store.get('e4') as unknown as { documentSentAt: Date | null }).documentSentAt).toBe(sentAt);
+  });
+
+  it('PUT /api/estimates/:id clears documentSentAt on un-send (task #900)', async () => {
+    store.set('e5', {
+      id: 'e5', status: 'sent', externalSource: null,
+      statusManuallySet: false, contactId: 'c5', title: 't5',
+      documentSentAt: new Date('2026-07-01T00:00:00Z'),
+    } as unknown as FakeEstimate);
+
+    const res = await fetch(`${baseUrl}/api/estimates/e5`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'in_progress' }),
+    });
+    expect(res.status).toBe(200);
+    expect(updateEstimate).toHaveBeenCalledWith(
+      'e5',
+      expect.objectContaining({ status: 'in_progress', documentSentAt: null }),
+      TENANT,
+    );
+
+    // A non-un-send PUT (e.g. status 'sent') must NOT get documentSentAt
+    // injected by the route.
+    const res2 = await fetch(`${baseUrl}/api/estimates/e5`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'sent' }),
+    });
+    expect(res2.status).toBe(200);
+    const lastPayload = updateEstimate.mock.calls.at(-1)![1];
+    expect('documentSentAt' in lastPayload).toBe(false);
+  });
+
   it('marks status as manually set so a follow-up sync would preserve it', async () => {
     store.set('e2', {
       id: 'e2', status: 'sent', externalSource: 'housecall-pro', housecallProEstimateId: 'hcp2',
