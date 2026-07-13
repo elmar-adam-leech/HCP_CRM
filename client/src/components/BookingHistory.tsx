@@ -110,6 +110,15 @@ export function BookingHistory({ contactId }: BookingHistoryProps) {
             {booking.notes && (
               <p className="text-sm text-muted-foreground" data-testid={`booking-notes-${booking.id}`}>{booking.notes}</p>
             )}
+            {booking.googleCalendarEventId ? (
+              <p className="text-xs text-muted-foreground" data-testid={`booking-google-synced-${booking.id}`}>
+                Synced to rep&apos;s Google Calendar
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground" data-testid={`booking-google-not-synced-${booking.id}`}>
+                Not written to Google Calendar
+              </p>
+            )}
             {booking.bookingPayload !== null && booking.bookingPayload !== undefined ? (
               <RawBookingPayload payload={booking.bookingPayload} />
             ) : (

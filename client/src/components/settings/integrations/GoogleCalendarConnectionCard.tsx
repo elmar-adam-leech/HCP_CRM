@@ -104,7 +104,7 @@ export function GoogleCalendarConnectionCard() {
     <IntegrationCardShell
       icon={<Calendar className="h-5 w-5" />}
       title="Google Calendar Connection"
-      description="Connect your Google Calendar so booked appointments are added to your calendar and your busy times block availability"
+      description="Connect your Google Calendar so appointments assigned to you are added to your calendar (each rep must connect their own account)"
       statusIcon={statusIcon}
       isLoading={false}
     >

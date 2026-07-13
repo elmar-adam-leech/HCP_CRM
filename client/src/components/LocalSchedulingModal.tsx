@@ -33,6 +33,8 @@ interface Salesperson {
   workingHoursStart: string;
   workingHoursEnd: string;
   hasCustomSchedule: boolean;
+  googleCalendarConnected?: boolean;
+  googleCalendarEmail?: string;
 }
 
 interface AvailabilitySlot {
@@ -193,7 +195,7 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
       }
 
       const bookingResponse = await apiRequest('POST', '/api/scheduling/book', bookingPayload);
-      const bookingResult: { scheduleError?: string } = await bookingResponse.json();
+      const bookingResult: { scheduleError?: string; googleCalendarEventId?: string | null } = await bookingResponse.json();
 
       await apiRequest('PATCH', `/api/contacts/${lead?.id}`, {
         status: 'scheduled',
@@ -206,9 +208,10 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
         scheduledDate,
         scheduledTime: data.timeSlot,
         scheduleError: bookingResult.scheduleError,
+        googleCalendarEventId: bookingResult.googleCalendarEventId,
       };
     },
-    onSuccess: (result: { scheduleError?: string; salespersonName?: string; [key: string]: unknown }) => {
+    onSuccess: (result: { scheduleError?: string; salespersonName?: string; googleCalendarEventId?: string | null; [key: string]: unknown }) => {
       queryClient.invalidateQueries({ queryKey: ['/api/contacts'] });
       queryClient.invalidateQueries({ queryKey: ['/api/contacts/paginated'] });
       queryClient.invalidateQueries({ queryKey: ['/api/contacts/status-counts'] });
@@ -412,11 +415,24 @@ export function LocalSchedulingModal({ lead, isOpen, onClose, onScheduled }: Loc
                     <Clock className="h-4 w-4 text-muted-foreground" />
                     <span>Working hours: {selectedSalesperson.workingHoursStart || '09:00'} - {selectedSalesperson.workingHoursEnd || '17:00'}</span>
                   </div>
-                  {selectedSalesperson.housecallProUserId && (
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline">Housecall Pro Linked</Badge>
-                    </div>
-                  )}
+                   {selectedSalesperson.housecallProUserId && (
+                     <div className="flex items-center gap-2">
+                       <Badge variant="outline">Housecall Pro Linked</Badge>
+                     </div>
+                   )}
+                   {selectedSalesperson.googleCalendarConnected ? (
+                     <div className="flex items-center gap-2">
+                       <Badge variant="outline">Google Calendar Connected</Badge>
+                       {selectedSalesperson.googleCalendarEmail && (
+                         <span className="text-xs text-muted-foreground">({selectedSalesperson.googleCalendarEmail})</span>
+                       )}
+                     </div>
+                   ) : (
+                     <div className="text-xs text-muted-foreground">
+                       Rep has not connected Google Calendar
+                     </div>
+                   )}
+
                 </CardContent>
               </Card>
             )}

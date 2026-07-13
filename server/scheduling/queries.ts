@@ -19,6 +19,7 @@ export async function getSalespeople(tenantId: string): Promise<SalespersonInfo[
     displayOrder: userContractors.displayOrder,
     googleCalendarConnected: users.googleCalendarConnected,
     googleCalendarRefreshToken: users.googleCalendarRefreshToken,
+    googleCalendarEmail: users.googleCalendarEmail,
   })
   .from(userContractors)
   .innerJoin(users, eq(users.id, userContractors.userId))
@@ -37,6 +38,7 @@ export async function getSalespeople(tenantId: string): Promise<SalespersonInfo[
     displayOrder: sp.displayOrder ?? null,
     googleCalendarConnected: sp.googleCalendarConnected ?? false,
     googleCalendarRefreshToken: sp.googleCalendarRefreshToken ?? null,
+    googleCalendarEmail: sp.googleCalendarEmail ?? undefined,
   }));
 }
 
@@ -54,6 +56,8 @@ export async function getTeamMembers(tenantId: string): Promise<SalespersonInfo[
     workingHoursEnd: userContractors.workingHoursEnd,
     hasCustomSchedule: userContractors.hasCustomSchedule,
     displayOrder: userContractors.displayOrder,
+    googleCalendarConnected: users.googleCalendarConnected,
+    googleCalendarEmail: users.googleCalendarEmail,
   })
   .from(userContractors)
   .innerJoin(users, eq(users.id, userContractors.userId))
@@ -67,6 +71,8 @@ export async function getTeamMembers(tenantId: string): Promise<SalespersonInfo[
     workingHoursEnd: m.workingHoursEnd ?? "17:00",
     hasCustomSchedule: m.hasCustomSchedule ?? false,
     displayOrder: m.displayOrder ?? null,
+    googleCalendarConnected: m.googleCalendarConnected ?? false,
+    googleCalendarEmail: m.googleCalendarEmail ?? undefined,
   }));
 }
 

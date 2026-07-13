@@ -23,6 +23,8 @@ interface Salesperson {
   workingHoursEnd: string;
   hasCustomSchedule: boolean;
   displayOrder: number | null;
+  googleCalendarConnected?: boolean;
+  googleCalendarEmail?: string;
 }
 
 interface SyncResult {
@@ -310,6 +312,12 @@ export function SalespeopleManagement() {
                               <Badge variant="outline" className="gap-1">
                                 <Calendar className="h-3 w-3" />
                                 HCP Linked
+                              </Badge>
+                            )}
+                            {person.googleCalendarConnected && (
+                              <Badge variant="outline" className="gap-1">
+                                <Calendar className="h-3 w-3" />
+                                Google Calendar
                               </Badge>
                             )}
                             {person.hasCustomSchedule && (

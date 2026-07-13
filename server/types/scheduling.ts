@@ -203,4 +203,5 @@ export interface SalespersonInfo {
   // booking writes real events to it.
   googleCalendarConnected?: boolean;
   googleCalendarRefreshToken?: string | null;
+  googleCalendarEmail?: string;
 }
