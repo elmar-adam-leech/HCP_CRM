@@ -1682,6 +1682,43 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       sql: `ALTER TABLE scheduled_bookings ADD COLUMN IF NOT EXISTS google_calendar_event_id text`,
       description: 'scheduled_bookings.google_calendar_event_id (Google Calendar event id for booking, task #858)',
     },
+    {
+      // Audit (task #913): activities.job_id is in the bootstrap
+      // migrations/0000_*.sql, but per the single-source-of-truth rule every
+      // Drizzle-declared column beyond bootstrap coverage should have an
+      // idempotent entry here; this is a safe no-op on databases that
+      // already have it.
+      sql: `ALTER TABLE "activities" ADD COLUMN IF NOT EXISTS "job_id" varchar REFERENCES "jobs"("id") ON DELETE CASCADE`,
+      description: 'activities.job_id (link activities directly to a job — task #913 audit backstop)',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS "activities_job_id_idx" ON "activities"("job_id")`,
+      description: 'activities.job_id index (task #913 audit backstop)',
+    },
+    {
+      sql: `ALTER TABLE "activities" ADD COLUMN IF NOT EXISTS "lead_id" varchar REFERENCES "leads"("id") ON DELETE CASCADE`,
+      description: 'activities.lead_id (link activities directly to a lead — task #913 prod drift fix)',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS "activities_lead_id_idx" ON "activities"("lead_id")`,
+      description: 'activities.lead_id index (task #913)',
+    },
+    {
+      sql: `ALTER TABLE "messages" ADD COLUMN IF NOT EXISTS "lead_id" varchar REFERENCES "leads"("id") ON DELETE CASCADE`,
+      description: 'messages.lead_id (optional lead context for inbound replies — task #913 prod drift fix)',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS "messages_lead_id_idx" ON "messages"("lead_id")`,
+      description: 'messages.lead_id index (task #913)',
+    },
+    {
+      sql: `ALTER TABLE "messages" ADD COLUMN IF NOT EXISTS "job_id" varchar REFERENCES "jobs"("id") ON DELETE CASCADE`,
+      description: 'messages.job_id (optional job context for inbound replies — task #913 prod drift fix)',
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS "messages_job_id_idx" ON "messages"("job_id")`,
+      description: 'messages.job_id index (task #913)',
+    },
   ];
 
 export async function applyColumnMigrations(
