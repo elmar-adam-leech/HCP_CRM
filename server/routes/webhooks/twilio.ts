@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import express from "express";
 import { storage } from "../../storage";
 import { activities } from "@shared/schema";
+import { dispatchInboundReplyWorkflows } from "../../services/inbound-reply-dispatcher";
 import { db } from "../../db";
 import { eq, and } from "drizzle-orm";
 import { webhookRateLimiter } from "../../middleware/rate-limiter";
@@ -477,6 +478,27 @@ export function registerTwilioWebhookRoutes(app: Express): void {
         `[inbound-sms] contact-match provider=twilio contractor=${contractorId} sid=${messageSid || 'none'} matched=${contact ? `yes (${contact.id})` : 'no'}`,
       );
 
+      // Resolve entity context for inbound (persist lead/job/estimate ids)
+      let resolvedLeadId: string | undefined;
+      let resolvedEstimateId: string | undefined;
+      let resolvedJobId: string | undefined;
+      const contactIdForInbound = contact?.id;
+      if (contactIdForInbound) {
+        try {
+          const leads = await storage.getLeadsByContact(contactIdForInbound, contractorId);
+          const openLead = leads.find((l: any) => !l.archived && ['new', 'contacted', 'qualified'].includes(l.status)) || leads[0];
+          if (openLead) resolvedLeadId = openLead.id;
+
+          const ests = await storage.getEstimatesByContact(contactIdForInbound, contractorId);
+          if (ests && ests.length > 0) resolvedEstimateId = ests[0].id;
+
+          const jobsList = await storage.getJobsByContact(contactIdForInbound, contractorId);
+          if (jobsList && jobsList.length > 0) resolvedJobId = jobsList[0].id;
+        } catch (e) {
+          log.error('Error resolving entity context for Twilio inbound SMS', e);
+        }
+      }
+
       const message = await storage.createMessage(
         {
           type: 'text',
@@ -486,6 +508,9 @@ export function registerTwilioWebhookRoutes(app: Express): void {
           toNumber: to,
           fromNumber: from,
           contactId: contact?.id,
+          estimateId: resolvedEstimateId,
+          leadId: resolvedLeadId,
+          jobId: resolvedJobId,
           externalMessageId: messageSid || undefined,
         } as any,
         contractorId,
@@ -500,6 +525,21 @@ export function registerTwilioWebhookRoutes(app: Express): void {
         message,
         contactId: contact?.id,
       });
+
+      // Dispatch reply workflows for inbound (gated inside)
+      dispatchInboundReplyWorkflows({
+        contractorId,
+        contactId: contact?.id,
+        leadId: resolvedLeadId,
+        estimateId: resolvedEstimateId,
+        jobId: resolvedJobId,
+        content: body || '(no content)',
+        fromNumber: from,
+        toNumber: to,
+        type: 'text',
+        messageId: message.id,
+        sourceIntegration: 'twilio',
+      }).catch((err) => log.error('Inbound reply dispatcher (twilio) failed:', err));
 
       res.set(TWIML_HEADERS).status(200).send(emptyTwiml());
     }),

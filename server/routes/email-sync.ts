@@ -3,6 +3,7 @@ import { asyncHandler } from "../utils/async-handler";
 import { parseBody } from "../utils/validate-body";
 import { storage } from "../storage";
 import { activities, users } from "@shared/schema";
+import { dispatchInboundReplyWorkflows } from "../services/inbound-reply-dispatcher";
 import { db } from "../db";
 import { eq, and, inArray } from "drizzle-orm";
 import { gmailService } from "../gmail-service";
@@ -129,6 +130,17 @@ export function registerEmailSyncRoutes(app: Express): void {
             type: 'new_message',
             contactId: matchingContact.id,
           });
+
+          // Dispatch reply workflows (gated inside; resolves current entities if ids not on activity)
+          dispatchInboundReplyWorkflows({
+            contractorId: req.user.contractorId,
+            contactId: matchingContact.id,
+            content: email.body || email.snippet || '',
+            type: 'email',
+            messageId: activity.id,
+            sourceIntegration: 'gmail',
+            userIdForActivity: req.user.userId,
+          }).catch((err) => log.error('Inbound reply dispatcher (email-sync) failed:', err));
         }
       }
 

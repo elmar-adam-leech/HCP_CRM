@@ -244,6 +244,7 @@ export interface IStorage {
   getJob(id: string, contractorId: string): Promise<Job | undefined>;
   getJobByEstimateId(estimateId: string, contractorId: string): Promise<Job | undefined>;
   getJobByHousecallProJobId(externalId: string, contractorId: string): Promise<Job | undefined>;
+  getJobsByContact(contactId: string, contractorId: string): Promise<Job[]>;
   createJob(job: Omit<InsertJob, 'contractorId'>, contractorId: string): Promise<Job>;
   updateJob(id: string, job: UpdateJob, contractorId: string): Promise<Job | undefined>;
   deleteJob(id: string, contractorId: string): Promise<boolean>;
@@ -439,6 +440,7 @@ export interface IStorage {
   findActivitiesByRfc822MessageIds(contractorId: string, rfc822MessageIds: string[]): Promise<Array<{
     activityId: string;
     contactId: string | null;
+    leadId: string | null;
     estimateId: string | null;
     jobId: string | null;
     rfc822MessageId: string;

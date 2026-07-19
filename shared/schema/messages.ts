@@ -7,6 +7,8 @@ import { contractors } from "./settings";
 import { users } from "./users";
 import { contacts } from "./contacts";
 import { estimates } from "./estimates";
+import { leads } from "./leads";
+import { jobs } from "./jobs";
 
 // Messages table for texting functionality
 export const messages = pgTable("messages", {
@@ -19,6 +21,8 @@ export const messages = pgTable("messages", {
   fromNumber: text("from_number"),
   contactId: varchar("contact_id").references(() => contacts.id, { onDelete: "cascade" }), // Unified contact reference
   estimateId: varchar("estimate_id").references(() => estimates.id, { onDelete: "cascade" }), // Optional estimate context
+  leadId: varchar("lead_id").references(() => leads.id, { onDelete: "cascade" }), // Optional lead context for inbound replies
+  jobId: varchar("job_id").references(() => jobs.id, { onDelete: "cascade" }), // Optional job context for inbound replies
   userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Track which user sent the message (for outbound) or assigned to (for inbound)
   externalMessageId: text("external_message_id"), // Dialpad message ID for tracking
   contractorId: varchar("contractor_id").notNull().references(() => contractors.id),
@@ -40,6 +44,8 @@ export const messages = pgTable("messages", {
   directionIdx: index("messages_direction_idx").on(table.direction),
   createdAtIdx: index("messages_created_at_idx").on(table.createdAt),
   estimateIdIdx: index("messages_estimate_id_idx").on(table.estimateId),
+  leadIdIdx: index("messages_lead_id_idx").on(table.leadId),
+  jobIdIdx: index("messages_job_id_idx").on(table.jobId),
   // Composite index for phone conversation lookups
   contractorPhoneIdx: index("messages_contractor_phone_idx").on(table.contractorId, table.toNumber),
   // Composite index for contractor + contact queries

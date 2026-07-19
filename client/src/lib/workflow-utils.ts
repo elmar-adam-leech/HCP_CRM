@@ -38,6 +38,7 @@ export function buildTriggerLabel(
   if (eventType === 'created')  return `When ${entityLabel} is Created`;
   if (eventType === 'updated')  return `When ${entityLabel} is Updated`;
   if (eventType === 'deleted')  return `When ${entityLabel} is Deleted`;
+  if (eventType === 'reply_received') return `When ${entityLabel} Reply Received (SMS/Email)`;
   return `When ${entityLabel} ${eventType}`;
 }
 
@@ -80,7 +81,12 @@ export function extractTriggerConfig(nodes: Node[]): { triggerType: string; trig
       payment_received: 'payment_received',
       deposit_received: 'deposit_received',
     };
-    backendTriggerType = eventTypeMap[eventType] || 'entity_created';
+    if (eventType === 'reply_received') {
+      const entity = triggerData.entityType || triggerData.entity || 'lead';
+      backendTriggerType = `${entity}_reply_received`;
+    } else {
+      backendTriggerType = eventTypeMap[eventType] || 'entity_created';
+    }
   }
 
   return { triggerType: backendTriggerType, triggerConfig };

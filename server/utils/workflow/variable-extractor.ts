@@ -251,7 +251,7 @@ export async function extractVariablesFromEntity(entity: Record<string, unknown>
   // Surface nested objects added by HCP-driven triggers (#437) so templates
   // can use {{estimate.salesperson.name}}, {{estimate.approved_option.name}},
   // {{job.payment.amount}}, {{estimate.line_items}}, etc.
-  for (const passthroughKey of ['salesperson', 'approved_option', 'rejected_option', 'payment', 'line_items'] as const) {
+  for (const passthroughKey of ['salesperson', 'approved_option', 'rejected_option', 'payment', 'line_items', 'reply', 'assignedUser', 'sourceIntegration'] as const) {
     const value = (entity as Record<string, unknown>)[passthroughKey];
     if (value !== undefined && value !== null) {
       if (passthroughKey === 'line_items' && Array.isArray(value)) {

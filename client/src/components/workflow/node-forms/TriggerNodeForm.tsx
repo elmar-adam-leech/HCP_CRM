@@ -64,6 +64,9 @@ export function TriggerNodeForm({ formData, handleChange, terminology }: Trigger
                     <SelectItem value="deposit_received">Deposit Received</SelectItem>
                   </>
                 )}
+                {(formData.entityType === 'lead' || formData.entityType === 'estimate' || formData.entityType === 'job') && (
+                  <SelectItem value="reply_received">Reply Received (SMS/Email)</SelectItem>
+                )}
               </SelectContent>
             </Select>
           </div>

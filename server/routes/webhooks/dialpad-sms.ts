@@ -14,6 +14,7 @@ import { CredentialService } from "../../credential-service";
 import { validateWebhookAuth } from "../../utils/webhook-auth";
 import { enqueueDialpadEvent } from "../../jobs/dialpad-event-worker";
 import { dialpadEventPoller } from "../../jobs/dialpad-event-poller";
+import { dispatchInboundReplyWorkflows } from "../../services/inbound-reply-dispatcher";
 
 const log = logger('DialpadSmsWebhook');
 
@@ -323,6 +324,27 @@ export async function processSmsMessageEvent(
     log.info('No contact match found');
   }
 
+  // Resolve entity context for inbound to persist on message (leadId/jobId/estimateId) and for reply workflows.
+  // Only for current CRM contacts (gate happens in dispatcher too).
+  let resolvedLeadId: string | undefined;
+  let resolvedEstimateId: string | undefined;
+  let resolvedJobId: string | undefined;
+  if (direction === 'inbound' && contactId) {
+    try {
+      const leads = await storage.getLeadsByContact(contactId, contractorId);
+      const openLead = leads.find((l: any) => !l.archived && ['new', 'contacted', 'qualified'].includes(l.status)) || leads[0];
+      if (openLead) resolvedLeadId = openLead.id;
+
+      const ests = await storage.getEstimatesByContact(contactId, contractorId);
+      if (ests && ests.length > 0) resolvedEstimateId = ests[0].id;
+
+      const jobsList = await storage.getJobsByContact(contactId, contractorId);
+      if (jobsList && jobsList.length > 0) resolvedJobId = jobsList[0].id;
+    } catch (e) {
+      log.error('Error resolving entity context for inbound SMS', e);
+    }
+  }
+
   const newMessage = await storage.createMessage({
     type: 'text',
     status: 'delivered',
@@ -331,6 +353,9 @@ export async function processSmsMessageEvent(
     toNumber: normalizePhoneForStorage(toNumber),
     fromNumber: normalizePhoneForStorage(fromNumber),
     contactId: contactId,
+    estimateId: resolvedEstimateId || undefined,
+    leadId: resolvedLeadId || undefined,
+    jobId: resolvedJobId || undefined,
     externalMessageId,
   }, contractorId);
 
@@ -354,6 +379,21 @@ export async function processSmsMessageEvent(
         messageId: newMessage.id,
       }))
       .catch((err) => log.error('AI scheduling agent dispatch failed:', err));
+
+    // Dispatch reply workflows (gated to current lead/est/job entities)
+    dispatchInboundReplyWorkflows({
+      contractorId,
+      contactId,
+      leadId: resolvedLeadId,
+      estimateId: resolvedEstimateId,
+      jobId: resolvedJobId,
+      content: messageText,
+      fromNumber,
+      toNumber,
+      type: 'text',
+      messageId: newMessage.id,
+      sourceIntegration: 'dialpad',
+    }).catch((err) => log.error('Inbound reply dispatcher failed:', err));
   }
 
   await db.update(webhookEvents)

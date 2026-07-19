@@ -1,6 +1,7 @@
 import { storage } from '../storage';
 import { db } from '../db';
 import { users, activities, contacts, contractors } from '@shared/schema';
+import { dispatchInboundReplyWorkflows } from '../services/inbound-reply-dispatcher';
 import { eq, and, inArray } from 'drizzle-orm';
 import { withRetry } from '../utils/retry';
 import { gmailService } from '../gmail-service';
@@ -85,6 +86,7 @@ async function syncOneGmailAccount(opts: SyncOneAccountOpts): Promise<void> {
       // RFC822 In-Reply-To / References headers against stored outbound
       // activities. Only applied to inbound — outbound rows would only be
       // self-matches.
+      let matchedLeadId: string | null = null;
       let matchedEstimateId: string | null = null;
       let matchedJobId: string | null = null;
       let matchedViaHeaders = false;
@@ -100,6 +102,7 @@ async function syncOneGmailAccount(opts: SyncOneAccountOpts): Promise<void> {
           if (distinctContactIds.length === 1) {
             matchedContactId = distinctContactIds[0];
             const m = matches.find(x => x.contactId === matchedContactId)!;
+            matchedLeadId = m.leadId || null;
             matchedEstimateId = m.estimateId;
             matchedJobId = m.jobId;
             matchedViaHeaders = true;
@@ -108,6 +111,7 @@ async function syncOneGmailAccount(opts: SyncOneAccountOpts): Promise<void> {
             // Fall back to the most recent matching activity's contact.
             const newest = matches.find(m => !!m.contactId)!;
             matchedContactId = newest.contactId!;
+            matchedLeadId = newest.leadId || null;
             matchedEstimateId = newest.estimateId;
             matchedJobId = newest.jobId;
             matchedViaHeaders = true;
@@ -125,6 +129,17 @@ async function syncOneGmailAccount(opts: SyncOneAccountOpts): Promise<void> {
 
       if (!matchingContact) {
         continue;
+      }
+
+      // For inbound email, if no lead from header match, resolve current open lead for this contact (for activity + workflows)
+      if (!isOutbound && !matchedLeadId && matchingContact.id) {
+        try {
+          const leads = await storage.getLeadsByContact(matchingContact.id, tenantId);
+          const openLead = leads.find((l: any) => !l.archived && ['new', 'contacted', 'qualified'].includes(l.status)) || leads[0];
+          if (openLead) matchedLeadId = openLead.id;
+        } catch (e) {
+          log.error('Error resolving lead for inbound Gmail email', e);
+        }
       }
 
       // NOTE: previously we skipped email activity creation for contacts whose
@@ -190,6 +205,7 @@ async function syncOneGmailAccount(opts: SyncOneAccountOpts): Promise<void> {
         content: email.body,
         metadata: emailMetadata,
         contactId: matchingContact.id,
+        leadId: matchedLeadId,
         estimateId: matchedEstimateId,
         jobId: matchedJobId,
         userId: userIdForActivity,
@@ -214,6 +230,22 @@ async function syncOneGmailAccount(opts: SyncOneAccountOpts): Promise<void> {
           type: 'new_message',
           contactId: a.contactId,
         });
+
+        // Dispatch reply workflows (gated to current lead/est/job)
+        dispatchInboundReplyWorkflows({
+          contractorId: tenantId,
+          contactId: a.contactId,
+          leadId: a.leadId || undefined,
+          estimateId: a.estimateId || undefined,
+          jobId: a.jobId || undefined,
+          content: a.content || '',
+          fromNumber: undefined,
+          toNumber: undefined,
+          type: 'email',
+          messageId: a.id,
+          sourceIntegration: 'gmail',
+          userIdForActivity: a.userId,
+        }).catch((err) => log.error('Inbound reply dispatcher (gmail) failed:', err));
       }
     }
 

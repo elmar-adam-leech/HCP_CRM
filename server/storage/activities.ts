@@ -411,6 +411,7 @@ async function findActivitiesByRfc822MessageIds(
 ): Promise<Array<{
   activityId: string;
   contactId: string | null;
+  leadId: string | null;
   estimateId: string | null;
   jobId: string | null;
   rfc822MessageId: string;
@@ -424,6 +425,7 @@ async function findActivitiesByRfc822MessageIds(
   const result = await db.select({
     activityId: activities.id,
     contactId: activities.contactId,
+    leadId: activities.leadId,
     estimateId: activities.estimateId,
     jobId: activities.jobId,
     // The metadata column is stored as text holding a JSON-serialized object

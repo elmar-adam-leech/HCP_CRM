@@ -8,6 +8,7 @@ import { users } from "./users";
 import { contacts } from "./contacts";
 import { estimates } from "./estimates";
 import { jobs } from "./jobs";
+import { leads } from "./leads";
 
 // Activities table for tracking timestamped notes and interactions
 export const activities = pgTable("activities", {
@@ -18,6 +19,7 @@ export const activities = pgTable("activities", {
   metadata: jsonb("metadata"), // JSONB for additional data (e.g., email subject, to/from for emails)
   // Link to different entity types
   contactId: varchar("contact_id").references(() => contacts.id, { onDelete: "cascade" }), // Unified contact reference
+  leadId: varchar("lead_id").references(() => leads.id, { onDelete: "cascade" }),
   estimateId: varchar("estimate_id").references(() => estimates.id, { onDelete: "cascade" }),
   jobId: varchar("job_id").references(() => jobs.id, { onDelete: "cascade" }),
   // Who created this activity
@@ -38,6 +40,7 @@ export const activities = pgTable("activities", {
   contractorIdIdx: index("activities_contractor_id_idx").on(table.contractorId),
   typeIdx: index("activities_type_idx").on(table.type),
   contactIdIdx: index("activities_contact_id_idx").on(table.contactId),
+  leadIdIdx: index("activities_lead_id_idx").on(table.leadId),
   estimateIdIdx: index("activities_estimate_id_idx").on(table.estimateId),
   jobIdIdx: index("activities_job_id_idx").on(table.jobId),
   userIdIdx: index("activities_user_id_idx").on(table.userId),

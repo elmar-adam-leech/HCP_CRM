@@ -10,6 +10,7 @@ import { normalizePhoneForStorage } from '../utils/phone-normalizer';
 import { maskEmail } from '../utils/pii-redactor';
 import { ingestLead } from './lead-ingestion';
 import { broadcastToContractor } from '../websocket';
+import { dispatchInboundReplyWorkflows } from '../services/inbound-reply-dispatcher';
 
 const log = logger('LeadCaptureSync');
 
@@ -229,16 +230,19 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
             matches.map(m => m.contactId).filter((c): c is string => !!c)
           ));
           let matchedContactId: string | null = null;
+          let matchedLeadId: string | null = null;
           let matchedEstimateId: string | null = null;
           let matchedJobId: string | null = null;
           if (distinctContactIds.length === 1) {
             matchedContactId = distinctContactIds[0];
             const m = matches.find(x => x.contactId === matchedContactId)!;
+            matchedLeadId = m.leadId || null;
             matchedEstimateId = m.estimateId;
             matchedJobId = m.jobId;
           } else if (distinctContactIds.length > 1) {
             const newest = matches.find(m => !!m.contactId)!;
             matchedContactId = newest.contactId!;
+            matchedLeadId = newest.leadId || null;
             matchedEstimateId = newest.estimateId;
             matchedJobId = newest.jobId;
             log.warn(
@@ -284,6 +288,17 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
                 }
               }
 
+              // Resolve current lead for this contact if not provided from prior activity
+              if (!matchedLeadId && matchingContact.id) {
+                try {
+                  const leads = await storage.getLeadsByContact(matchingContact.id, inbox.contractorId);
+                  const openLead = leads.find((l: any) => !l.archived && ['new', 'contacted', 'qualified'].includes(l.status)) || leads[0];
+                  if (openLead) matchedLeadId = openLead.id;
+                } catch (e) {
+                  log.error('Error resolving lead for lead-capture inbound email', e);
+                }
+              }
+
               await storage.createActivity({
                 type: 'email',
                 title: `Email received: ${email.subject}`,
@@ -298,6 +313,7 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
                   matchedViaHeaders: true,
                 },
                 contactId: matchingContact.id,
+                leadId: matchedLeadId,
                 estimateId: matchedEstimateId,
                 jobId: matchedJobId,
                 userId: null,
@@ -310,6 +326,19 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
                 type: 'new_message',
                 contactId: matchingContact.id,
               });
+
+              // Dispatch reply workflows for this inbound email (gated inside)
+              dispatchInboundReplyWorkflows({
+                contractorId: inbox.contractorId,
+                contactId: matchingContact.id,
+                leadId: matchedLeadId || undefined,
+                estimateId: matchedEstimateId || undefined,
+                jobId: matchedJobId || undefined,
+                content: email.body || '',
+                type: 'email',
+                messageId: undefined, // activity id not captured here
+                sourceIntegration: 'gmail', // lead-capture uses gmail under the hood
+              }).catch((err) => log.error('Inbound reply dispatcher (lead-capture) failed:', err));
 
               stats.processed++;
               log.info(`Filed lead-capture reply ${email.id} against contact ${matchingContact.id} via headers`);

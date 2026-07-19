@@ -15,9 +15,14 @@
  *     payload includes `payment`:
  *       { amount, method, paid_at, is_deposit }
  *
- *   estimate_stale:
- *     payload is the enriched estimate at the time the staleness check resolved.
- */
+  *   estimate_stale:
+  *     payload is the enriched estimate at the time the staleness check resolved.
+  *
+  *   *_reply_received:
+  *     payload includes `reply`:
+  *       { content, fromNumber?, toNumber?, type, receivedAt, sourceIntegration }
+  *     and assigned user details when available.
+  */
 export const EVENT_MAPPING: Record<string, { entity: string; event: string }> = {
   'contact_created':            { entity: 'lead',     event: 'created' },
   'contact_updated':            { entity: 'lead',     event: 'updated' },
@@ -34,6 +39,9 @@ export const EVENT_MAPPING: Record<string, { entity: string; event: string }> = 
   'job_paid':                   { entity: 'job',      event: 'paid' },
   'payment_received':           { entity: 'job',      event: 'payment_received' },
   'deposit_received':           { entity: 'job',      event: 'deposit_received' },
+  'lead_reply_received':        { entity: 'lead',     event: 'reply_received' },
+  'estimate_reply_received':    { entity: 'estimate', event: 'reply_received' },
+  'job_reply_received':         { entity: 'job',      event: 'reply_received' },
 };
 
 export type eventType =
@@ -51,4 +59,7 @@ export type eventType =
   | 'job_status_changed'
   | 'job_paid'
   | 'payment_received'
-  | 'deposit_received';
+  | 'deposit_received'
+  | 'lead_reply_received'
+  | 'estimate_reply_received'
+  | 'job_reply_received';

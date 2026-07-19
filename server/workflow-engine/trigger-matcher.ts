@@ -166,12 +166,24 @@ export async function matchAndEnrichWorkflows(
   }
 
   let enrichedData: Record<string, unknown> = entityData;
-  if (eventType.startsWith('estimate_') && entityData.id) {
+  const isEstimateEvent = eventType.startsWith('estimate_') || eventType === 'estimate_reply_received';
+  const isJobEvent = eventType.startsWith('job_') || eventType === 'job_reply_received';
+  const isLeadEvent = eventType.startsWith('lead_') || eventType === 'lead_reply_received' || eventType.startsWith('contact_');
+  if (isEstimateEvent && entityData.id) {
     const enriched = await storage.getEstimateWithContact(String(entityData.id), contractorId);
     if (enriched) enrichedData = enriched as unknown as Record<string, unknown>;
-  } else if (eventType.startsWith('job_') && entityData.id) {
+  } else if (isJobEvent && entityData.id) {
     const enriched = await storage.getJobWithContact(String(entityData.id), contractorId);
     if (enriched) enrichedData = enriched as unknown as Record<string, unknown>;
+  } else if (isLeadEvent && entityData.id) {
+    // For lead/contact events, try to enrich with contact if a lead id is provided
+    try {
+      const lead = await storage.getLead(String(entityData.id), contractorId);
+      if (lead) {
+        const contact = lead.contactId ? await storage.getContact(String(lead.contactId), contractorId) : null;
+        enrichedData = contact ? { ...lead, contact } : lead;
+      }
+    } catch {}
   }
 
   return { matchingWorkflows, enrichedData };

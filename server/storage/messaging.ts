@@ -169,6 +169,7 @@ async function getConversations(contractorId: string, options: {
         direction: messages.direction, content: messages.content,
         toNumber: messages.toNumber, fromNumber: messages.fromNumber,
         contactId: messages.contactId, estimateId: messages.estimateId,
+        leadId: messages.leadId, jobId: messages.jobId,
         userId: messages.userId, externalMessageId: messages.externalMessageId,
         contractorId: messages.contractorId, createdAt: messages.createdAt,
         readAt: messages.readAt,
@@ -355,7 +356,8 @@ async function getConversationMessages(contractorId: string, contactId: string):
     db.select({
       id: messages.id, type: messages.type, status: messages.status, direction: messages.direction,
       content: messages.content, toNumber: messages.toNumber, fromNumber: messages.fromNumber,
-      contactId: messages.contactId, estimateId: messages.estimateId, userId: messages.userId,
+      contactId: messages.contactId, estimateId: messages.estimateId, leadId: messages.leadId, jobId: messages.jobId,
+      userId: messages.userId,
       externalMessageId: messages.externalMessageId, contractorId: messages.contractorId,
       createdAt: messages.createdAt, readAt: messages.readAt, userName: users.name,
       aiAuthored: messages.aiAuthored, isSchedulingIntent: messages.isSchedulingIntent,

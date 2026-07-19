@@ -63,6 +63,21 @@ const ENTITY_VARIABLE_GROUPS: Record<string, VariableGroup[]> = {
         { key: 'booking_link', label: 'Booking Link', type: 'string', example: 'https://yoursite.com/book/my-company?c=ab12cd34' },
       ],
     },
+    {
+      title: 'Reply (reply_received triggers)',
+      variables: [
+        { key: 'reply.content', label: 'Reply Content', type: 'string', example: 'Yes, that works' },
+        { key: 'reply.fromNumber', label: 'From Number', type: 'string', example: '+15551234567' },
+        { key: 'reply.toNumber', label: 'To Number', type: 'string', example: '+15559876543' },
+        { key: 'reply.type', label: 'Type (text/email)', type: 'string', example: 'text' },
+        { key: 'reply.receivedAt', label: 'Received At', type: 'date', example: '2025-01-15T14:30:00Z' },
+        { key: 'reply.messageId', label: 'Message/Activity ID', type: 'string', example: 'msg-123' },
+        { key: 'sourceIntegration', label: 'Source Integration', type: 'string', example: 'dialpad' },
+        { key: 'assignedUser.name', label: 'Assigned User Name', type: 'string', example: 'Alex' },
+        { key: 'assignedUser.email', label: 'Assigned User Email', type: 'string', example: 'alex@example.com' },
+        { key: 'assignedUser.phone', label: 'Assigned User Phone', type: 'string', example: '(555) 111-2222' },
+      ],
+    },
   ],
   estimate: [
     {
@@ -102,6 +117,21 @@ const ENTITY_VARIABLE_GROUPS: Record<string, VariableGroup[]> = {
       title: 'Contact Fields',
       variables: CONTACT_VARIABLES,
     },
+    {
+      title: 'Reply (reply_received triggers)',
+      variables: [
+        { key: 'reply.content', label: 'Reply Content', type: 'string', example: 'Yes, that works' },
+        { key: 'reply.fromNumber', label: 'From Number', type: 'string', example: '+15551234567' },
+        { key: 'reply.toNumber', label: 'To Number', type: 'string', example: '+15559876543' },
+        { key: 'reply.type', label: 'Type (text/email)', type: 'string', example: 'email' },
+        { key: 'reply.receivedAt', label: 'Received At', type: 'date', example: '2025-01-15T14:30:00Z' },
+        { key: 'reply.messageId', label: 'Message/Activity ID', type: 'string', example: 'act-456' },
+        { key: 'sourceIntegration', label: 'Source Integration', type: 'string', example: 'gmail' },
+        { key: 'assignedUser.name', label: 'Assigned User Name', type: 'string', example: 'Alex' },
+        { key: 'assignedUser.email', label: 'Assigned User Email', type: 'string', example: 'alex@example.com' },
+        { key: 'assignedUser.phone', label: 'Assigned User Phone', type: 'string', example: '(555) 111-2222' },
+      ],
+    },
   ],
   job: [
     {
@@ -136,6 +166,21 @@ const ENTITY_VARIABLE_GROUPS: Record<string, VariableGroup[]> = {
     {
       title: 'Contact Fields',
       variables: CONTACT_VARIABLES,
+    },
+    {
+      title: 'Reply (reply_received triggers)',
+      variables: [
+        { key: 'reply.content', label: 'Reply Content', type: 'string', example: 'Yes, that works' },
+        { key: 'reply.fromNumber', label: 'From Number', type: 'string', example: '+15551234567' },
+        { key: 'reply.toNumber', label: 'To Number', type: 'string', example: '+15559876543' },
+        { key: 'reply.type', label: 'Type (text/email)', type: 'string', example: 'text' },
+        { key: 'reply.receivedAt', label: 'Received At', type: 'date', example: '2025-01-15T14:30:00Z' },
+        { key: 'reply.messageId', label: 'Message/Activity ID', type: 'string', example: 'msg-789' },
+        { key: 'sourceIntegration', label: 'Source Integration', type: 'string', example: 'twilio' },
+        { key: 'assignedUser.name', label: 'Assigned User Name', type: 'string', example: 'Alex' },
+        { key: 'assignedUser.email', label: 'Assigned User Email', type: 'string', example: 'alex@example.com' },
+        { key: 'assignedUser.phone', label: 'Assigned User Phone', type: 'string', example: '(555) 111-2222' },
+      ],
     },
   ],
   customer: [

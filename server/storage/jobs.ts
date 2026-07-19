@@ -268,6 +268,13 @@ async function getJobByHousecallProJobId(externalId: string, contractorId: strin
   return result[0];
 }
 
+async function getJobsByContact(contactId: string, contractorId: string): Promise<Job[]> {
+  return await db.select().from(jobs)
+    .where(and(eq(jobs.contactId, contactId), eq(jobs.contractorId, contractorId)))
+    .orderBy(desc(jobs.createdAt))
+    .limit(5);
+}
+
 export type JobWithContactInfo = Job & {
   contactName: string | null;
   contactEmails: string[] | null;
@@ -321,5 +328,6 @@ export const jobMethods = {
   deleteJob,
   getJobByEstimateId,
   getJobByHousecallProJobId,
+  getJobsByContact,
   getJobsWithFollowUp,
 };
