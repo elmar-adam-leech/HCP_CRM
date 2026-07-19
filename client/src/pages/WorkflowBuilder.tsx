@@ -30,7 +30,7 @@ import { WorkflowStatusAlert } from "@/components/workflow/WorkflowStatusAlert";
 import { WorkflowTemplate } from "@/data/workflow-templates";
 import { Node, Edge, ReactFlowInstance } from 'reactflow';
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { extractTriggerConfig, NODE_TO_ACTION, ACTION_TO_NODE } from "@/lib/workflow-utils";
+import { extractTriggerConfig, NODE_TO_ACTION, ACTION_TO_NODE, buildTriggerLabel } from "@/lib/workflow-utils";
 import type { Workflow } from "@/types/workflow";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
@@ -101,7 +101,7 @@ export default function WorkflowBuilder() {
         position: { x: 250, y: 50 },
         data: {
           label: triggerLabel,
-          triggerType: workflow.triggerType === 'entity_created' || workflow.triggerType === 'entity_updated' || workflow.triggerType === 'status_changed'
+          triggerType: (workflow.triggerType === 'entity_created' || workflow.triggerType === 'entity_updated' || workflow.triggerType === 'status_changed' || workflow.triggerType.endsWith('_reply_received'))
             ? 'entity_event' 
             : workflow.triggerType,
           ...normalizedConfig
@@ -166,6 +166,8 @@ export default function WorkflowBuilder() {
     if (event === 'status_changed') {
       const target = triggerConfig.targetStatus ? ` to ${String(triggerConfig.targetStatus).replace(/_/g, ' ')}` : '';
       return `When ${entityLabel} Status Changes${target}`;
+    } else if (event === 'reply_received') {
+      return `When ${entityLabel} Reply Received (SMS/Email)`;
     } else if (triggerType === 'entity_created' || (triggerType === 'entity_event' && event === 'created')) {
       return `When ${entityLabel} is Created`;
     } else if (triggerType === 'entity_updated' || (triggerType === 'entity_event' && event === 'updated')) {

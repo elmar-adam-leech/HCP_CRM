@@ -279,6 +279,18 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       description: 'workflow_trigger_type enum: add deposit_received value (#437)',
     },
     {
+      sql: `ALTER TYPE workflow_trigger_type ADD VALUE IF NOT EXISTS 'lead_reply_received'`,
+      description: 'workflow_trigger_type enum: add lead_reply_received value (inbound SMS/email replies)',
+    },
+    {
+      sql: `ALTER TYPE workflow_trigger_type ADD VALUE IF NOT EXISTS 'estimate_reply_received'`,
+      description: 'workflow_trigger_type enum: add estimate_reply_received value (inbound SMS/email replies)',
+    },
+    {
+      sql: `ALTER TYPE workflow_trigger_type ADD VALUE IF NOT EXISTS 'job_reply_received'`,
+      description: 'workflow_trigger_type enum: add job_reply_received value (inbound SMS/email replies)',
+    },
+    {
       sql: `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS follow_up_date timestamp`,
       description: 'jobs.follow_up_date (nullable timestamp for follow-up scheduling)',
     },
