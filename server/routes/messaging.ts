@@ -88,37 +88,50 @@ export function registerMessagingRoutes(app: Express): void {
     });
 
     if (smsResponse.success) {
-      const savedMessage = await storage.createMessage({
-        ...messageData,
-        content: messageContent,
-        status: 'sent',
-        userId: req.user.userId,
-        externalMessageId: smsResponse.messageId || null,
-      }, req.user.contractorId);
-
-      await Promise.all([
-        resolvedContactId
-          ? storage.markContactContacted(resolvedContactId, req.user.contractorId, req.user.userId)
-          : Promise.resolve(),
-        resolvedContactId
-          ? storage.markLeadContacted(resolvedContactId, req.user.contractorId, req.user.userId)
-          : Promise.resolve(),
-        storage.createActivity({
-          type: 'sms',
-          title: 'SMS sent',
+      let savedMessage: any = null;
+      try {
+        savedMessage = await storage.createMessage({
+          ...messageData,
           content: messageContent,
-          contactId: resolvedContactId || null,
+          status: 'sent',
           userId: req.user.userId,
-          externalId: smsResponse.messageId || null,
-          externalSource: smsProviderName,
-        }, req.user.contractorId),
-      ]);
+          externalMessageId: smsResponse.messageId || null,
+          direction: 'outbound',
+          aiAuthored: false,
+          isSchedulingIntent: false,
+        }, req.user.contractorId);
 
-      broadcastToContractor(req.user.contractorId, {
-        type: 'new_message',
-        message: savedMessage,
-        contactId: resolvedContactId || null,
-      });
+        await Promise.all([
+          resolvedContactId
+            ? storage.markContactContacted(resolvedContactId, req.user.contractorId, req.user.userId)
+            : Promise.resolve(),
+          resolvedContactId
+            ? storage.markLeadContacted(resolvedContactId, req.user.contractorId, req.user.userId)
+            : Promise.resolve(),
+          storage.createActivity({
+            type: 'sms',
+            title: 'SMS sent',
+            content: messageContent,
+            contactId: resolvedContactId || null,
+            userId: req.user.userId,
+            externalId: smsResponse.messageId || null,
+            externalSource: smsProviderName,
+          }, req.user.contractorId),
+        ]);
+
+        broadcastToContractor(req.user.contractorId, {
+          type: 'new_message',
+          message: savedMessage,
+          contactId: resolvedContactId || null,
+        });
+      } catch (persistErr) {
+        log.warn('Post-send persistence failed for SMS (message was delivered by provider)', {
+          err: persistErr,
+          contractorId: req.user.contractorId,
+          externalMessageId: smsResponse.messageId || null,
+        });
+        // do not fail the request — the text was sent
+      }
 
       res.json({
         success: true,
@@ -126,7 +139,7 @@ export function registerMessagingRoutes(app: Express): void {
         messageId: smsResponse.messageId
       });
     } else {
-      res.status(500).json({
+      res.status(502).json({
         success: false,
         error: smsResponse.error,
         message: "Failed to send text message"

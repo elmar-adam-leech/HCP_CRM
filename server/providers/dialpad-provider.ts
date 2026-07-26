@@ -4,7 +4,6 @@ import { getCredentials } from '../dialpad/client';
 import { formatToE164, classifyDialpadCallError } from '../dialpad/utils';
 import { storage } from '../storage';
 import { logger } from '../utils/logger';
-import { withRetry } from '../utils/retry';
 import { maskPhone } from '../utils/pii-redactor';
 
 const log = logger('DialpadCallProvider');
@@ -53,23 +52,15 @@ export class DialpadSmsProvider implements SmsProvider {
       };
       log.info(`[phone-pipeline] Dialpad SMS API call — to_numbers[0]: "${maskPhone(toE164)}"`);
 
-      const response = await withRetry(
-        async () => {
-          const r = await fetch(`${baseUrl}/sms/`, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${apiKey}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload),
-          });
-          if (r.status === 429 || (r.status >= 500 && r.status < 600)) {
-            throw new Error(`Dialpad SMS API returned ${r.status}`);
-          }
-          return r;
+      // no retry on write — retrying risks duplicate messages
+      const response = await fetch(`${baseUrl}/sms/`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
         },
-        'DialpadSmsProvider.sendSms',
-      );
+        body: JSON.stringify(payload),
+      });
 
       if (!response.ok) {
         const errorText = await response.text();

@@ -143,7 +143,7 @@ export function TextingModal({
         content: message.trim(),
         toNumber: recipientPhone,
         fromNumber: selectedFromNumber,
-        contactId: derivedContactId || undefined,
+        contactId: contactId || undefined,
         leadId,
         customerId,
         estimateId,
