@@ -72,13 +72,16 @@ export function registerEmailSyncRoutes(app: Express): void {
 
       const fromEmail = email.from;
       const toEmails: string[] = Array.isArray(email.to) ? email.to : (email.to ? [email.to] : []);
+      const ccEmails: string[] = Array.isArray(email.cc) ? email.cc : (email.cc ? [email.cc] : []);
+      const bccEmails: string[] = Array.isArray(email.bcc) ? email.bcc : (email.bcc ? [email.bcc] : []);
 
       // Prefer Gmail's own SENT label — reliably catches alias-sent emails even
       // when the from address differs from the connected gmailEmail.
       const isOutbound = email.labelIds?.includes('SENT')
         || fromEmail?.toLowerCase() === user.gmailEmail?.toLowerCase();
       const direction = isOutbound ? 'outbound' : 'inbound';
-      const emailsToMatch = isOutbound ? toEmails : (fromEmail ? [fromEmail] : []);
+      const participants = [fromEmail, ...toEmails, ...ccEmails, ...bccEmails].filter(Boolean);
+      const emailsToMatch = participants;
 
       let matchingContact = null;
 
@@ -98,6 +101,8 @@ export function registerEmailSyncRoutes(app: Express): void {
       const emailMetadata = {
         subject: email.subject,
         to: email.to,
+        cc: ccEmails,
+        bcc: bccEmails,
         from: email.from,
         messageId: email.id,
         direction: direction,

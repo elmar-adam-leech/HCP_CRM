@@ -5,6 +5,7 @@ import {
 import { db } from "../db";
 import { eq, and, ne, desc, inArray, like, sql } from "drizzle-orm";
 import { emailActivityToMessage } from "../utils/message-transform";
+import { unlinkOrphanedEmailActivities, emailInvolvesContact } from "./contacts";
 
 // Row limits for non-paginated queries. These prevent runaway memory usage on
 // large tenants and act as a safety valve. Each is accompanied by a note on
@@ -347,10 +348,10 @@ async function getConversationMessages(contractorId: string, contactId: string):
   const contact = await db.select({ phones: contacts.phones, emails: contacts.emails })
     .from(contacts).where(and(eq(contacts.id, contactId), eq(contacts.contractorId, contractorId))).limit(1);
 
-  const _contactPhones: string[] = contact[0]?.phones || [];
-  void _contactPhones;
-  const _contactEmails: string[] = contact[0]?.emails || [];
-  void _contactEmails;
+  const currentEmails: string[] = contact[0]?.emails || [];
+  if (currentEmails.length > 0) {
+    unlinkOrphanedEmailActivities(contactId, currentEmails, contractorId).catch(() => {});
+  }
 
   const [smsMessages, emailActivities] = await Promise.all([
     db.select({
@@ -375,7 +376,8 @@ async function getConversationMessages(contractorId: string, contactId: string):
       .limit(CONVERSATION_MESSAGE_LIMIT),
   ]);
 
-  const emailMessages = emailActivities.map(emailActivityToMessage);
+  const filteredEmailActivities = emailActivities.filter(a => emailInvolvesContact(a.metadata, currentEmails));
+  const emailMessages = filteredEmailActivities.map(emailActivityToMessage);
 
   const allMessages = [...smsMessages, ...emailMessages as Message[]];
   allMessages.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());

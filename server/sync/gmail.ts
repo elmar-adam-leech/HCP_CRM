@@ -1,4 +1,5 @@
 import { storage } from '../storage';
+import { emailInvolvesContact } from '../storage/contacts';
 import { db } from '../db';
 import { users, activities, contacts, contractors } from '@shared/schema';
 import { dispatchInboundReplyWorkflows } from '../services/inbound-reply-dispatcher';
@@ -17,7 +18,8 @@ interface SyncOneAccountOpts {
   gmailEmail: string | null;     // used for outbound detection
   sinceDate?: Date;
   userIdForActivity: string | null; // null for shared inbox (system-attributed)
-  autoLearnReplyAddresses: boolean; // contractor-level toggle for auto-learning new sender addrs
+  autoLearnReplyAddresses: boolean;
+  internalAccountEmails: string[];
   onTokenExpired: () => Promise<void>;
   onSynced: (when: Date) => Promise<void>;
 }
@@ -26,6 +28,7 @@ async function syncOneGmailAccount(opts: SyncOneAccountOpts): Promise<void> {
   const {
     tenantId, accountLabel, refreshToken, gmailEmail,
     sinceDate, userIdForActivity, autoLearnReplyAddresses,
+    internalAccountEmails,
     onTokenExpired, onSynced,
   } = opts;
 
@@ -71,14 +74,17 @@ async function syncOneGmailAccount(opts: SyncOneAccountOpts): Promise<void> {
 
       const fromEmail = email.from;
       const toEmails = email.to || [];
+      const ccEmails = email.cc || [];
+      const bccEmails = email.bcc || [];
       // Prefer Gmail's own SENT label — reliably catches alias-sent emails even
       // when the from address differs from the connected gmailEmail.
       const isOutbound = email.labelIds?.includes('SENT')
         || (gmailEmail && fromEmail.toLowerCase() === gmailEmail.toLowerCase());
 
+      const participants = [fromEmail, ...toEmails, ...ccEmails, ...bccEmails].filter(Boolean);
       const emailsToSearch = isOutbound ? toEmails : (fromEmail ? [fromEmail] : []);
-      let matchedContactId = emailsToSearch.length > 0
-        ? await storage.findMatchingContact(tenantId, emailsToSearch, [])
+      let matchedContactId = participants.length > 0
+        ? await storage.findMatchingContact(tenantId, participants, [])
         : null;
 
       // Header-based fallback: when sender-based matching missed (e.g. spouse
@@ -129,6 +135,19 @@ async function syncOneGmailAccount(opts: SyncOneAccountOpts): Promise<void> {
 
       if (!matchingContact) {
         continue;
+      }
+
+      if (matchedViaHeaders && !isOutbound) {
+        const parts = [fromEmail, ...toEmails, ...ccEmails, ...bccEmails].filter(Boolean);
+        if (!emailInvolvesContact({ from: fromEmail, to: toEmails, cc: ccEmails, bcc: bccEmails }, matchingContact.emails || [])) {
+          if ((internalAccountEmails || []).some((i: string) => {
+            const il = i.toLowerCase();
+            const fl = (fromEmail || '').toLowerCase();
+            return fl === il || (fl.includes('@') && il.includes('@') && fl.split('@')[1] === il.split('@')[1]);
+          })) {
+            continue;
+          }
+        }
       }
 
       // For inbound email, if no lead from header match, resolve current open lead for this contact (for activity + workflows)
@@ -188,6 +207,8 @@ async function syncOneGmailAccount(opts: SyncOneAccountOpts): Promise<void> {
       const emailMetadata: Record<string, unknown> = {
         subject: email.subject,
         to: email.to,
+        cc: email.cc || [],
+        bcc: email.bcc || [],
         from: email.from,
         messageId: email.id,
         direction: isOutbound ? 'outbound' : 'inbound',
@@ -279,6 +300,11 @@ export async function syncGmail(tenantId: string): Promise<void> {
     // Default ON when the column has not been set.
     const autoLearnReplyAddresses = contractorRow[0]?.autoLearnReplyAddresses ?? true;
 
+    const internalAccountEmails: string[] = [
+      ...gmailUsers.map((u: any) => u.gmailEmail).filter(Boolean),
+      sharedAccount?.email
+    ].filter(Boolean).map((e: string) => e.toLowerCase());
+
     const totalAccounts = gmailUsers.length + (sharedAccount?.gmailRefreshToken ? 1 : 0);
     if (totalAccounts === 0) {
       log.info(`No Gmail accounts (user or shared) found for tenant ${tenantId}`);
@@ -301,6 +327,7 @@ export async function syncGmail(tenantId: string): Promise<void> {
         sinceDate: user.gmailLastSyncAt || undefined,
         userIdForActivity: user.id,
         autoLearnReplyAddresses,
+        internalAccountEmails,
         onTokenExpired: async () => {
           await db.update(users)
             .set({ gmailConnected: false, gmailRefreshToken: null })
@@ -331,6 +358,7 @@ export async function syncGmail(tenantId: string): Promise<void> {
         sinceDate: sharedAccount.lastSyncAt || undefined,
         userIdForActivity: null,
         autoLearnReplyAddresses,
+        internalAccountEmails,
         onTokenExpired: async () => {
           log.info(`Shared inbox token expired for tenant ${tenantId} — clearing and notifying`);
           await storage.clearSharedEmailToken(tenantId);

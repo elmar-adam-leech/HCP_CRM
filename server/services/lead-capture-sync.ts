@@ -3,6 +3,7 @@ import { gmailService } from '../gmail-service';
 import { parseEmailWithAI, runHeuristicSpamCheck } from './email-ai-parser';
 import { extractFirstUrl, extractUrlByPattern, fetchPageText, extractMarketingUrl, KNOWN_PLATFORMS, SOURCE_ABBREVIATIONS } from './link-fetcher';
 import { storage } from '../storage';
+import { emailInvolvesContact } from '../storage/contacts';
 import { db } from '../db';
 import { eq, and, inArray } from 'drizzle-orm';
 import { logger } from '../utils/logger';
@@ -256,7 +257,13 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
             if (matchingContact) {
               const fromEmail = email.from;
               const senderLower = extractEmailAddress(fromEmail);
-
+              const parts = [fromEmail, ...(email.to || []), ...(email.cc || []), ...(email.bcc || [])].filter(Boolean);
+              const overlap = emailInvolvesContact({ from: fromEmail, to: email.to || [], cc: email.cc || [], bcc: email.bcc || [] }, matchingContact.emails || []);
+              const inboxL = (inboxAddressLower || '').toLowerCase();
+              const isInternalFwd = !overlap && (fromEmail.toLowerCase() === inboxL || (fromEmail.includes('@') && inboxL.includes('@') && fromEmail.toLowerCase().split('@')[1] === inboxL.split('@')[1]));
+              if (isInternalFwd) {
+                matchedContactId = null;
+              } else {
               if (
                 autoLearnReplyAddresses
                 && senderLower
@@ -306,6 +313,8 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
                 metadata: {
                   subject: email.subject,
                   to: email.to,
+                  cc: email.cc || [],
+                  bcc: email.bcc || [],
                   from: email.from,
                   messageId: email.id,
                   direction: 'inbound',
@@ -343,6 +352,7 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
               stats.processed++;
               log.info(`Filed lead-capture reply ${email.id} against contact ${matchingContact.id} via headers`);
               continue;
+            }
             }
           }
         }

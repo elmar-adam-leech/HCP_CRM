@@ -94,7 +94,7 @@ import type {
 } from "./storage-types";
 
 import { userMethods } from "./storage/users";
-import { contactMethods } from "./storage/contacts";
+import { contactMethods, emailInvolvesContact } from "./storage/contacts";
 import { jobMethods } from "./storage/jobs";
 import { estimateMethods } from "./storage/estimates";
 import { messagingMethods } from "./storage/messaging";
@@ -200,6 +200,7 @@ export interface IStorage {
   updateLeadStageForContact(contactId: string, contractorId: string, status: string): Promise<void>;
   deleteContact(id: string, contractorId: string): Promise<boolean>;
   unlinkOrphanedEmailActivities(contactId: string, currentEmails: string[], contractorId: string): Promise<void>;
+  emailInvolvesContact(meta: unknown, contactEmails: string[]): boolean;
   findMatchingContact(contractorId: string, emails?: string[], phones?: string[]): Promise<string | null>;
 
   // Lead operations (individual lead submissions)
@@ -675,6 +676,7 @@ export interface IStorage {
 export const storage: IStorage = {
   ...userMethods,
   ...contactMethods,
+  emailInvolvesContact,
   ...jobMethods,
   ...estimateMethods,
   ...messagingMethods,

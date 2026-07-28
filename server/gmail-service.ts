@@ -447,6 +447,8 @@ export class GmailService {
   private parseEmailHeaders(headers: gmail_v1.Schema$MessagePartHeader[] | undefined): {
     from: string;
     to: string[];
+    cc?: string[];
+    bcc?: string[];
     subject: string;
     date: string;
     rfc822MessageId: string;
@@ -456,6 +458,8 @@ export class GmailService {
     const result = {
       from: '',
       to: [] as string[],
+      cc: [] as string[],
+      bcc: [] as string[],
       subject: '',
       date: '',
       rfc822MessageId: '',
@@ -475,6 +479,12 @@ export class GmailService {
           break;
         case 'to':
           result.to = value.split(',').map(email => email.trim());
+          break;
+        case 'cc':
+          result.cc = value.split(',').map(email => email.trim());
+          break;
+        case 'bcc':
+          result.bcc = value.split(',').map(email => email.trim());
           break;
         case 'subject':
           result.subject = value;
@@ -550,14 +560,13 @@ export class GmailService {
       threadId: string;
       from: string;
       to: string[];
+      cc?: string[];
+      bcc?: string[];
       subject: string;
       body: string;
       date: Date;
       snippet: string;
-      labelIds: string[]; // Gmail system labels e.g. ['SENT'], ['INBOX']
-      // RFC822 thread headers used to attribute inbound replies back to the
-      // original outbound activity even when the sender's address is not yet
-      // on the contact (spouse replying, reply-from-phone, etc.).
+      labelIds: string[];
       rfc822MessageId?: string;
       inReplyTo?: string;
       references?: string[];
@@ -619,6 +628,8 @@ export class GmailService {
               threadId: fullMessage.data.threadId || '',
               from: this.extractEmailAddress(headers.from),
               to: headers.to.map(email => this.extractEmailAddress(email)),
+              cc: (headers.cc || []).map(email => this.extractEmailAddress(email)),
+              bcc: (headers.bcc || []).map(email => this.extractEmailAddress(email)),
               subject: headers.subject,
               body: body,
               date: headers.date ? new Date(headers.date) : new Date(),

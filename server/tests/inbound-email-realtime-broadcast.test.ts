@@ -82,6 +82,8 @@ describe('Gmail inbound sync → realtime new_message broadcast', () => {
           threadId: `thread-${randomUUID()}`,
           from: senderEmail,
           to: [mailboxEmail],
+          cc: [],
+          bcc: [],
           subject: 'Hello from inbound',
           body: 'This is a real inbound email coming through the sync handler.',
           date: new Date(),

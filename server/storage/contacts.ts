@@ -742,7 +742,7 @@ async function unlinkOrphanedEmailActivities(contactId: string, currentEmails: s
     .where(and(
       eq(activities.contactId, contactId),
       eq(activities.contractorId, contractorId),
-      eq(activities.externalSource, 'gmail')
+      eq(activities.type, 'email')
     ));
 
   if (emailActivities.length === 0) return;
@@ -753,10 +753,7 @@ async function unlinkOrphanedEmailActivities(contactId: string, currentEmails: s
     if (!activity.metadata) continue;
     try {
       const meta = (typeof activity.metadata === 'object' ? activity.metadata : JSON.parse(activity.metadata as string)) as Record<string, unknown>;
-      const fromEmail = ((meta.from as string) || '').toLowerCase();
-      const toEmails: string[] = ((meta.to as string[]) || []).map((e: string) => e.toLowerCase());
-      const allEmails = [fromEmail, ...toEmails];
-      if (allEmails.some(e => lowerCurrentEmails.includes(e))) {
+      if (emailInvolvesContact(meta, currentEmails)) {
         keepIds.push(activity.id);
       }
     } catch {
@@ -770,9 +767,23 @@ async function unlinkOrphanedEmailActivities(contactId: string, currentEmails: s
     .where(and(
       eq(activities.contactId, contactId),
       eq(activities.contractorId, contractorId),
-      eq(activities.externalSource, 'gmail'),
+      eq(activities.type, 'email'),
       keepIds.length > 0 ? notInArray(activities.id, keepIds) : sql`true`
     ));
+}
+
+export { unlinkOrphanedEmailActivities };
+
+export function emailInvolvesContact(meta: unknown, contactEmails: string[]): boolean {
+  if (!meta) return false;
+  const m = (typeof meta === 'object' ? meta : {}) as Record<string, unknown>;
+  const from = ((m.from as string) || '').toLowerCase();
+  const tos = ((m.to as string[]) || []).map((e: string) => e.toLowerCase());
+  const ccs = ((m.cc as string[]) || []).map((e: string) => e.toLowerCase());
+  const bccs = ((m.bcc as string[]) || []).map((e: string) => e.toLowerCase());
+  const parts = [from, ...tos, ...ccs, ...bccs].filter(Boolean);
+  const lowers = contactEmails.map(e => e.toLowerCase());
+  return parts.some(p => lowers.includes(p));
 }
 
 async function findMatchingContact(contractorId: string, emails?: string[], phones?: string[]): Promise<string | null> {
@@ -1283,6 +1294,7 @@ export const contactMethods = {
   updateLeadStageForContact,
   deleteContact,
   unlinkOrphanedEmailActivities,
+  emailInvolvesContact,
   findMatchingContact,
   getLeads,
   getLeadsByContact,
