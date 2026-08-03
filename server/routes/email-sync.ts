@@ -81,7 +81,7 @@ export function registerEmailSyncRoutes(app: Express): void {
         || fromEmail?.toLowerCase() === user.gmailEmail?.toLowerCase();
       const direction = isOutbound ? 'outbound' : 'inbound';
       const participants = [fromEmail, ...toEmails, ...ccEmails, ...bccEmails].filter(Boolean);
-      const emailsToMatch = participants;
+      const emailsToMatch = isOutbound ? toEmails : (fromEmail ? [fromEmail] : []);
 
       let matchingContact = null;
 

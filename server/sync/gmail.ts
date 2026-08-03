@@ -82,9 +82,9 @@ async function syncOneGmailAccount(opts: SyncOneAccountOpts): Promise<void> {
         || (gmailEmail && fromEmail.toLowerCase() === gmailEmail.toLowerCase());
 
       const participants = [fromEmail, ...toEmails, ...ccEmails, ...bccEmails].filter(Boolean);
-      const emailsToSearch = isOutbound ? toEmails : (fromEmail ? [fromEmail] : []);
-      let matchedContactId = participants.length > 0
-        ? await storage.findMatchingContact(tenantId, participants, [])
+      const counterpartyEmails = isOutbound ? toEmails : (fromEmail ? [fromEmail] : []);
+      let matchedContactId = counterpartyEmails.length > 0
+        ? await storage.findMatchingContact(tenantId, counterpartyEmails, [])
         : null;
 
       // Header-based fallback: when sender-based matching missed (e.g. spouse
