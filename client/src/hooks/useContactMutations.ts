@@ -14,13 +14,14 @@ import type { Contact, PaginatedContacts } from "@shared/schema";
  *   - /api/contacts/follow-ups — keeps follow-up widgets in sync
  *
  * Usage:
- *   const { deleteContact, updateContactStatus, archiveLead, restoreLead, updateFollowUpDate, updateContact } = useContactMutations();
+ * const { deleteContact, updateContactStatus, archiveLead, restoreLead, updateFollowUpDate, updateContact, unscheduleContact } = useContactMutations();
  *   deleteContact.mutate(contactId);
  *   updateContactStatus.mutate({ contactId, status: 'contacted' });
  *   archiveLead.mutate(leadId);
  *   restoreLead.mutate(leadId);
  *   updateFollowUpDate.mutate({ contactId, followUpDate: new Date() });
  *   updateContact.mutate({ contactId, updates: { name: 'New Name' } });
+ *   unscheduleContact.mutate(contactId);
  *
  * Per-call callbacks: All mutations accept an optional second argument with
  * per-call onSuccess/onError callbacks (standard TanStack Query pattern):
@@ -58,6 +59,7 @@ export function useContactMutations() {
       });
 
       const allQueries = queryClient.getQueriesData({ queryKey: ["/api/contacts/paginated"] });
+      const isUnscheduled = data.status !== "scheduled";
       for (const [key, value] of allQueries) {
         if (!value) continue;
         const typed = value as PaginatedContacts | InfiniteData<PaginatedContacts>;
@@ -67,7 +69,13 @@ export function useContactMutations() {
             pages: typed.pages.map((page) => ({
               ...page,
               data: page.data.map((c) =>
-                c.id === data.contactId ? { ...c, status: data.status as typeof c.status } : c
+                c.id === data.contactId
+                  ? {
+                      ...c,
+                      status: data.status as typeof c.status,
+                      ...(isUnscheduled ? { isScheduled: false, effectiveStage: data.status } : {}),
+                    }
+                  : c
               ),
             })),
           });
@@ -75,7 +83,13 @@ export function useContactMutations() {
           queryClient.setQueryData<PaginatedContacts>(key, {
             ...typed,
             data: typed.data.map((c) =>
-              c.id === data.contactId ? { ...c, status: data.status as typeof c.status } : c
+              c.id === data.contactId
+                ? {
+                    ...c,
+                    status: data.status as typeof c.status,
+                    ...(isUnscheduled ? { isScheduled: false, effectiveStage: data.status } : {}),
+                  }
+                : c
             ),
           });
         }
@@ -203,5 +217,54 @@ export function useContactMutations() {
     },
   });
 
-  return { deleteContact, updateContactStatus, archiveLead, restoreLead, ageLead, unageLead, updateFollowUpDate, updateContact };
+  const unscheduleContact = useMutation({
+    mutationFn: async (contactId: string) => {
+      return apiRequest("POST", `/api/contacts/${contactId}/unschedule`);
+    },
+    onMutate: async (contactId) => {
+      await queryClient.cancelQueries({ queryKey: ["/api/contacts/paginated"] });
+
+      const allQueries = queryClient.getQueriesData({ queryKey: ["/api/contacts/paginated"] });
+      for (const [key, value] of allQueries) {
+        if (!value) continue;
+        const typed = value as PaginatedContacts | InfiniteData<PaginatedContacts>;
+        if ("pages" in typed) {
+          queryClient.setQueryData<InfiniteData<PaginatedContacts>>(key, {
+            ...typed,
+            pages: typed.pages.map((page) => ({
+              ...page,
+              data: page.data.map((c) =>
+                c.id === contactId
+                  ? { ...c, status: "new" as typeof c.status, isScheduled: false, effectiveStage: "new" }
+                  : c
+              ),
+            })),
+          });
+        } else if (typed.data) {
+          queryClient.setQueryData<PaginatedContacts>(key, {
+            ...typed,
+            data: typed.data.map((c) =>
+              c.id === contactId
+                ? { ...c, status: "new" as typeof c.status, isScheduled: false, effectiveStage: "new" }
+                : c
+            ),
+          });
+        }
+      }
+    },
+    onSuccess: (_result, contactId) => {
+      toast({ title: "Lead Unscheduled", description: "Booking cancelled and lead returned to New." });
+      invalidateContacts(contactId);
+    },
+    onError: (error: Error, _contactId, context) => {
+      // best-effort revert not stored, rely on invalidate
+      toast({
+        title: "Failed to Unschedule",
+        description: error.message || "Something went wrong.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  return { deleteContact, updateContactStatus, archiveLead, restoreLead, ageLead, unageLead, updateFollowUpDate, updateContact, unscheduleContact };
 }

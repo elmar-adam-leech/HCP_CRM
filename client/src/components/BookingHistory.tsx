@@ -1,12 +1,16 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/EmptyState";
-import { AlertCircle, Calendar, ChevronDown, ChevronRight, ClipboardList } from "lucide-react";
+import { AlertCircle, Calendar, ChevronDown, ChevronRight, ClipboardList, X } from "lucide-react";
 import { format } from "date-fns";
 import type { ScheduledBooking } from "@shared/schema";
+import { apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import { invalidateContacts } from "@/hooks/useInvalidations";
 
 interface BookingHistoryProps {
   contactId: string;
@@ -44,9 +48,29 @@ function RawBookingPayload({ payload }: { payload: unknown }) {
 }
 
 export function BookingHistory({ contactId }: BookingHistoryProps) {
-  const { data: bookings, isLoading, isError } = useQuery<ScheduledBooking[]>({
+  const { toast } = useToast();
+
+  const { data: bookings, isLoading, isError, refetch } = useQuery<ScheduledBooking[]>({
     queryKey: [`/api/contacts/${contactId}/bookings`],
     enabled: !!contactId,
+  });
+
+  const cancelBookingMutation = useMutation({
+    mutationFn: async (bookingId: string) => {
+      return apiRequest("DELETE", `/api/scheduling/bookings/${bookingId}`);
+    },
+    onSuccess: () => {
+      toast({ title: "Booking cancelled", description: "Lead returned to New." });
+      invalidateContacts(contactId);
+      refetch();
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to cancel booking",
+        description: error.message || "Something went wrong.",
+        variant: "destructive",
+      });
+    },
   });
 
   if (isError) {
@@ -101,6 +125,19 @@ export function BookingHistory({ contactId }: BookingHistoryProps) {
               >
                 {booking.status}
               </Badge>
+              {booking.status === "confirmed" && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="h-6 px-2 text-xs"
+                  onClick={() => cancelBookingMutation.mutate(booking.id)}
+                  disabled={cancelBookingMutation.isPending}
+                  data-testid={`button-cancel-booking-${booking.id}`}
+                >
+                  <X className="h-3 w-3 mr-1" />
+                  {cancelBookingMutation.isPending ? "Cancelling..." : "Cancel"}
+                </Button>
+              )}
             </div>
           </CardHeader>
           <CardContent className="space-y-2">

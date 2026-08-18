@@ -1,6 +1,6 @@
 import type { Express, Response } from "express";
 import { storage } from "../../storage";
-import { userContractors, type Contractor } from "@shared/schema";
+import { userContractors, type Contractor, scheduledBookings } from "@shared/schema";
 import { db } from "../../db";
 import { eq, and } from "drizzle-orm";
 import { requireManagerOrAdmin, requireAdmin, type AuthedRequest } from "../../auth-service";
@@ -10,6 +10,7 @@ import { asyncHandler } from "../../utils/async-handler";
 import { logger } from "../../utils/logger";
 import { createActivityAndBroadcast } from "../../utils/activity";
 import { housecallSchedulingService } from "../../housecall-scheduling-service";
+import { clearContactScheduledState } from "../../services/contact-status";
 import { getAppointmentSettings, getSalespersonDaySlots } from "../../scheduling/availability";
 import { getWebhookHealthStatus, getWebhookStatus, triggerManualBackfill } from "../../services/hcp-webhook-health";
 import crypto from "crypto";
@@ -219,11 +220,32 @@ export function registerHcpSchedulingRoutes(app: Express): void {
 
   app.delete("/api/scheduling/bookings/:bookingId", asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const { bookingId } = req.params;
+
+    // Look up contact before cancelling so we can fully unschedule the lead
+    // (clear isScheduled + force back to 'new' + cancel any sibling bookings).
+    const [bookingRow] = await db
+      .select({ contactId: scheduledBookings.contactId })
+      .from(scheduledBookings)
+      .where(and(
+        eq(scheduledBookings.id, bookingId),
+        eq(scheduledBookings.contractorId, req.user.contractorId)
+      ))
+      .limit(1);
+
     const cancelled = await housecallSchedulingService.cancelBooking(req.user.contractorId, bookingId);
     if (!cancelled) {
       res.status(404).json({ message: "Booking not found" });
       return;
     }
+
+    if (bookingRow?.contactId) {
+      // Force the associated contact/lead back to New (per product decision for unschedule).
+      await clearContactScheduledState(bookingRow.contactId, req.user.contractorId, {
+        source: 'booking_cancelled',
+        activityUserId: req.user.userId,
+      }).catch(err => log.error('clearContactScheduledState after booking cancel failed (non-fatal):', err));
+    }
+
     res.json({ message: "Booking cancelled" });
   }));
 

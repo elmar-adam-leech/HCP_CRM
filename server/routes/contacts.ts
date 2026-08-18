@@ -24,7 +24,7 @@ import { facebookService } from "../services/facebook-service";
 import { z } from "zod";
 import { logConsent, hashIp } from "../utils/consent-log";
 import { buildFormattedAddress, parseAddressString } from "../utils/address";
-import { markContactScheduled } from "../services/contact-status";
+import { markContactScheduled, clearContactScheduledState } from "../services/contact-status";
 import { normalizePhoneForHcp } from "../utils/phone-normalizer";
 
 const log = logger('ContactRoutes');
@@ -656,6 +656,13 @@ export function registerContactRoutes(app: Express): void {
 
     if (updateData.status === 'scheduled') {
       updateData.scheduledByUserId = req.user.userId;
+    } else if (updateData.status && updateData.status !== 'scheduled') {
+      // Any explicit move to a non-scheduled status must clear the booking state
+      // (cancels active appointments + isScheduled flag) so effectiveStage updates.
+      await clearContactScheduledState(req.params.id, req.user.contractorId, {
+        source: 'manual_status_update',
+        activityUserId: req.user.userId,
+      }).catch(err => log.error('clearContactScheduledState (contact update) failed (non-fatal):', err));
     }
 
     // Regenerate formatted address whenever any structured address fields are provided.
@@ -775,6 +782,15 @@ export function registerContactRoutes(app: Express): void {
       }
       contact = result.contact;
     } else {
+      // Clear any scheduled booking state first. This cancels active bookings,
+      // drops isScheduled, and forces the contact/lead toward 'new' so that
+      // effectiveStage no longer pins the lead in the Scheduled column.
+      // If the caller chose a different non-scheduled status we override below.
+      await clearContactScheduledState(req.params.id, req.user.contractorId, {
+        source: 'manual_status_update',
+        activityUserId: req.user.userId,
+      }).catch(err => log.error('clearContactScheduledState (status change) failed (non-fatal):', err));
+
       const updated = await storage.updateContact(req.params.id, { status }, req.user.contractorId);
       if (!updated) {
         res.status(404).json({ message: "Contact not found" });
@@ -830,6 +846,22 @@ export function registerContactRoutes(app: Express): void {
     res.json(contact);
   }));
 
+  // Explicit unschedule — cancels active bookings for the contact, clears the
+  // scheduled flag/fields, forces status back to 'new' and updates the lead stage.
+  // Used by "Cancel booking" UI actions so a public-booked lead can be returned
+  // to the New column without going through the status picker.
+  app.post("/api/contacts/:id/unschedule", asyncHandler(async (req, res) => {
+    const result = await clearContactScheduledState(req.params.id, req.user.contractorId, {
+      source: 'manual_unschedule',
+      activityUserId: req.user.userId,
+    });
+    if (!result.contact) {
+      res.status(404).json({ message: "Contact not found" });
+      return;
+    }
+    res.json(result.contact);
+  }));
+
   app.post("/api/contacts/bulk-status", asyncHandler(async (req, res) => {
     const bulkStatusSchema = z.object({
       ids: z.array(z.string().uuid()).min(1).max(100),
@@ -867,6 +899,14 @@ export function registerContactRoutes(app: Express): void {
           contact = result.contact;
           results.succeeded++;
         } else {
+          // Clear scheduled booking state (cancels bookings + isScheduled) so the
+          // lead can leave the Scheduled column. clear forces toward 'new'; we then
+          // apply the requested status below.
+          await clearContactScheduledState(id, req.user.contractorId, {
+            source: 'bulk_status_update',
+            activityUserId: req.user.userId,
+          }).catch(err => log.error('clearContactScheduledState (bulk status) failed (non-fatal):', err));
+
           const updated = await storage.updateContact(id, { status }, req.user.contractorId);
           if (!updated) {
             results.failed++;

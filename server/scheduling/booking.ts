@@ -1,6 +1,6 @@
 import { db } from '../db';
 import { contacts, scheduledBookings, userContractors, contractors } from '@shared/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, ne } from 'drizzle-orm';
 import type { BookingRequest, BookingResult, SalespersonInfo } from '../types/scheduling';
 import { parseAddressString } from '../types/scheduling';
 import { logger } from '../utils/logger';
@@ -10,7 +10,7 @@ import { invalidateAndRecompute, utcToLocalDateStr } from '../services/availabil
 import { resolveHcpCustomer } from './hcp-customer';
 import { createOrConvertHcpEstimate } from './hcp-estimate';
 import { createCrmEstimate } from './crm-estimate';
-import { markContactScheduled } from '../services/contact-status';
+import { markContactScheduled, clearContactScheduledState } from '../services/contact-status';
 import { createActivityAndBroadcast } from '../utils/activity';
 import { storage } from '../storage';
 import { placesResolveAddressComponents } from '../utils/places-client';
@@ -407,6 +407,7 @@ export async function cancelBooking(tenantId: string, bookingId: string): Promis
     id: scheduledBookings.id,
     startTime: scheduledBookings.startTime,
     contractorId: scheduledBookings.contractorId,
+    contactId: scheduledBookings.contactId,
   })
     .from(scheduledBookings)
     .where(and(
@@ -431,5 +432,60 @@ export async function cancelBooking(tenantId: string, bookingId: string): Promis
   log.info(`[scheduling] Cancelled booking ${bookingId} — invalidating cache for date ${cancelledDateStr}`);
   invalidateAndRecompute(tenantId, timezone, getAvailabilityForDate, [cancelledDateStr]);
 
+  if (existing.contactId) {
+    // Ensure the lead/contact is fully unscheduled (isScheduled cleared + forced back to New).
+    // This makes cancelling a booking via the schedule view also move the lead out of the
+    // Scheduled pipeline column.
+    clearContactScheduledState(existing.contactId, tenantId, {
+      source: 'booking_cancelled',
+    }).catch(err => log.error('clearContactScheduledState after cancelBooking failed (non-fatal):', err));
+  }
+
   return true;
+}
+
+/**
+ * Cancel all active (non-cancelled, non-completed) bookings for a given contact.
+ * Used by the unschedule flow so that moving a lead out of Scheduled also frees
+ * the calendar slots and clears the contact's scheduled state.
+ */
+export async function cancelActiveBookingsForContact(tenantId: string, contactId: string): Promise<number> {
+  const activeBookings = await db
+    .select({
+      id: scheduledBookings.id,
+      startTime: scheduledBookings.startTime,
+    })
+    .from(scheduledBookings)
+    .where(
+      and(
+        eq(scheduledBookings.contractorId, tenantId),
+        eq(scheduledBookings.contactId, contactId),
+        ne(scheduledBookings.status, 'cancelled'),
+        ne(scheduledBookings.status, 'completed')
+      )
+    );
+
+  if (activeBookings.length === 0) return 0;
+
+  const [cRow] = await db
+    .select({ timezone: contractors.timezone })
+    .from(contractors)
+    .where(eq(contractors.id, tenantId))
+    .limit(1);
+  const timezone = cRow?.timezone || 'America/New_York';
+
+  for (const booking of activeBookings) {
+    await db
+      .update(scheduledBookings)
+      .set({ status: 'cancelled' as const })
+      .where(eq(scheduledBookings.id, booking.id));
+
+    const cancelledDateStr = utcToLocalDateStr(booking.startTime, timezone);
+    log.info(
+      `[scheduling] Cancelled booking ${booking.id} (contact unschedule) — invalidating cache for date ${cancelledDateStr}`
+    );
+    invalidateAndRecompute(tenantId, timezone, getAvailabilityForDate, [cancelledDateStr]);
+  }
+
+  return activeBookings.length;
 }

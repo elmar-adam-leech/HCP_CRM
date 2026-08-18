@@ -5,7 +5,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "./StatusBadge";
 import { CustomerBadge } from "./CustomerBadge";
-import { Phone, Mail, MapPin, Calendar, MoreHorizontal, Edit, Trash2, Settings, CalendarClock, Tag, Archive, ArchiveRestore, UserCheck, ExternalLink, Clock, ShieldAlert, ShieldX } from "lucide-react";
+import { Phone, Mail, MapPin, Calendar, MoreHorizontal, Edit, Trash2, Settings, CalendarClock, Tag, Archive, ArchiveRestore, UserCheck, ExternalLink, Clock, ShieldAlert, ShieldX, X } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { CommunicationActionButtons } from "./CommunicationActionButtons";
@@ -47,7 +47,7 @@ type LeadCardProps = {
 
 export const LeadCard = memo(function LeadCard({ lead, onSchedule, onSendEmail, onEdit, onDelete, onArchive, onRestore, onAge, onUnage, onEditStatus, onViewDetails, onSetFollowUp, selectable = false, isSelected = false, onToggleSelect, hasUnreadText, hasUnreadEmail, onTextSent, onCallCompleted }: LeadCardProps) {
   const [tagsDialogOpen, setTagsDialogOpen] = useState(false);
-  const { updateContact } = useContactMutations();
+  const { updateContact, unscheduleContact } = useContactMutations();
 
   const leadName = lead.name || '';
   const leadEmail = (lead.emails && lead.emails.length > 0) ? lead.emails[0] : '';
@@ -150,6 +150,16 @@ export const LeadCard = memo(function LeadCard({ lead, onSchedule, onSendEmail, 
               <Settings className="h-4 w-4 mr-2" />
               Edit Status
             </DropdownMenuItem>
+            {(lead.effectiveStage === "scheduled" || lead.isScheduled) && (
+              <DropdownMenuItem
+                onClick={() => unscheduleContact.mutate(lead.id)}
+                disabled={unscheduleContact.isPending}
+                data-testid={`menu-unschedule-lead-${lead.id}`}
+              >
+                <X className="h-4 w-4 mr-2" />
+                Cancel Booking
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onClick={() => setTagsDialogOpen(true)} data-testid={`menu-add-tags-${lead.id}`}>
               <Tag className="h-4 w-4 mr-2" />
               Add Tags
@@ -243,6 +253,7 @@ export const LeadCard = memo(function LeadCard({ lead, onSchedule, onSendEmail, 
             size="sm"
             className="flex-1"
             onClick={() => onSchedule?.(lead.id)}
+            disabled={lead.effectiveStage === "scheduled" || !!lead.isScheduled}
             data-testid={`button-schedule-lead-${lead.id}`}
           >
             Schedule

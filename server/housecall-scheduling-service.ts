@@ -6,7 +6,7 @@ import {
   getCalendarEvents,
   selectNextAvailableSalesperson,
 } from './scheduling/availability';
-import { bookAppointment, cancelBooking } from './scheduling/booking';
+import { bookAppointment, cancelBooking, cancelActiveBookingsForContact } from './scheduling/booking';
 import type { TimeSlot, BusyWindow, AvailableSlot, AddressComponents, BookingRequest, BookingResult, SalespersonInfo } from './types/scheduling';
 
 export type { TimeSlot, BusyWindow, AvailableSlot, AddressComponents, BookingRequest, BookingResult, SalespersonInfo };
@@ -45,6 +45,7 @@ export class HousecallSchedulingService {
 
   bookAppointment(tenantId: string, request: BookingRequest) { return bookAppointment(tenantId, request); }
   cancelBooking(tenantId: string, bookingId: string) { return cancelBooking(tenantId, bookingId); }
+  cancelActiveBookingsForContact(tenantId: string, contactId: string) { return cancelActiveBookingsForContact(tenantId, contactId); }
 }
 
 export const housecallSchedulingService = new HousecallSchedulingService();

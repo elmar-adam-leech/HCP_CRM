@@ -30,6 +30,7 @@ import { auditLog } from "../utils/audit-log";
 import { logger } from "../utils/logger";
 import type { Contact } from "@shared/schema";
 import type { UpdateContact } from "../storage-types";
+import { cancelActiveBookingsForContact } from "../scheduling/booking";
 
 const log = logger('ContactStatus');
 
@@ -40,7 +41,9 @@ export type ScheduleSource =
   | 'hcp_estimate_link'
   | 'manual_status_update'
   | 'bulk_status_update'
-  | 'ai_agent';
+  | 'ai_agent'
+  | 'manual_unschedule'
+  | 'booking_cancelled';
 
 export interface MarkScheduledOptions {
   /** User who initiated the scheduling action (if known). */
@@ -162,4 +165,117 @@ export async function markContactScheduled(
     });
 
   return { contact: updated, statusChanged: true, workflowDispatched: true };
+}
+
+export interface ClearScheduledOptions {
+  /** Where the unschedule came from — used in logs/audit only. */
+  source: ScheduleSource;
+  /** Optional: actor user id to attribute the activity log entry to. */
+  activityUserId?: string | null;
+  /**
+   * Optional: external source label for the activity log entry.
+   */
+  activityExternalSource?: string | null;
+  /** Optional override for the activity content. Defaults to "Booking cancelled". */
+  activityContent?: string;
+}
+
+export interface ClearScheduledResult {
+  contact: Contact | undefined;
+  /** Number of bookings that were cancelled as part of the clear. */
+  bookingsCancelled: number;
+}
+
+/**
+ * Clear scheduled/booking state for a contact and force it back to "new".
+ *
+ * - Cancels all active bookings for the contact (frees calendar slots).
+ * - Clears isScheduled + related scheduled* fields on the contact.
+ * - Forces contact.status = 'new' and mirrors to the latest lead row.
+ * - Writes a "Booking cancelled" activity (not a full status workflow trigger
+ *   unless the caller also does a status change).
+ * - Broadcasts contact_updated.
+ *
+ * This is the single source of truth for "unschedule", symmetric to markContactScheduled.
+ */
+export async function clearContactScheduledState(
+  contactId: string,
+  contractorId: string,
+  opts: ClearScheduledOptions,
+): Promise<ClearScheduledResult> {
+  const existing = await storage.getContact(contactId, contractorId);
+  if (!existing) {
+    log.warn(`clearContactScheduledState: contact not found (id=${contactId}, contractor=${contractorId}, source=${opts.source})`);
+    return { contact: undefined, bookingsCancelled: 0 };
+  }
+
+  // Cancel any active bookings first (this also invalidates availability cache).
+  let bookingsCancelled = 0;
+  try {
+    bookingsCancelled = await cancelActiveBookingsForContact(contractorId, contactId);
+  } catch (err) {
+    log.error('clearContactScheduledState: failed to cancel active bookings (non-fatal)', err);
+  }
+
+  const wasScheduled = existing.isScheduled || existing.status === 'scheduled';
+
+  const updates: Partial<UpdateContact> = {
+    isScheduled: false,
+    scheduledAt: null,
+    scheduledByUserId: null,
+    scheduledEmployeeId: null,
+    status: 'new',
+  };
+
+  let updated: Contact | undefined = existing;
+  if (wasScheduled || Object.keys(updates).some(k => (updates as any)[k] !== (existing as any)[k])) {
+    // Always write the clear updates when we reached here for an unschedule intent.
+    updated = await storage.updateContact(contactId, updates, contractorId);
+    if (!updated) {
+      log.warn(`clearContactScheduledState: update returned no row (id=${contactId})`);
+      return { contact: undefined, bookingsCancelled };
+    }
+    broadcastToContractor(contractorId, {
+      type: 'contact_updated',
+      contactId: updated.id,
+      contactType: updated.type,
+    });
+  }
+
+  // Mirror to lead stage so the Leads page derived effectiveStage becomes 'new'.
+  try {
+    await storage.updateLeadStageForContact(contactId, contractorId, 'new');
+  } catch (stageErr) {
+    log.error('clearContactScheduledState: failed to update lead stage (non-fatal)', stageErr);
+  }
+
+  // Write a booking-cancelled activity (lighter than full status_change workflow per spec).
+  try {
+    await createActivityAndBroadcast(
+      contractorId,
+      {
+        type: 'status_change',
+        title: 'Booking Cancelled',
+        content: opts.activityContent ?? 'Booking cancelled',
+        contactId,
+        userId: opts.activityUserId ?? undefined,
+        externalSource: opts.activityExternalSource ?? undefined,
+      },
+      { type: 'new_activity', contactId },
+    );
+  } catch (activityErr) {
+    log.error('Failed to create activity for booking cancelled', activityErr);
+  }
+
+  // Audit for traceability.
+  auditLog({
+    contractorId,
+    userId: opts.activityUserId ?? null,
+    action: 'contact.unscheduled',
+    entityType: 'contact',
+    entityId: contactId,
+    after: { source: opts.source, bookingsCancelled },
+  }).catch(err => log.error('Failed to write unschedule audit log', err));
+
+  return { contact: updated, bookingsCancelled };
 }
