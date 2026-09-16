@@ -331,7 +331,23 @@ export function registerIntegrationRoutes(app: Express): void {
               source: "Website Contact Form",
               notes: "Interested in HVAC installation",
               followUpDate: "2024-01-15T10:00:00Z"
-            }
+            },
+            response: {
+              success: true,
+              leadId: "uuid",
+              contactId: "uuid",
+              bookingCode: "AbC123Xy",
+              bookingUrl: "https://yourdomain.com/book/acme-hvac?c=AbC123Xy",
+              isNewContact: true,
+              lead: {
+                id: "uuid",
+                contactId: "uuid",
+                status: "new",
+                source: "External API",
+                createdAt: "2025-..."
+              }
+            },
+            responseNotes: "On success, bookingCode and (when configured) bookingUrl are included. Use bookingUrl directly or append ?c=<bookingCode> to your public booking page (/book/<slug>) to prefill the lead's contact details."
           }
         },
         estimates: {

@@ -7,6 +7,8 @@ import { logger } from "../../utils/logger";
 import { maskPhone, maskEmail, maskAddress } from "../../utils/pii-redactor";
 import { parse, parseISO, isValid } from "date-fns";
 import { ingestLead } from '../../services/lead-ingestion';
+import { storage } from "../../storage";
+import { getPublicBaseUrl } from "../../utils/public-base-url";
 
 const log = logger('WebhookLeads');
 
@@ -263,36 +265,58 @@ export function registerLeadWebhookRoutes(app: Express): void {
 
       log.info(`Lead created for contractor ${contractor.name}: ${result.lead.id} (${result.isNewContact ? 'new contact' : 'existing contact'}${result.skippedDuplicateLead ? ', duplicate skipped' : ''})`);
 
+      // Ensure bookingCode exists (lazily generate + persist for legacy contacts)
+      let contact = result.contact;
+      if (!contact.bookingCode) {
+        const { generateBookingCode } = await import('../../utils/booking-token');
+        const newCode = generateBookingCode();
+        const updated = await storage.updateContact(contact.id, { bookingCode: newCode }, contractorId);
+        if (updated) contact = updated;
+      }
+
+      const bookingCode = contact.bookingCode;
+
+      // Build ready-to-use public booking URL (when booking slug is configured)
+      const publicOrigin = getPublicBaseUrl();
+      const fallbackOrigin = (() => {
+        const protocol = req.get('x-forwarded-proto') || req.protocol;
+        const host = req.get('x-forwarded-host') || req.get('host');
+        return (protocol && host) ? `${protocol}://${host}` : '';
+      })();
+      const origin = publicOrigin || fallbackOrigin;
+
+      const bookingUrl = (contractor.bookingSlug && bookingCode && origin)
+        ? `${origin}/book/${contractor.bookingSlug}?c=${bookingCode}`
+        : undefined;
+
+      const commonResponse = {
+        leadId: result.lead.id,
+        contactId: result.contact.id,
+        bookingCode: bookingCode ?? null,
+        ...(bookingUrl ? { bookingUrl } : {}),
+        lead: {
+          id: result.lead.id,
+          contactId: result.lead.contactId,
+          status: result.lead.status,
+          source: result.lead.source,
+          createdAt: result.lead.createdAt
+        }
+      };
+
       if (result.skippedDuplicateLead) {
         res.status(200).json({
           success: true,
           message: "Duplicate lead detected — existing lead returned",
           deduplicated: true,
-          leadId: result.lead.id,
-          contactId: result.contact.id,
           isNewContact: false,
-          lead: {
-            id: result.lead.id,
-            contactId: result.lead.contactId,
-            status: result.lead.status,
-            source: result.lead.source,
-            createdAt: result.lead.createdAt
-          }
+          ...commonResponse
         });
       } else {
         res.status(201).json({
           success: true,
           message: result.isNewContact ? "Lead created with new contact" : "Lead created for existing contact",
-          leadId: result.lead.id,
-          contactId: result.contact.id,
           isNewContact: result.isNewContact,
-          lead: {
-            id: result.lead.id,
-            contactId: result.lead.contactId,
-            status: result.lead.status,
-            source: result.lead.source,
-            createdAt: result.lead.createdAt
-          }
+          ...commonResponse
         });
       }
       
