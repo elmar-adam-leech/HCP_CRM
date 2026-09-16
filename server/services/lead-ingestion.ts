@@ -4,16 +4,16 @@ import { normalizePhoneForStorage, normalizePhoneForHcp, maskPhone } from '../ut
 import { workflowEngine } from '../workflow-engine';
 import { toWorkflowEvent } from '../utils/workflow/entity-adapter';
 import { autoAssignLead } from '../routes/assignments';
-import { isIntegrationEnabledCached } from '../services/cache';
+import { isIntegrationEnabledCached, cacheInvalidation } from '../services/cache';
 import { housecallProService } from '../hcp/index';
 import { logger } from '../utils/logger';
 import { resolveHcpLeadSource } from '../utils/hcp-helpers';
 import { db } from '../db';
-import { leads, activities } from '@shared/schema';
+import { leads, activities, contacts } from '@shared/schema';
 import { eq, and, gte, sql } from 'drizzle-orm';
 import { logConsent, hashIp } from '../utils/consent-log';
 import { normalizeAddress } from '../utils/normalize-address';
-import { buildContactEnrichment } from '../utils/contact-enrichment';
+import { buildContactEnrichment, noteSubmissionKey } from '../utils/contact-enrichment';
 import { buildFormattedAddress, parseAddressString } from '../utils/address';
 import { syncHcpCustomerAddress } from '../scheduling/hcp-customer';
 
@@ -58,6 +58,8 @@ export interface IngestLeadInput {
   skipContactMatching?: boolean;
   activityNote?: string;
   activityExternalId?: string;
+  /** Stable provider submission ID; affects note retries only, not lead matching. */
+  submissionId?: string;
 
   ipAddress?: string;
   consentMetadata?: Record<string, unknown>;
@@ -143,6 +145,10 @@ export async function ingestLead(
   }
 
   const emails = input.emails || [];
+  const noteKey = noteSubmissionKey(contractorId, input);
+  // Keyed notes are appended atomically below, not by the snapshot-based
+  // enrichment builder. Unidentified/manual inquiries retain append behavior.
+  const enrichmentInput = noteKey ? { ...input, notes: undefined } : input;
 
   const existingContactId = input.skipContactMatching
     ? null
@@ -157,6 +163,24 @@ export async function ingestLead(
 
   if (existingContactId) {
     contact = await storage.getContact(existingContactId, contractorId);
+
+    if (contact && noteKey) {
+      // Record the receipt and append the note in the same row update. CASE is
+      // evaluated against the current row even when concurrent retries wait
+      // for its lock. Do not rely on the earlier getContact snapshot.
+      const seen = sql`${noteKey} = ANY(COALESCE(${contacts.noteSubmissionKeys}, '{}'::text[]))`;
+      const [saved] = await db.update(contacts).set({
+        notes: sql`CASE WHEN ${seen} THEN ${contacts.notes}
+          WHEN NULLIF(BTRIM(${contacts.notes}), '') IS NULL THEN ${input.notes}
+          ELSE ${contacts.notes} || E'\\n' || ${input.notes} END`,
+        noteSubmissionKeys: sql`CASE WHEN ${seen} THEN ${contacts.noteSubmissionKeys}
+          ELSE array_append(COALESCE(${contacts.noteSubmissionKeys}, '{}'::text[]), ${noteKey}) END`,
+        updatedAt: sql`CASE WHEN ${seen} THEN ${contacts.updatedAt} ELSE NOW() END`,
+      }).where(and(eq(contacts.id, contact.id), eq(contacts.contractorId, contractorId))).returning();
+      if (!saved) throw new Error('Contact disappeared while recording submission notes');
+      cacheInvalidation.invalidateContact(contact.id, contractorId);
+      contact = saved;
+    }
 
     if (contact) {
       const contactLeads = await storage.getLeadsByContact(contact.id, contractorId);
@@ -190,7 +214,7 @@ export async function ingestLead(
           .limit(1);
         log.info(`Skipping duplicate lead for contact ${contact.id} — recent lead ${recentLeads[0].id} exists within ${dedupHours}h window`);
 
-        const enrichment = buildContactEnrichment(contact, input, normalizedPhones);
+        const enrichment = buildContactEnrichment(contact, enrichmentInput, normalizedPhones);
         if (enrichment) {
           log.info(`Enriching contact ${contact.id} with new fields from duplicate lead: ${Object.keys(enrichment).join(', ')}`);
           const updated = await storage.updateContact(contact.id, enrichment, contractorId);
@@ -225,7 +249,7 @@ export async function ingestLead(
         promotionUpdate.status = 'new';
       }
 
-      const enrichment = buildContactEnrichment(contact, input, normalizedPhones);
+      const enrichment = buildContactEnrichment(contact, enrichmentInput, normalizedPhones);
       const combined = enrichment || Object.keys(promotionUpdate).length > 0
         ? { ...(enrichment || {}), ...promotionUpdate }
         : null;
@@ -267,6 +291,7 @@ export async function ingestLead(
       zip: input.zip,
       source: input.source,
       notes: input.notes,
+      ...(noteKey && { noteSubmissionKeys: [noteKey] }),
       tags: input.tags,
       type: 'lead',
       status: 'new',

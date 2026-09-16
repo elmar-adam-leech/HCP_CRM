@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildContactEnrichment } from './contact-enrichment';
+import { buildContactEnrichment, noteSubmissionKey } from './contact-enrichment';
 
 function contact(overrides: Record<string, unknown> = {}) {
   return {
@@ -82,5 +82,104 @@ describe('buildContactEnrichment tracking fields', () => {
     );
 
     expect(result).toBeNull();
+  });
+});
+
+describe('noteSubmissionKey receipt identity', () => {
+  const baseInput = {
+    source: 'webhook',
+    notes: 'Please call after 5pm',
+  };
+
+  it('returns the same receipt for an identical retry', () => {
+    const first = noteSubmissionKey('tenant-1', {
+      ...baseInput,
+      activityExternalId: 'submission-123',
+    });
+    const retry = noteSubmissionKey('tenant-1', {
+      ...baseInput,
+      activityExternalId: 'submission-123',
+    });
+
+    expect(first).toBeDefined();
+    expect(retry).toBe(first);
+  });
+
+  it('uses submissionId as receipt identity and trims it before hashing', () => {
+    const first = noteSubmissionKey('tenant-1', {
+      ...baseInput,
+      submissionId: '  submission-123  ',
+    });
+    const retry = noteSubmissionKey('tenant-1', {
+      ...baseInput,
+      submissionId: 'submission-123',
+    });
+
+    expect(first).toBeDefined();
+    expect(retry).toBe(first);
+  });
+
+  it('treats a new note for the same submission as a new receipt', () => {
+    const first = noteSubmissionKey('tenant-1', {
+      ...baseInput,
+      activityExternalId: 'submission-123',
+    });
+    const changedNote = noteSubmissionKey('tenant-1', {
+      ...baseInput,
+      notes: 'Please call after 6pm',
+      activityExternalId: 'submission-123',
+    });
+
+    expect(changedNote).not.toBe(first);
+  });
+
+  it('treats distinct submissions with the same note as different receipts', () => {
+    const first = noteSubmissionKey('tenant-1', {
+      ...baseInput,
+      activityExternalId: 'submission-123',
+    });
+    const distinctSubmission = noteSubmissionKey('tenant-1', {
+      ...baseInput,
+      activityExternalId: 'submission-456',
+    });
+
+    expect(distinctSubmission).not.toBe(first);
+  });
+
+  it('isolates receipts by source and tenant', () => {
+    const original = noteSubmissionKey('tenant-1', {
+      ...baseInput,
+      activityExternalId: 'submission-123',
+    });
+    const otherSource = noteSubmissionKey('tenant-1', {
+      ...baseInput,
+      source: 'facebook',
+      activityExternalId: 'submission-123',
+    });
+    const otherTenant = noteSubmissionKey('tenant-2', {
+      ...baseInput,
+      activityExternalId: 'submission-123',
+    });
+
+    expect(otherSource).not.toBe(original);
+    expect(otherTenant).not.toBe(original);
+  });
+
+  it('returns no receipt identity without submission evidence', () => {
+    expect(noteSubmissionKey('tenant-1', baseInput)).toBeUndefined();
+    expect(noteSubmissionKey('tenant-1', {
+      ...baseInput,
+      rawPayload: '  ',
+    } as any)).toBeUndefined();
+  });
+
+  it('preserves note append behavior when no receipt identity is available', () => {
+    const result = buildContactEnrichment(
+      contact({ notes: 'first inquiry' }),
+      { source: 'manual', notes: 'second inquiry' } as any,
+      [],
+    );
+
+    expect(result).toEqual({ notes: 'first inquiry\nsecond inquiry' });
   });
 });

@@ -1,4 +1,24 @@
 import { type Contact } from '@shared/schema';
+import { createHash } from 'node:crypto';
+
+/**
+ * A receipt identifies a submission AND its exact note, never note text alone.
+ * Without submission evidence, preserve append behavior rather than risk
+ * hiding a distinct inquiry. Store only hashes, not another copy of the payload.
+ */
+export function noteSubmissionKey(
+  contractorId: string,
+  input: { source: string; notes?: string; submissionId?: string; activityExternalId?: string },
+): string | undefined {
+  if (!input.notes?.trim()) return undefined;
+  const identity = input.submissionId?.trim()
+    ? ['submission', input.submissionId.trim()]
+    : input.activityExternalId?.trim() ? ['external', input.activityExternalId.trim()] : undefined;
+  if (!identity) return undefined;
+  return createHash('sha256')
+    .update(JSON.stringify([contractorId, input.source, identity, input.notes]))
+    .digest('hex');
+}
 
 export interface EnrichmentInput {
   emails?: string[];

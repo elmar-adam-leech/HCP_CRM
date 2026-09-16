@@ -6,3 +6,4 @@
 - [npm audit nested transitive vuln](npm-audit-nested-transitive-vuln.md) — bumping a top-level dep can leave a stale vulnerable version nested under a devDependency; run `npm dedupe` and re-audit.
 - [Per-integration authorization](integration-authorization.md) — use `requireIntegrationAccess(key)`/`canAccessIntegration()` from auth-service.ts for integration-specific routes, not the coarser `requireIntegrationManager`.
 - [Server ESM circular imports](server-esm-circular-imports.md) — static cycles can make the bundled server exit 13 before startup; break bidirectional service imports with lazy loading.
+- [Webhook note identity](webhook-note-identity.md) — identical payloads can be distinct inquiries; never infer retry identity or historical receipts from note text alone.

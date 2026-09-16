@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { noteSubmissionKey } from '../utils/contact-enrichment';
 
 const h = vi.hoisted(() => {
   const table = () => new Proxy({}, {
@@ -21,15 +22,18 @@ const h = vi.hoisted(() => {
     storage,
     leads: table(),
     activities: table(),
+    contacts: table(),
     selectResults: [] as any[][],
     updateResults: [] as any[][],
     updateSets: [] as Record<string, unknown>[],
+    updateTables: [] as unknown[],
     updateWheres: [] as any[],
     contact: undefined as any,
     reset() {
       this.selectResults = [];
       this.updateResults = [];
       this.updateSets = [];
+      this.updateTables = [];
       this.updateWheres = [];
       this.contact = undefined;
     },
@@ -41,25 +45,31 @@ const h = vi.hoisted(() => {
           })),
         })),
       })),
-      update: vi.fn(() => ({
-        set: vi.fn((values: Record<string, unknown>) => {
-          h.updateSets.push(values);
-          return {
-            where: vi.fn((condition: unknown) => {
-              h.updateWheres.push(condition);
-              return {
-                returning: vi.fn(() => Promise.resolve(h.updateResults.shift() ?? [])),
-              };
-            }),
-          };
-        }),
-      })),
+      update: vi.fn((table: unknown) => {
+        h.updateTables.push(table);
+        return {
+          set: vi.fn((values: Record<string, unknown>) => {
+            h.updateSets.push(values);
+            return {
+              where: vi.fn((condition: unknown) => {
+                h.updateWheres.push(condition);
+                return {
+                  returning: vi.fn(() => Promise.resolve(h.updateResults.shift() ?? [])),
+                };
+              }),
+            };
+          }),
+        };
+      }),
     },
     eq: vi.fn((column: unknown, value: unknown) => ({ kind: 'eq', column, value })),
     and: vi.fn((...conditions: unknown[]) => ({ kind: 'and', conditions })),
     gte: vi.fn((column: unknown, value: unknown) => ({ kind: 'gte', column, value })),
     sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
     logConsent: vi.fn(() => Promise.resolve()),
+    cacheInvalidation: {
+      invalidateContact: vi.fn(),
+    },
   };
 });
 
@@ -68,6 +78,7 @@ vi.mock('../db', () => ({ db: h.db }));
 vi.mock('@shared/schema', () => ({
   leads: h.leads,
   activities: h.activities,
+  contacts: h.contacts,
 }));
 vi.mock('drizzle-orm', () => ({
   eq: h.eq,
@@ -85,7 +96,10 @@ vi.mock('../workflow-engine', () => ({
 }));
 vi.mock('../utils/workflow/entity-adapter', () => ({ toWorkflowEvent: vi.fn() }));
 vi.mock('../routes/assignments', () => ({ autoAssignLead: vi.fn() }));
-vi.mock('../services/cache', () => ({ isIntegrationEnabledCached: vi.fn() }));
+vi.mock('../services/cache', () => ({
+  isIntegrationEnabledCached: vi.fn(),
+  cacheInvalidation: h.cacheInvalidation,
+}));
 vi.mock('../hcp/index', () => ({ housecallProService: {} }));
 vi.mock('../utils/logger', () => ({
   logger: () => ({ info: vi.fn(), error: vi.fn(), warn: vi.fn() }),
@@ -321,5 +335,157 @@ describe('ingestLead tracking and contact mapping', () => {
     expect(condition.conditions).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'eq', value: OTHER_TENANT }),
     ]));
+  });
+
+  it('seeds a receipt on a new contact when the submission has identity', async () => {
+    const submission = input({
+      notes: 'Please call tomorrow',
+      submissionId: '  submission-123  ',
+    });
+    const receipt = noteSubmissionKey(TENANT, submission);
+
+    await ingestLead(TENANT, submission);
+
+    expect(receipt).toBeDefined();
+    expect(h.storage.createContact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notes: submission.notes,
+        noteSubmissionKeys: [receipt],
+      }),
+      TENANT,
+    );
+  });
+
+  it('appends identical raw payload retries again when no submission identity is provided', async () => {
+    h.contact = makeContact({ notes: 'existing note' });
+    h.storage.findMatchingContact.mockResolvedValue('contact-1');
+    h.storage.getContact.mockImplementation(async () => h.contact);
+    h.storage.updateContact.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      h.contact = { ...h.contact, ...patch };
+      return h.contact;
+    });
+    h.selectResults = [[], []];
+
+    const submission = input({
+      notes: 'same inquiry',
+      rawPayload: '{"submission":"same"}',
+      pageUrl: undefined,
+      utmSource: undefined,
+      utmMedium: undefined,
+      utmCampaign: undefined,
+      utmTerm: undefined,
+      utmContent: undefined,
+    });
+
+    await ingestLead(TENANT, submission);
+    await ingestLead(TENANT, submission);
+
+    expect(h.db.update).not.toHaveBeenCalled();
+    expect(h.storage.updateContact).toHaveBeenNthCalledWith(
+      1,
+      'contact-1',
+      { notes: 'existing note\nsame inquiry' },
+      TENANT,
+    );
+    expect(h.storage.updateContact).toHaveBeenNthCalledWith(
+      2,
+      'contact-1',
+      { notes: 'existing note\nsame inquiry\nsame inquiry' },
+      TENANT,
+    );
+    expect(h.storage.createLead).toHaveBeenCalledTimes(2);
+  });
+
+  it('atomically appends a keyed note, scopes the write, and returns the saved contact', async () => {
+    const snapshot = makeContact({ notes: 'snapshot note' });
+    const savedContact = makeContact({
+      notes: 'snapshot note\nlatest note',
+      noteSubmissionKeys: ['receipt-1'],
+    });
+    h.contact = snapshot;
+    h.storage.findMatchingContact.mockResolvedValue('contact-1');
+    h.storage.getContact.mockResolvedValue(snapshot);
+    h.updateResults = [[savedContact]];
+
+    const submission = input({
+      notes: 'latest note',
+      activityExternalId: 'receipt-1',
+      pageUrl: undefined,
+      utmSource: undefined,
+      utmMedium: undefined,
+      utmCampaign: undefined,
+      utmTerm: undefined,
+      utmContent: undefined,
+    });
+    const receipt = noteSubmissionKey(TENANT, submission);
+    const result = await ingestLead(TENANT, submission);
+
+    expect(h.updateTables[0]).toBe(h.contacts);
+    expect(h.updateSets[0]).toEqual(expect.objectContaining({
+      notes: expect.anything(),
+      noteSubmissionKeys: expect.anything(),
+      updatedAt: expect.anything(),
+    }));
+    const update = h.updateSets[0] as any;
+    const seen = update.notes.values[0];
+    expect(seen.strings.join('')).toContain('= ANY(COALESCE(');
+    expect(seen.values).toEqual(expect.arrayContaining([
+      receipt,
+      h.contacts.noteSubmissionKeys,
+    ]));
+    expect(update.notes.strings.join('')).toContain('CASE WHEN');
+    expect(update.notes.strings.join('')).toContain('NULLIF(BTRIM(');
+    expect(update.notes.strings.join('')).toContain("E'\\n'");
+    expect(update.notes.values).toEqual(expect.arrayContaining([submission.notes]));
+    expect(update.noteSubmissionKeys.strings.join('')).toContain('array_append(COALESCE(');
+    expect(update.noteSubmissionKeys.values).toContain(receipt);
+    expect(update.updatedAt.strings.join('')).toContain('CASE WHEN');
+    expect(update.updatedAt.strings.join('')).toContain('NOW()');
+    expect(update.updatedAt.values).toContain(h.contacts.updatedAt);
+    const condition = h.updateWheres[0];
+    expect(condition.kind).toBe('and');
+    expect(condition.conditions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'eq', value: 'contact-1' }),
+      expect.objectContaining({ kind: 'eq', value: TENANT }),
+    ]));
+    expect(h.cacheInvalidation.invalidateContact).toHaveBeenCalledWith('contact-1', TENANT);
+    expect(h.storage.updateContact).not.toHaveBeenCalled();
+    expect(result.contact).toBe(savedContact);
+    expect(result.contact.notes).toBe('snapshot note\nlatest note');
+    expect(h.storage.createLead).toHaveBeenCalled();
+    expect(result.skippedDuplicateLead).toBe(false);
+  });
+
+  it('keeps keyed retries within the existing recent-lead duplicate rules', async () => {
+    const snapshot = makeContact({ notes: 'snapshot note' });
+    const savedContact = makeContact({
+      notes: 'snapshot note\nretry note',
+      noteSubmissionKeys: ['receipt-1'],
+    });
+    const existingLead = makeLead({ id: 'lead-recent' });
+    h.contact = snapshot;
+    h.storage.findMatchingContact.mockResolvedValue('contact-1');
+    h.storage.getContact.mockResolvedValue(snapshot);
+    h.selectResults = [[{ id: 'lead-recent' }], [existingLead]];
+    h.updateResults = [[savedContact]];
+
+    const result = await ingestLead(TENANT, input({
+      notes: 'retry note',
+      activityExternalId: 'receipt-1',
+      pageUrl: undefined,
+      utmSource: undefined,
+      utmMedium: undefined,
+      utmCampaign: undefined,
+      utmTerm: undefined,
+      utmContent: undefined,
+    }));
+
+    expect(result.skippedDuplicateLead).toBe(true);
+    expect(result.lead).toBe(existingLead);
+    expect(result.contact).toBe(savedContact);
+    expect(h.storage.createLead).not.toHaveBeenCalled();
+    // The keyed contact receipt is the only update; duplicate tracking still
+    // uses its existing conditional update rules when tracking is supplied.
+    expect(h.db.update).toHaveBeenCalledTimes(1);
   });
 });

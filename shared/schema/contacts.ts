@@ -22,6 +22,7 @@ export const contacts = pgTable("contacts", {
   status: contactStatusEnum("status").notNull().default("new"), // Unified status for all contact types
   source: text("source"), // Where the contact came from (web form, referral, etc.)
   notes: text("notes"),
+  noteSubmissionKeys: text("note_submission_keys").array().notNull().default([]),
   tags: text("tags").array().default(sql`'{}'`), // Tags for segmentation and workflow targeting
   followUpDate: timestamp("follow_up_date"),
   // UTM and tracking fields

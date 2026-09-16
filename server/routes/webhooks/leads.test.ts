@@ -215,9 +215,23 @@ describe('POST /api/webhooks/:contractorId/leads intake mapping', () => {
     });
   });
 
+  it('trims submissionId before forwarding it to lead ingestion', async () => {
+    const app = makeApp();
+    const response = await call(app, {
+      name: 'Submission Lead',
+      submissionId: '  provider-submission-123  ',
+    }, tenantId, apiKey);
+
+    expect(response.status).toBe(201);
+    expect(mocks.ingestLead.mock.calls[0][1]).toMatchObject({
+      submissionId: 'provider-submission-123',
+    });
+  });
+
   it.each([
     ['pageUrl', { pageUrl: 123 }],
     ['pageURL', { pageURL: false }],
+    ['submissionId', { submissionId: 123 }],
     ['utmSource', { utmSource: ['source'] }],
     ['utmMedium', { utmMedium: 42 }],
     ['utmCampaign', { utmCampaign: {} }],

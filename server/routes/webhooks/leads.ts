@@ -168,6 +168,7 @@ export function registerLeadWebhookRoutes(app: Express): void {
       // Both spellings are accepted because external form/webhook providers
       // use both `pageUrl` and `pageURL`. A non-blank pageUrl wins below.
       validateOptionalString('pageUrl', pageUrl, validationErrors);
+      validateOptionalString('submissionId', requestData.submissionId, validationErrors);
       validateOptionalString('pageURL', pageURL, validationErrors);
       validateOptionalString('utmSource', utmSource, validationErrors);
       validateOptionalString('utmMedium', utmMedium, validationErrors);
@@ -315,6 +316,7 @@ export function registerLeadWebhookRoutes(app: Express): void {
         tags: normalizeTags(tags),
         message: notes ? String(notes).trim() : undefined,
         rawPayload: JSON.stringify(requestData),
+        submissionId: trimOptionalString(requestData.submissionId),
         utmSource: trimOptionalString(utmSource),
         utmMedium: trimOptionalString(utmMedium),
         utmCampaign: trimOptionalString(utmCampaign),
