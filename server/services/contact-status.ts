@@ -30,7 +30,6 @@ import { auditLog } from "../utils/audit-log";
 import { logger } from "../utils/logger";
 import type { Contact } from "@shared/schema";
 import type { UpdateContact } from "../storage-types";
-import { cancelActiveBookingsForContact } from "../scheduling/booking";
 
 const log = logger('ContactStatus');
 
@@ -212,6 +211,9 @@ export async function clearContactScheduledState(
   // Cancel any active bookings first (this also invalidates availability cache).
   let bookingsCancelled = 0;
   try {
+    // Load this lazily to avoid a static cycle: scheduling/booking imports
+    // markContactScheduled and clearContactScheduledState from this module.
+    const { cancelActiveBookingsForContact } = await import("../scheduling/booking");
     bookingsCancelled = await cancelActiveBookingsForContact(contractorId, contactId);
   } catch (err) {
     log.error('clearContactScheduledState: failed to cancel active bookings (non-fatal)', err);
