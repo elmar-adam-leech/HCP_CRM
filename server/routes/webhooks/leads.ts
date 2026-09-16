@@ -12,6 +12,57 @@ import { getPublicBaseUrl } from "../../utils/public-base-url";
 
 const log = logger('WebhookLeads');
 
+function isAbsentOptionalString(value: unknown): boolean {
+  return value === undefined
+    || value === null
+    || (typeof value === 'string' && value.trim().length === 0);
+}
+
+function validateOptionalString(
+  fieldName: string,
+  value: unknown,
+  validationErrors: string[],
+): void {
+  if (isAbsentOptionalString(value)) return;
+  if (typeof value !== 'string') {
+    validationErrors.push(`'${fieldName}' must be a string, received: ${typeof value}`);
+  }
+}
+
+function trimOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function deduplicateExact(values: string[]): string[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  });
+}
+
+function normalizeTags(value: unknown): string[] | undefined {
+  if (typeof value === 'string') {
+    const tags = value.split(',').map((tag) => tag.trim()).filter(Boolean);
+    const deduplicated = deduplicateExact(tags);
+    return deduplicated.length > 0 ? deduplicated : undefined;
+  }
+
+  if (Array.isArray(value)) {
+    const tags = value
+      .filter((tag): tag is string => typeof tag === 'string')
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+    const deduplicated = deduplicateExact(tags);
+    return deduplicated.length > 0 ? deduplicated : undefined;
+  }
+
+  return undefined;
+}
+
 export function registerLeadWebhookRoutes(app: Express): void {
   app.post("/api/webhooks/:contractorId/leads", webhookRateLimiter, asyncHandler(async (req: Request, res: Response) => {
     try {
@@ -44,7 +95,7 @@ export function registerLeadWebhookRoutes(app: Express): void {
         name, 
         email, emails,
         phone, phones,
-        address, street, city, state, zip, source, notes, followUpDate, pageUrl, utmSource, utmMedium, utmCampaign, utmTerm, utmContent,
+        address, street, city, state, zip, source, notes, followUpDate, pageUrl, pageURL, utmSource, utmMedium, utmCampaign, utmTerm, utmContent,
         tags
       } = requestData;
       
@@ -113,10 +164,24 @@ export function registerLeadWebhookRoutes(app: Express): void {
           validationErrors.push(`'notes' must be a string, received: ${typeof notes}`);
         }
       }
+
+      // Both spellings are accepted because external form/webhook providers
+      // use both `pageUrl` and `pageURL`. A non-blank pageUrl wins below.
+      validateOptionalString('pageUrl', pageUrl, validationErrors);
+      validateOptionalString('pageURL', pageURL, validationErrors);
+      validateOptionalString('utmSource', utmSource, validationErrors);
+      validateOptionalString('utmMedium', utmMedium, validationErrors);
+      validateOptionalString('utmCampaign', utmCampaign, validationErrors);
+      validateOptionalString('utmTerm', utmTerm, validationErrors);
+      validateOptionalString('utmContent', utmContent, validationErrors);
       
       if (tags !== undefined && tags !== null) {
-        if (!Array.isArray(tags)) {
-          validationErrors.push(`'tags' must be an array, received: ${typeof tags}`);
+        if (typeof tags === 'string') {
+          // Comma-separated tags are supported for simple form integrations.
+          // Empty items are omitted and exact (case-sensitive) duplicates are
+          // removed after trimming.
+        } else if (!Array.isArray(tags)) {
+          validationErrors.push(`'tags' must be a comma-separated string or an array, received: ${typeof tags}`);
         } else {
           const invalidTags = tags.filter((tag: any) => typeof tag !== 'string');
           if (invalidTags.length > 0) {
@@ -247,15 +312,15 @@ export function registerLeadWebhookRoutes(app: Express): void {
         zip: zip !== undefined && zip !== null && zip !== '' ? String(zip).trim() : undefined,
         source: source ? String(source).trim() : 'External API',
         notes: notes ? String(notes).trim() : undefined,
-        tags: tags && Array.isArray(tags) ? tags.map((t: any) => String(t).trim()).filter((t: string) => t !== '') : undefined,
+        tags: normalizeTags(tags),
         message: notes ? String(notes).trim() : undefined,
         rawPayload: JSON.stringify(requestData),
-        utmSource: utmSource ? String(utmSource).trim() : undefined,
-        utmMedium: utmMedium ? String(utmMedium).trim() : undefined,
-        utmCampaign: utmCampaign ? String(utmCampaign).trim() : undefined,
-        utmTerm: utmTerm ? String(utmTerm).trim() : undefined,
-        utmContent: utmContent ? String(utmContent).trim() : undefined,
-        pageUrl: pageUrl ? String(pageUrl).trim() : undefined,
+        utmSource: trimOptionalString(utmSource),
+        utmMedium: trimOptionalString(utmMedium),
+        utmCampaign: trimOptionalString(utmCampaign),
+        utmTerm: trimOptionalString(utmTerm),
+        utmContent: trimOptionalString(utmContent),
+        pageUrl: trimOptionalString(pageUrl) ?? trimOptionalString(pageURL),
         ipAddress: req.ip,
         followUpDate: parsedFollowUpDate,
         skipDuplicateLeadWithinHours: 24,

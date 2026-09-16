@@ -10,7 +10,7 @@ import { logger } from '../utils/logger';
 import { resolveHcpLeadSource } from '../utils/hcp-helpers';
 import { db } from '../db';
 import { leads, activities } from '@shared/schema';
-import { eq, and, gte } from 'drizzle-orm';
+import { eq, and, gte, sql } from 'drizzle-orm';
 import { logConsent, hashIp } from '../utils/consent-log';
 import { normalizeAddress } from '../utils/normalize-address';
 import { buildContactEnrichment } from '../utils/contact-enrichment';
@@ -68,6 +68,49 @@ export interface IngestLeadResult {
   lead: Lead;
   isNewContact: boolean;
   skippedDuplicateLead: boolean;
+}
+
+/**
+ * Fill first-touch tracking fields on a duplicate lead without replacing
+ * values that were already captured. This deliberately uses one conditional
+ * UPDATE instead of reading and then writing each field: duplicate webhook
+ * deliveries can be processed concurrently, and the SQL expressions make
+ * the fill operation safe for both races and tenant boundaries.
+ *
+ * A blank string is treated as missing just like NULL. The value returned by
+ * RETURNING is the row that was actually saved, so callers never return the
+ * pre-update duplicate snapshot.
+ */
+async function fillMissingLeadTracking(
+  leadId: string,
+  contractorId: string,
+  input: Pick<IngestLeadInput, 'pageUrl' | 'utmSource' | 'utmMedium' | 'utmCampaign' | 'utmTerm' | 'utmContent'>,
+): Promise<Lead | undefined> {
+  const fields = [
+    ['pageUrl', input.pageUrl, leads.pageUrl],
+    ['utmSource', input.utmSource, leads.utmSource],
+    ['utmMedium', input.utmMedium, leads.utmMedium],
+    ['utmCampaign', input.utmCampaign, leads.utmCampaign],
+    ['utmTerm', input.utmTerm, leads.utmTerm],
+    ['utmContent', input.utmContent, leads.utmContent],
+  ] as const;
+
+  const update: Record<string, unknown> = {};
+  for (const [field, incoming, column] of fields) {
+    if (incoming && incoming.trim()) {
+      // Treat legacy empty strings as missing while preserving a non-empty
+      // attribution value exactly as stored (including surrounding whitespace).
+      update[field] = sql`CASE WHEN ${column} IS NULL OR TRIM(${column}) = '' THEN ${incoming} ELSE ${column} END`;
+    }
+  }
+
+  if (Object.keys(update).length === 0) return undefined;
+
+  const result = await db.update(leads)
+    .set({ ...update, updatedAt: new Date() })
+    .where(and(eq(leads.id, leadId), eq(leads.contractorId, contractorId)))
+    .returning();
+  return result[0];
 }
 
 export async function ingestLead(
@@ -154,9 +197,10 @@ export async function ingestLead(
           if (updated) contact = updated;
         }
 
+        const savedLead = await fillMissingLeadTracking(recentLeads[0].id, contractorId, input);
         return {
           contact,
-          lead: existingLead[0],
+          lead: savedLead || existingLead[0],
           isNewContact: false,
           skippedDuplicateLead: true,
         };

@@ -160,6 +160,23 @@ export function WebhookPanel({ url, apiKey, docType, documentation, loading }: W
               </Alert>
             )}
 
+            {docType === 'leads' && documentation.trackingFields && (
+              <Alert>
+                <Info className="h-4 w-4" />
+                <AlertDescription className="text-sm">
+                  <strong>Tracking &amp; Notes:</strong> {documentation.trackingFields}
+                </AlertDescription>
+              </Alert>
+            )}
+            {docType === 'leads' && documentation.tagsFormat && (
+              <Alert>
+                <Info className="h-4 w-4" />
+                <AlertDescription className="text-sm">
+                  <strong>Tags:</strong> {documentation.tagsFormat}
+                </AlertDescription>
+              </Alert>
+            )}
+
             {documentation.example && (
               <div className="space-y-2">
                 <h4 className="text-sm font-medium text-muted-foreground">Example Request Body</h4>

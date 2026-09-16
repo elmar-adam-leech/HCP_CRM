@@ -13,6 +13,21 @@ import crypto from "crypto";
 
 const log = logger('Integrations');
 
+const leadTrackingDocumentation = {
+  trackingFields: "Optional strings: pageURL (pageUrl also supported), utmSource, utmMedium, utmCampaign, utmTerm, utmContent, and notes. Send numeric-looking campaign/ad IDs as quoted strings to preserve every digit. A non-empty pageUrl takes precedence over pageURL. Surrounding whitespace is trimmed; URL query parameters and internal note line breaks are preserved. Empty or omitted tracking values never clear existing attribution. Duplicate leads fill missing attribution only; existing contact notes are appended.",
+  tagsFormat: 'Send tags as a comma-separated string, e.g. "Instagram, Mini Split, Baltimore", or a string array for compatibility. Tags are trimmed, empty entries discarded, and exact duplicates removed. New tags merge with existing tags.',
+};
+
+const leadTrackingExample = {
+  pageURL: "https://example.com/mini-splits?utm_source=instagram&utm_medium=paid",
+  utmSource: "instagram",
+  utmMedium: "paid",
+  utmCampaign: "120221998196300126",
+  utmTerm: "120228814519110126",
+  utmContent: "120234640843750126",
+  tags: "Instagram, Mini Split, Baltimore",
+};
+
 function hasGeneralIntegrationAccess(user: { role: string; canManageIntegrations: boolean }): boolean {
   return user.role === 'admin' || user.role === 'super_admin' || user.role === 'manager' || user.canManageIntegrations === true;
 }
@@ -316,7 +331,8 @@ export function registerIntegrationRoutes(app: Express): void {
             method: "POST",
             headers: commonHeaders,
             requiredFields: ["name"],
-            optionalFields: ["email", "emails", "phone", "phones", "address", "street", "city", "state", "zip", "source", "notes", "followUpDate"],
+            optionalFields: ["email", "emails", "phone", "phones", "address", "street", "city", "state", "zip", "source", "notes", "followUpDate", "pageURL", "pageUrl", "utmSource", "utmMedium", "utmCampaign", "utmTerm", "utmContent", "tags"],
+            ...leadTrackingDocumentation,
             phoneNormalization: "All phone numbers are automatically normalized to E.164 format (+1XXXXXXXXXX for US). Supports any format: (xxx)xxx-xxxx, xxx-xxx-xxxx, xxx.xxx.xxxx, xxxxxxxxxx, +1(xxx)xxx-xxxx, etc.",
             multipleContacts: "Send single values (email/phone) OR arrays (emails/phones). Arrays allow multiple contact methods per lead.",
             addressFields: "Use structured fields (street, city, state, zip) when available — they are used as-is without parsing. Use address for a combined string when structured fields are not available.",
@@ -330,6 +346,7 @@ export function registerIntegrationRoutes(app: Express): void {
               zip: "62701",
               source: "Website Contact Form",
               notes: "Interested in HVAC installation",
+              ...leadTrackingExample,
               followUpDate: "2024-01-15T10:00:00Z"
             },
             response: {
@@ -396,7 +413,8 @@ export function registerIntegrationRoutes(app: Express): void {
         method: "POST",
         headers: commonHeaders,
         requiredFields: ["name"],
-        optionalFields: ["email", "emails", "phone", "phones", "address", "source", "notes", "followUpDate"],
+        optionalFields: ["email", "emails", "phone", "phones", "address", "source", "notes", "followUpDate", "pageURL", "pageUrl", "utmSource", "utmMedium", "utmCampaign", "utmTerm", "utmContent", "tags"],
+        ...leadTrackingDocumentation,
         phoneNormalization: "All phone numbers are automatically normalized to E.164 format (+1XXXXXXXXXX for US). Supports any format: (xxx)xxx-xxxx, xxx-xxx-xxxx, xxx.xxx.xxxx, xxxxxxxxxx, +1(xxx)xxx-xxxx, etc.",
         multipleContacts: "Send single values (email/phone) OR arrays (emails/phones). Arrays allow multiple contact methods per lead.",
         example: {
@@ -406,6 +424,7 @@ export function registerIntegrationRoutes(app: Express): void {
           address: "123 Main St, City, State 12345",
           source: "Website Contact Form",
           notes: "Interested in HVAC installation",
+          ...leadTrackingExample,
           followUpDate: "2024-01-15T10:00:00Z"
         }
       }

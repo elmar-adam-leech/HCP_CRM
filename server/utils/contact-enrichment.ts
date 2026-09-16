@@ -15,6 +15,7 @@ export interface EnrichmentInput {
   utmCampaign?: string;
   utmTerm?: string;
   utmContent?: string;
+  pageUrl?: string;
 }
 
 /**
@@ -26,7 +27,8 @@ export interface EnrichmentInput {
  * - phones/emails/tags: merged with deduplication (new items only appended)
  * - notes: incoming notes appended to existing (newline-separated)
  * - address: written if incoming is non-empty and differs from the existing value (covers no address and changed address)
- * - UTM fields: first-touch-only — only written if the contact field is empty
+ * - UTM/page URL fields: first-touch-only — only written if the contact field
+ *   is empty
  * - If nothing changed, returns null (no DB write needed)
  */
 export function buildContactEnrichment(
@@ -112,6 +114,7 @@ export function buildContactEnrichment(
   if (input.utmCampaign && !existing.utmCampaign) update.utmCampaign = input.utmCampaign;
   if (input.utmTerm && !existing.utmTerm) update.utmTerm = input.utmTerm;
   if (input.utmContent && !existing.utmContent) update.utmContent = input.utmContent;
+  if (input.pageUrl && !existing.pageUrl) update.pageUrl = input.pageUrl;
 
   if (Object.keys(update).length === 0) return null;
   return update as Partial<Contact>;
