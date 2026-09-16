@@ -531,7 +531,7 @@ async function getContactByBookingCode(bookingCode: string, contractorId: string
   return result[0] as unknown as Contact;
 }
 
-async function createContact(contact: Omit<InsertContact, 'contractorId'>, contractorId: string): Promise<Contact> {
+async function createContact(contact: Omit<InsertContact, 'contractorId'> & { submissionCreationKey?: string }, contractorId: string): Promise<Contact> {
   const normalizedPhones = contact.phones ? normalizePhoneArrayForStorage(contact.phones) : [];
   const bookingCode = contact.bookingCode ?? generateBookingCode();
   const now = new Date();

@@ -192,7 +192,7 @@ export interface IStorage {
   getContactByBookingCode(bookingCode: string, contractorId: string): Promise<Contact | undefined>;
   getContactByHousecallProCustomerId(housecallProCustomerId: string, contractorId: string): Promise<Contact | undefined>;
   getContactsByHousecallProCustomerIds(housecallProCustomerIds: string[], contractorId: string): Promise<Map<string, Contact>>;
-  createContact(contact: Omit<InsertContact, 'contractorId'>, contractorId: string): Promise<Contact>;
+  createContact(contact: Omit<InsertContact, 'contractorId'> & { submissionCreationKey?: string }, contractorId: string): Promise<Contact>;
   bulkCreateContacts(contacts: Array<Omit<InsertContact, 'contractorId'>>, contractorId: string): Promise<{ inserted: number }>;
   updateContact(id: string, contact: UpdateContact, contractorId: string): Promise<Contact | undefined>;
   markContactContacted(contactId: string, contractorId: string, userId: string, contactedAt?: Date): Promise<Contact | undefined>;

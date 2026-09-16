@@ -16,6 +16,7 @@ import { normalizeAddress } from '../utils/normalize-address';
 import { buildContactEnrichment, noteSubmissionKey } from '../utils/contact-enrichment';
 import { buildFormattedAddress, parseAddressString } from '../utils/address';
 import { syncHcpCustomerAddress } from '../scheduling/hcp-customer';
+import { submissionIdentityKey, isSubmissionCreationConflict } from '../utils/submission-identity';
 
 const log = logger('LeadIngestion');
 
@@ -58,7 +59,7 @@ export interface IngestLeadInput {
   skipContactMatching?: boolean;
   activityNote?: string;
   activityExternalId?: string;
-  /** Stable provider submission ID; affects note retries only, not lead matching. */
+  /** Stable provider submission ID; coordinates initial creation and note retries. */
   submissionId?: string;
 
   ipAddress?: string;
@@ -119,6 +120,23 @@ export async function ingestLead(
   contractorId: string,
   input: IngestLeadInput
 ): Promise<IngestLeadResult> {
+  const creationKey = submissionIdentityKey(contractorId, input);
+  try {
+    return await ingestLeadAttempt(contractorId, input, creationKey);
+  } catch (error) {
+    if (!creationKey || !isSubmissionCreationConflict(error)) throw error;
+    // The unique INSERT waits for the winner to commit. Re-enter the normal
+    // existing-contact path, preserving enrichment and note retry behavior.
+    // Bounded to one recovery; unrelated failures must reach the caller.
+    return ingestLeadAttempt(contractorId, input, creationKey);
+  }
+}
+
+async function ingestLeadAttempt(
+  contractorId: string,
+  input: IngestLeadInput,
+  creationKey?: string,
+): Promise<IngestLeadResult> {
   const dedupHours = input.skipDuplicateLeadWithinHours ?? 24;
 
   log.info(`[phone-pipeline] lead-ingestion input phones: [${(input.phones || []).map(maskPhone).join(', ')}] — source: ${input.source}, contractor: ${contractorId}`);
@@ -150,13 +168,18 @@ export async function ingestLead(
   // enrichment builder. Unidentified/manual inquiries retain append behavior.
   const enrichmentInput = noteKey ? { ...input, notes: undefined } : input;
 
-  const existingContactId = input.skipContactMatching
+  const [submissionContact] = creationKey
+    ? await db.select({ id: contacts.id }).from(contacts)
+      .where(and(eq(contacts.contractorId, contractorId), eq(contacts.submissionCreationKey, creationKey)))
+      .limit(1)
+    : [];
+  const existingContactId = submissionContact?.id ?? (input.skipContactMatching
     ? null
     : await storage.findMatchingContact(
         contractorId,
         emails.length > 0 ? emails : undefined,
         normalizedPhones.length > 0 ? normalizedPhones : undefined
-      );
+      ));
 
   let contact: Contact | undefined;
   let isNewContact = false;
@@ -292,6 +315,7 @@ export async function ingestLead(
       source: input.source,
       notes: input.notes,
       ...(noteKey && { noteSubmissionKeys: [noteKey] }),
+      ...(creationKey && { submissionCreationKey: creationKey }),
       tags: input.tags,
       type: 'lead',
       status: 'new',

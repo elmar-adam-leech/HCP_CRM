@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, boolean, index, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, boolean, index, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { contactTypeEnum, contactStatusEnum } from "./enums";
@@ -23,6 +23,7 @@ export const contacts = pgTable("contacts", {
   source: text("source"), // Where the contact came from (web form, referral, etc.)
   notes: text("notes"),
   noteSubmissionKeys: text("note_submission_keys").array().notNull().default([]),
+  submissionCreationKey: text("submission_creation_key"),
   tags: text("tags").array().default(sql`'{}'`), // Tags for segmentation and workflow targeting
   followUpDate: timestamp("follow_up_date"),
   // UTM and tracking fields
@@ -59,6 +60,7 @@ export const contacts = pgTable("contacts", {
 }, (table) => ({
   // Performance indexes for common queries
   contractorIdIdx: index("contacts_contractor_id_idx").on(table.contractorId),
+  submissionCreationIdx: uniqueIndex("contacts_submission_creation_idx").on(table.contractorId, table.submissionCreationKey),
   typeIdx: index("contacts_type_idx").on(table.type),
   statusIdx: index("contacts_status_idx").on(table.status),
   isScheduledIdx: index("contacts_is_scheduled_idx").on(table.isScheduled),
@@ -100,6 +102,7 @@ export const insertContactSchema = createInsertSchema(contacts).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+  submissionCreationKey: true,
 });
 export type InsertContact = z.infer<typeof insertContactSchema>;
 export type Contact = typeof contacts.$inferSelect & {

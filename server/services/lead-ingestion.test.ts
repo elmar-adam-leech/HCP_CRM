@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { noteSubmissionKey } from '../utils/contact-enrichment';
+import { submissionIdentityKey } from '../utils/submission-identity';
 
 const h = vi.hoisted(() => {
   const table = () => new Proxy({}, {
@@ -23,6 +24,8 @@ const h = vi.hoisted(() => {
     leads: table(),
     activities: table(),
     contacts: table(),
+    contactReceiptResults: [] as any[][],
+    activitySelectResults: [] as any[][],
     selectResults: [] as any[][],
     updateResults: [] as any[][],
     updateSets: [] as Record<string, unknown>[],
@@ -30,6 +33,8 @@ const h = vi.hoisted(() => {
     updateWheres: [] as any[],
     contact: undefined as any,
     reset() {
+      this.contactReceiptResults = [];
+      this.activitySelectResults = [];
       this.selectResults = [];
       this.updateResults = [];
       this.updateSets = [];
@@ -38,13 +43,29 @@ const h = vi.hoisted(() => {
       this.contact = undefined;
     },
     db: {
-      select: vi.fn(() => ({
-        from: vi.fn(() => ({
-          where: vi.fn(() => ({
-            limit: vi.fn(() => Promise.resolve(h.selectResults.shift() ?? [])),
-          })),
-        })),
-      })),
+      // Receipt lookup was added before the existing lead queries. Keep its
+      // responses separate so a contact lookup cannot consume a queued lead
+      // duplicate result (and vice versa).
+      select: vi.fn(() => {
+        let selectedTable: unknown;
+        return {
+          from: vi.fn((table: unknown) => {
+            selectedTable = table;
+            return {
+              where: vi.fn(() => ({
+                limit: vi.fn(() => {
+                  const results = selectedTable === h.contacts
+                    ? h.contactReceiptResults
+                    : selectedTable === h.activities
+                      ? h.activitySelectResults
+                      : h.selectResults;
+                  return Promise.resolve(results.shift() ?? []);
+                }),
+              })),
+            };
+          }),
+        };
+      }),
       update: vi.fn((table: unknown) => {
         h.updateTables.push(table);
         return {
@@ -169,6 +190,22 @@ function input(overrides: Record<string, unknown> = {}) {
     skipHcpSync: true,
     ...overrides,
   };
+}
+
+function stableInput(overrides: Record<string, unknown> = {}) {
+  return input({
+    emails: undefined,
+    phones: undefined,
+    notes: undefined,
+    tags: undefined,
+    pageUrl: undefined,
+    utmSource: undefined,
+    utmMedium: undefined,
+    utmCampaign: undefined,
+    utmTerm: undefined,
+    utmContent: undefined,
+    ...overrides,
+  });
 }
 
 beforeEach(() => {
@@ -487,5 +524,240 @@ describe('ingestLead tracking and contact mapping', () => {
     // The keyed contact receipt is the only update; duplicate tracking still
     // uses its existing conditional update rules when tracking is supplied.
     expect(h.db.update).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('initial contact creation identity', () => {
+  it('converges same-ID deliveries after a wrapped unique-insert race, without matching or note work', async () => {
+    const delivery = stableInput({
+      submissionId: 'provider-submission-1',
+      skipContactMatching: true,
+    });
+    const creationKey = submissionIdentityKey(TENANT, delivery);
+    const winner = makeContact({
+      id: 'contact-winner',
+      emails: [],
+      phones: [],
+      notes: undefined,
+      contractorId: TENANT,
+      submissionCreationKey: creationKey,
+    });
+    const duplicateInsert = Object.assign(new Error('duplicate submission'), {
+      cause: {
+        code: '23505',
+        constraint: 'contacts_submission_creation_idx',
+      },
+    });
+    let insertAttempts = 0;
+
+    // Both initial attempts observe no receipt. The first insert wins; the
+    // second receives the wrapped PostgreSQL conflict and its bounded retry
+    // observes the committed winner.
+    h.contactReceiptResults = [[], [], [{ id: winner.id }]];
+    h.storage.getContact.mockResolvedValue(winner);
+    h.storage.createContact.mockImplementation(async () => {
+      insertAttempts += 1;
+      if (insertAttempts === 2) throw duplicateInsert;
+      return winner;
+    });
+
+    const [first, second] = await Promise.all([
+      ingestLead(TENANT, delivery),
+      ingestLead(TENANT, { ...delivery }),
+    ]);
+
+    expect(h.storage.createContact).toHaveBeenCalledTimes(2);
+    expect(h.storage.createContact.mock.calls[0][0]).toEqual(expect.objectContaining({
+      emails: [],
+      phones: [],
+      notes: undefined,
+      submissionCreationKey: creationKey,
+    }));
+    expect(h.storage.createContact.mock.calls[0][0]).not.toHaveProperty('noteSubmissionKeys');
+    expect(h.storage.createContact.mock.calls[1][0]).toEqual(expect.objectContaining({
+      submissionCreationKey: creationKey,
+    }));
+    expect(h.storage.findMatchingContact).not.toHaveBeenCalled();
+    expect(h.db.update).not.toHaveBeenCalled();
+    expect(first.contact).toBe(winner);
+    expect(second.contact).toBe(winner);
+    expect(first.isNewContact).toBe(true);
+    expect(second.isNewContact).toBe(false);
+    expect(first.skippedDuplicateLead).toBe(false);
+    expect(second.skippedDuplicateLead).toBe(false);
+  });
+
+  it('uses one stable creation identity while appending a changed note on retry', async () => {
+    const firstSubmission = stableInput({
+      submissionId: 'provider-submission-with-note',
+      notes: 'first note',
+      skipContactMatching: true,
+    });
+    const firstResult = await ingestLead(TENANT, firstSubmission);
+    const created = firstResult.contact;
+    const secondSubmission = stableInput({
+      submissionId: 'provider-submission-with-note',
+      notes: 'changed note',
+      skipContactMatching: true,
+    });
+    const firstReceipt = noteSubmissionKey(TENANT, firstSubmission);
+    const secondReceipt = noteSubmissionKey(TENANT, secondSubmission);
+    const saved = {
+      ...created,
+      notes: 'first note\nchanged note',
+      noteSubmissionKeys: [firstReceipt, secondReceipt],
+    };
+
+    expect(firstReceipt).toBeDefined();
+    expect(secondReceipt).toBeDefined();
+    expect(firstReceipt).not.toBe(secondReceipt);
+    expect(created.submissionCreationKey).toBe(
+      submissionIdentityKey(TENANT, firstSubmission),
+    );
+    expect(created.submissionCreationKey).toBe(
+      submissionIdentityKey(TENANT, secondSubmission),
+    );
+
+    h.contactReceiptResults = [[{ id: created.id }]];
+    h.storage.getContact.mockResolvedValue(created);
+    h.updateResults = [[saved]];
+
+    const result = await ingestLead(TENANT, secondSubmission);
+
+    expect(h.storage.createContact).toHaveBeenCalledTimes(1);
+    expect(h.storage.updateContact).not.toHaveBeenCalled();
+    expect(h.updateTables[0]).toBe(h.contacts);
+    expect(h.updateSets[0].notes).toEqual(expect.anything());
+    expect(((h.updateSets[0].notes as any).values[0] as any).values).toContain(secondReceipt);
+    expect((h.updateSets[0].notes as any).values).toContain(secondSubmission.notes);
+    expect(result.contact).toBe(saved);
+    expect(result.contact.notes).toBe('first note\nchanged note');
+  });
+
+  it('keeps distinct IDs separate when matching finds no contact', async () => {
+    let contactNumber = 0;
+    h.storage.createContact.mockImplementation(async (
+      values: Record<string, unknown>,
+      contractorId: string,
+    ) => {
+      const created = makeContact({
+        ...values,
+        id: `contact-unmatched-${++contactNumber}`,
+        contractorId,
+      });
+      h.contact = created;
+      return created;
+    });
+
+    const [first, second] = await Promise.all([
+      ingestLead(TENANT, stableInput({
+        submissionId: 'provider-submission-a',
+        emails: ['same@example.test'],
+      })),
+      ingestLead(TENANT, stableInput({
+        submissionId: 'provider-submission-b',
+        emails: ['same@example.test'],
+      })),
+    ]);
+
+    expect(h.storage.findMatchingContact).toHaveBeenCalledTimes(2);
+    expect(h.storage.createContact).toHaveBeenCalledTimes(2);
+    expect(first.contact.id).not.toBe(second.contact.id);
+    expect(first.isNewContact).toBe(true);
+    expect(second.isNewContact).toBe(true);
+    expect(h.storage.createContact.mock.calls[0][0].submissionCreationKey).not.toBe(
+      h.storage.createContact.mock.calls[1][0].submissionCreationKey,
+    );
+  });
+
+  it('lets distinct IDs retain the existing matching behavior and share a match', async () => {
+    const shared = makeContact({
+      id: 'contact-shared',
+      emails: ['same@example.test'],
+    });
+    h.contact = shared;
+    h.storage.findMatchingContact.mockResolvedValue(shared.id);
+    h.storage.getContact.mockResolvedValue(shared);
+
+    const [first, second] = await Promise.all([
+      ingestLead(TENANT, stableInput({
+        submissionId: 'provider-submission-c',
+        emails: ['same@example.test'],
+      })),
+      ingestLead(TENANT, stableInput({
+        submissionId: 'provider-submission-d',
+        emails: ['same@example.test'],
+      })),
+    ]);
+
+    expect(h.storage.findMatchingContact).toHaveBeenCalledTimes(2);
+    expect(h.storage.createContact).not.toHaveBeenCalled();
+    expect(first.contact).toBe(shared);
+    expect(second.contact).toBe(shared);
+    expect(first.isNewContact).toBe(false);
+    expect(second.isNewContact).toBe(false);
+  });
+
+  it('keeps the same provider ID isolated by tenant and source', async () => {
+    let contactNumber = 0;
+    h.storage.createContact.mockImplementation(async (
+      values: Record<string, unknown>,
+      contractorId: string,
+    ) => {
+      const created = makeContact({
+        ...values,
+        id: `contact-isolated-${++contactNumber}`,
+        contractorId,
+      });
+      h.contact = created;
+      return created;
+    });
+    const tenantSubmission = stableInput({
+      submissionId: 'provider-submission-isolated',
+      source: 'webhook',
+    });
+    const otherSource = stableInput({
+      submissionId: 'provider-submission-isolated',
+      source: 'facebook',
+    });
+    const otherTenant = stableInput({
+      submissionId: 'provider-submission-isolated',
+      source: 'webhook',
+    });
+
+    await ingestLead(TENANT, tenantSubmission);
+    await ingestLead(TENANT, otherSource);
+    await ingestLead(OTHER_TENANT, otherTenant);
+
+    const calls = h.storage.createContact.mock.calls;
+    const keys = calls.map(([values]) => values.submissionCreationKey);
+    expect(new Set(keys).size).toBe(3);
+    expect(keys).toEqual([
+      submissionIdentityKey(TENANT, tenantSubmission),
+      submissionIdentityKey(TENANT, otherSource),
+      submissionIdentityKey(OTHER_TENANT, otherTenant),
+    ]);
+    expect(calls.map(([, contractorId]) => contractorId)).toEqual([
+      TENANT,
+      TENANT,
+      OTHER_TENANT,
+    ]);
+  });
+
+  it('propagates a non-target unique error instead of retrying', async () => {
+    const error = Object.assign(new Error('duplicate email'), {
+      cause: {
+        code: '23505',
+        constraint: 'contacts_email_unique',
+      },
+    });
+    h.storage.createContact.mockRejectedValue(error);
+
+    await expect(ingestLead(TENANT, stableInput({
+      submissionId: 'provider-submission-other-error',
+    }))).rejects.toBe(error);
+
+    expect(h.storage.createContact).toHaveBeenCalledTimes(1);
+    expect(h.contactReceiptResults).toHaveLength(0);
   });
 });

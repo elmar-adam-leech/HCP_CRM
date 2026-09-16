@@ -35,6 +35,11 @@ export const defaultLogger: SchemaDriftLogger = {
 // ──────────────────────────────────────────────────────────────────────────
 export const columnMigrations: Array<{ sql: string; description: string }> = [
     {
+      sql: `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS submission_creation_key text;
+        CREATE UNIQUE INDEX IF NOT EXISTS contacts_submission_creation_idx ON contacts (contractor_id, submission_creation_key)`,
+      description: 'contacts submission creation identity (tenant-scoped first-delivery concurrency)',
+    },
+    {
       sql: `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS note_submission_keys text[] NOT NULL DEFAULT '{}'`,
       description: 'contacts.note_submission_keys (retry-aware ingestion note receipts)',
     },
