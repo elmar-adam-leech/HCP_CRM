@@ -17,8 +17,8 @@ vi.mock("../utils/logger", () => ({
   logger: vi.fn(() => log),
 }));
 
-const response = (content: string | null) => ({
-  choices: [{ message: { content } }],
+const response = (content: string | null, finishReason = "stop") => ({
+  choices: [{ message: { content }, finish_reason: finishReason }],
 });
 
 describe("parseEmailWithAI", () => {
@@ -40,6 +40,7 @@ describe("parseEmailWithAI", () => {
     const body = "b".repeat(3010);
 
     await expect(parseEmailWithAI("Need service", body)).resolves.toEqual({
+      status: "success",
       isSpam: false,
       spamConfidence: 13,
       name: "Ada Lovelace",
@@ -77,39 +78,144 @@ describe("parseEmailWithAI", () => {
     const { parseEmailWithAI } = await import("./email-ai-parser");
 
     await expect(parseEmailWithAI("subject", "body")).resolves.toMatchObject({
+      status: "success",
       isSpam: true,
       spamConfidence: expected,
     });
   });
 
-  it("returns non-spam for an empty response", async () => {
+  it("returns an explicit failure for an empty response", async () => {
     createCompletion.mockResolvedValue(response("   "));
     const { parseEmailWithAI } = await import("./email-ai-parser");
 
-    await expect(parseEmailWithAI("subject", "body")).resolves.toEqual({ isSpam: false });
-    expect(log.warn).toHaveBeenCalledWith("Empty AI response, treating as non-spam");
+    const result = await parseEmailWithAI("subject", "body");
+    expect(result).toEqual({
+      status: "failed",
+      errorCode: "empty_output",
+      message: "Email AI returned an empty response.",
+    });
+    expect(result).not.toHaveProperty("isSpam");
+    expect(log.warn).toHaveBeenCalledWith("Empty AI response");
   });
 
-  it("returns non-spam and logs malformed JSON or API failure", async () => {
-    createCompletion
-      .mockResolvedValueOnce(response("{bad json"))
-      .mockRejectedValueOnce(new Error("network down"));
+  it("rejects malformed JSON", async () => {
+    createCompletion.mockResolvedValue(response("{bad json"));
     const { parseEmailWithAI } = await import("./email-ai-parser");
 
-    await expect(parseEmailWithAI("subject", "body")).resolves.toEqual({ isSpam: false });
-    await expect(parseEmailWithAI("subject", "body")).resolves.toEqual({ isSpam: false });
-    expect(log.error).toHaveBeenCalledTimes(2);
+    await expect(parseEmailWithAI("subject", "body")).resolves.toEqual({
+      status: "failed",
+      errorCode: "invalid_output",
+      message: "Email AI returned an invalid response.",
+    });
+  });
+
+  it.each([
+    ["null", "null"],
+    ["array", "[]"],
+    ["missing isSpam", '{"spamConfidence":20}'],
+    ["non-boolean isSpam", '{"isSpam":"false"}'],
+    ["non-finite confidence", '{"isSpam":false,"spamConfidence":1e400}'],
+    ["non-number confidence", '{"isSpam":false,"spamConfidence":"20"}'],
+    ["invalid optional field", '{"isSpam":false,"name":42}'],
+  ])("rejects invalid output shape: %s", async (_description, content) => {
+    createCompletion.mockResolvedValue(response(content));
+    const { parseEmailWithAI } = await import("./email-ai-parser");
+
+    const result = await parseEmailWithAI("subject", "body");
+    expect(result).toMatchObject({ status: "failed", errorCode: "invalid_output" });
+    expect(result).not.toHaveProperty("isSpam");
+  });
+
+  it("accepts omitted and null optional fields", async () => {
+    createCompletion.mockResolvedValue(
+      response('{"isSpam":false,"name":null,"phone":null}'),
+    );
+    const { parseEmailWithAI } = await import("./email-ai-parser");
+
+    await expect(parseEmailWithAI("subject", "body")).resolves.toEqual({
+      status: "success",
+      isSpam: false,
+      spamConfidence: undefined,
+      name: undefined,
+      phone: undefined,
+      email: undefined,
+      serviceDescription: undefined,
+    });
+  });
+
+  it.each([
+    ["truncated JSON", '{"isSpam":'],
+    ["valid JSON", '{"isSpam":false}'],
+  ])("rejects length-finished %s", async (_description, content) => {
+    createCompletion.mockResolvedValue(response(content, "length"));
+    const { parseEmailWithAI } = await import("./email-ai-parser");
+
+    const result = await parseEmailWithAI("subject", "body");
+    expect(result).toEqual({
+      status: "failed",
+      errorCode: "truncated_output",
+      message: "Email AI response was truncated. Please try again.",
+    });
+    expect(result).not.toHaveProperty("isSpam");
+  });
+
+  it("returns an API failure and recovers on a subsequent request", async () => {
+    createCompletion
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce(response('{"isSpam":true,"email":"lead@example.com"}'));
+    const { parseEmailWithAI } = await import("./email-ai-parser");
+
+    const failed = await parseEmailWithAI("subject", "body");
+    expect(failed).toEqual({
+      status: "failed",
+      errorCode: "api_error",
+      message: "Email AI parsing is temporarily unavailable.",
+    });
+    expect(failed).not.toHaveProperty("isSpam");
+    await expect(parseEmailWithAI("subject", "body")).resolves.toMatchObject({
+      status: "success",
+      isSpam: true,
+      email: "lead@example.com",
+    });
   });
 
   it("skips AI without constructing a client when the key is missing", async () => {
     vi.stubEnv("XAI_API_KEY", "");
     const { parseEmailWithAI } = await import("./email-ai-parser");
 
-    await expect(parseEmailWithAI("subject", "body")).resolves.toEqual({ isSpam: false });
+    const result = await parseEmailWithAI("subject", "body");
+    expect(result).toEqual({
+      status: "failed",
+      errorCode: "missing_credentials",
+      message: "Email AI parsing is unavailable because credentials are not configured.",
+    });
+    expect(result).not.toHaveProperty("isSpam");
     expect(openAIConstructor).not.toHaveBeenCalled();
     expect(createCompletion).not.toHaveBeenCalled();
     expect(log.warn).toHaveBeenCalledWith(
       "XAI_API_KEY not configured, skipping AI parsing",
     );
+  });
+
+  it("checks credentials before reusing a cached client and recovers when restored", async () => {
+    createCompletion.mockResolvedValue(response('{"isSpam":false}'));
+    const { parseEmailWithAI } = await import("./email-ai-parser");
+
+    await expect(parseEmailWithAI("subject", "body")).resolves.toMatchObject({
+      status: "success",
+    });
+    vi.stubEnv("XAI_API_KEY", "");
+    await expect(parseEmailWithAI("subject", "body")).resolves.toMatchObject({
+      status: "failed",
+      errorCode: "missing_credentials",
+    });
+    expect(createCompletion).toHaveBeenCalledTimes(1);
+
+    vi.stubEnv("XAI_API_KEY", "unit-test-xai-key");
+    await expect(parseEmailWithAI("subject", "body")).resolves.toMatchObject({
+      status: "success",
+      isSpam: false,
+    });
+    expect(createCompletion).toHaveBeenCalledTimes(2);
   });
 });

@@ -18,9 +18,15 @@ const h = vi.hoisted(() => {
     createLead: vi.fn(),
     createActivity: vi.fn(),
   };
+  const housecallProService = {
+    searchCustomers: vi.fn(),
+    createCustomer: vi.fn(),
+    createLead: vi.fn(),
+  };
 
   return {
     storage,
+    housecallProService,
     leads: table(),
     activities: table(),
     contacts: table(),
@@ -154,7 +160,7 @@ vi.mock('../services/cache', () => ({
   isIntegrationEnabledCached: vi.fn(),
   cacheInvalidation: h.cacheInvalidation,
 }));
-vi.mock('../hcp/index', () => ({ housecallProService: {} }));
+vi.mock('../hcp/index', () => ({ housecallProService: h.housecallProService }));
 vi.mock('../utils/logger', () => ({
   logger: () => ({ info: vi.fn(), error: vi.fn(), warn: vi.fn() }),
 }));
@@ -168,6 +174,9 @@ vi.mock('../utils/address', () => ({
 vi.mock('../scheduling/hcp-customer', () => ({ syncHcpCustomerAddress: vi.fn() }));
 
 import { ingestLead } from './lead-ingestion';
+import { workflowEngine } from '../workflow-engine';
+import { autoAssignLead } from '../routes/assignments';
+import { isIntegrationEnabledCached } from '../services/cache';
 
 const TENANT = 'tenant-1';
 const OTHER_TENANT = 'tenant-2';
@@ -674,6 +683,102 @@ describe('ingestLead tracking and contact mapping', () => {
 });
 
 describe('initial contact creation identity', () => {
+  describe('email recovery receipt replay', () => {
+    function recoveredEmailInput(overrides: Record<string, unknown> = {}) {
+      return stableInput({
+        name: 'Ada Example',
+        emails: ['ada@example.test'],
+        source: 'email_capture',
+        submissionId: 'gmail-message-original-123',
+        activityExternalId: 'gmail-message-original-123',
+        activityNote: 'Recovered Gmail lead capture',
+        identityPolicy: 'two-field',
+        skipAutoAssign: false,
+        skipWorkflows: false,
+        skipHcpSync: false,
+        ...overrides,
+      });
+    }
+
+    it('returns the original Gmail lead receipt after its audit record is recreated without repeating effects', async () => {
+      const recovery = recoveredEmailInput();
+      const recreatedAuditRecovery = recoveredEmailInput({
+        activityNote: 'Recovered again after spam audit recreation',
+      });
+      const creationKey = submissionIdentityKey(TENANT, recovery);
+      const existingContact = makeContact();
+      const existingLead = makeLead({
+        id: 'lead-from-original-gmail-message',
+        submissionCreationKeys: [creationKey],
+      });
+
+      expect(creationKey).toBeDefined();
+      expect(submissionIdentityKey(TENANT, recreatedAuditRecovery)).toBe(creationKey);
+
+      h.selectResults = [[existingLead], [existingLead]];
+      h.activitySelectResults = [[{ id: 'capture-activity' }], [{ id: 'capture-activity' }]];
+      h.storage.getContact.mockResolvedValue(existingContact);
+
+      const firstRecovery = await ingestLead(TENANT, recovery);
+      const afterAuditRecreation = await ingestLead(TENANT, recreatedAuditRecovery);
+
+      expect(firstRecovery.lead).toBe(existingLead);
+      expect(afterAuditRecreation.lead).toBe(existingLead);
+      expect(firstRecovery).toMatchObject({
+        contact: existingContact,
+        isNewContact: false,
+        skippedDuplicateLead: true,
+      });
+      expect(afterAuditRecreation).toMatchObject({
+        contact: existingContact,
+        isNewContact: false,
+        skippedDuplicateLead: true,
+      });
+      expect(h.storage.createLead).not.toHaveBeenCalled();
+      expect(h.storage.createContact).not.toHaveBeenCalled();
+      expect(h.storage.createActivity).not.toHaveBeenCalled();
+      expect(workflowEngine.triggerWorkflowsForEvent).not.toHaveBeenCalled();
+      expect(autoAssignLead).not.toHaveBeenCalled();
+      expect(isIntegrationEnabledCached).not.toHaveBeenCalled();
+      expect(h.housecallProService.searchCustomers).not.toHaveBeenCalled();
+      expect(h.housecallProService.createCustomer).not.toHaveBeenCalled();
+      expect(h.housecallProService.createLead).not.toHaveBeenCalled();
+    });
+
+    it('converges concurrent recovery calls on the existing Gmail lead receipt without repeating effects', async () => {
+      const recovery = recoveredEmailInput();
+      const creationKey = submissionIdentityKey(TENANT, recovery);
+      const existingContact = makeContact();
+      const existingLead = makeLead({
+        id: 'lead-from-original-gmail-message',
+        submissionCreationKeys: [creationKey],
+      });
+
+      h.selectResults = [[existingLead], [existingLead]];
+      h.activitySelectResults = [[{ id: 'capture-activity' }], [{ id: 'capture-activity' }]];
+      h.storage.getContact.mockResolvedValue(existingContact);
+
+      const [first, second] = await Promise.all([
+        ingestLead(TENANT, recovery),
+        ingestLead(TENANT, { ...recovery }),
+      ]);
+
+      expect(first.lead).toBe(existingLead);
+      expect(second.lead).toBe(existingLead);
+      expect(first.skippedDuplicateLead).toBe(true);
+      expect(second.skippedDuplicateLead).toBe(true);
+      expect(h.storage.createLead).not.toHaveBeenCalled();
+      expect(h.storage.createContact).not.toHaveBeenCalled();
+      expect(h.storage.createActivity).not.toHaveBeenCalled();
+      expect(workflowEngine.triggerWorkflowsForEvent).not.toHaveBeenCalled();
+      expect(autoAssignLead).not.toHaveBeenCalled();
+      expect(isIntegrationEnabledCached).not.toHaveBeenCalled();
+      expect(h.housecallProService.searchCustomers).not.toHaveBeenCalled();
+      expect(h.housecallProService.createCustomer).not.toHaveBeenCalled();
+      expect(h.housecallProService.createLead).not.toHaveBeenCalled();
+    });
+  });
+
   it('converges same-ID deliveries after a wrapped unique-insert race, without matching or note work', async () => {
     const delivery = stableInput({
       submissionId: 'provider-submission-1',

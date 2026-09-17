@@ -4,7 +4,8 @@ import { XAI_MODEL } from '../utils/xai-model';
 
 const log = logger('EmailAIParser');
 
-export interface EmailParseResult {
+export interface EmailParseSuccess {
+  status: 'success';
   isSpam: boolean;
   spamConfidence?: number;
   name?: string;
@@ -12,6 +13,21 @@ export interface EmailParseResult {
   email?: string;
   serviceDescription?: string;
 }
+
+export type EmailParseErrorCode =
+  | 'missing_credentials'
+  | 'api_error'
+  | 'empty_output'
+  | 'truncated_output'
+  | 'invalid_output';
+
+export interface EmailParseFailure {
+  status: 'failed';
+  errorCode: EmailParseErrorCode;
+  message: string;
+}
+
+export type EmailParseResult = EmailParseSuccess | EmailParseFailure;
 
 export interface HeuristicSpamResult {
   isSpam: boolean;
@@ -165,21 +181,74 @@ Respond with valid JSON only, no markdown formatting:
 let client: OpenAI | null = null;
 
 function getClient(): OpenAI | null {
-  if (client) return client;
   const apiKey = process.env.XAI_API_KEY;
   if (!apiKey) return null;
+  if (client) return client;
   client = new OpenAI({ baseURL: "https://api.x.ai/v1", apiKey });
   return client;
 }
 
-export async function parseEmailWithAI(subject: string, body: string): Promise<EmailParseResult> {
-  const ai = getClient();
-  if (!ai) {
-    log.warn('XAI_API_KEY not configured, skipping AI parsing');
-    return { isSpam: false };
+function failure(errorCode: EmailParseErrorCode, message: string): EmailParseFailure {
+  return { status: 'failed', errorCode, message };
+}
+
+function isOptionalStringOrNull(value: unknown): value is string | null | undefined {
+  return value === undefined || value === null || typeof value === 'string';
+}
+
+function parseOutput(content: string): EmailParseResult {
+  const cleaned = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    return failure('invalid_output', 'Email AI returned an invalid response.');
   }
 
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return failure('invalid_output', 'Email AI returned an invalid response.');
+  }
+
+  const value = parsed as Record<string, unknown>;
+  if (
+    typeof value.isSpam !== 'boolean'
+    || (value.spamConfidence !== undefined
+      && (typeof value.spamConfidence !== 'number' || !Number.isFinite(value.spamConfidence)))
+    || !isOptionalStringOrNull(value.name)
+    || !isOptionalStringOrNull(value.phone)
+    || !isOptionalStringOrNull(value.email)
+    || !isOptionalStringOrNull(value.serviceDescription)
+  ) {
+    return failure('invalid_output', 'Email AI returned an invalid response.');
+  }
+
+  const spamConfidence = typeof value.spamConfidence === 'number'
+    ? Math.max(0, Math.min(100, Math.round(value.spamConfidence)))
+    : undefined;
+
+  return {
+    status: 'success',
+    isSpam: value.isSpam,
+    spamConfidence,
+    name: value.name ?? undefined,
+    phone: value.phone ?? undefined,
+    email: value.email ?? undefined,
+    serviceDescription: value.serviceDescription ?? undefined,
+  };
+}
+
+export async function parseEmailWithAI(subject: string, body: string): Promise<EmailParseResult> {
   try {
+    const ai = getClient();
+    if (!ai) {
+      log.warn('XAI_API_KEY not configured, skipping AI parsing');
+      return failure(
+        'missing_credentials',
+        'Email AI parsing is unavailable because credentials are not configured.',
+      );
+    }
+
     const userMessage = `Subject: ${subject}\n\nBody:\n${body.substring(0, 3000)}`;
 
     const completion = await ai.chat.completions.create({
@@ -192,29 +261,24 @@ export async function parseEmailWithAI(subject: string, body: string): Promise<E
       max_tokens: 500,
     });
 
-    const content = completion.choices[0]?.message?.content?.trim();
-    if (!content) {
-      log.warn('Empty AI response, treating as non-spam');
-      return { isSpam: false };
+    const choice = completion.choices[0];
+    if (choice?.finish_reason === 'length') {
+      log.warn('AI response was truncated');
+      return failure(
+        'truncated_output',
+        'Email AI response was truncated. Please try again.',
+      );
     }
 
-    const cleaned = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    const parsed = JSON.parse(cleaned);
+    const content = choice?.message?.content?.trim();
+    if (!content) {
+      log.warn('Empty AI response');
+      return failure('empty_output', 'Email AI returned an empty response.');
+    }
 
-    const spamConfidence = typeof parsed.spamConfidence === 'number'
-      ? Math.max(0, Math.min(100, Math.round(parsed.spamConfidence)))
-      : undefined;
-
-    return {
-      isSpam: parsed.isSpam === true,
-      spamConfidence,
-      name: parsed.name || undefined,
-      phone: parsed.phone || undefined,
-      email: parsed.email || undefined,
-      serviceDescription: parsed.serviceDescription || undefined,
-    };
+    return parseOutput(content);
   } catch (error) {
     log.error('Error parsing email with AI:', error);
-    return { isSpam: false };
+    return failure('api_error', 'Email AI parsing is temporarily unavailable.');
   }
 }

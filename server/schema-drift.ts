@@ -35,6 +35,26 @@ export const defaultLogger: SchemaDriftLogger = {
 // ──────────────────────────────────────────────────────────────────────────
 export const columnMigrations: Array<{ sql: string; description: string }> = [
     {
+      sql: `CREATE TABLE IF NOT EXISTS "email_parse_failures" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "contractor_id" varchar NOT NULL REFERENCES "contractors"("id"),
+        "inbox_id" varchar NOT NULL,
+        "message_id" text NOT NULL,
+        "email" jsonb NOT NULL,
+        "error_code" text NOT NULL,
+        "error_message" text NOT NULL,
+        "attempts" integer NOT NULL DEFAULT 1,
+        "failed_at" timestamp NOT NULL DEFAULT now(),
+        "last_attempt_at" timestamp NOT NULL DEFAULT now(),
+        "resolved_at" timestamp
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS "email_parse_failures_contractor_inbox_message_idx"
+        ON "email_parse_failures" ("contractor_id", "inbox_id", "message_id");
+      CREATE INDEX IF NOT EXISTS "email_parse_failures_pending_idx"
+        ON "email_parse_failures" ("contractor_id", "inbox_id", "failed_at")`,
+      description: 'email_parse_failures table and tenant-scoped lookup indexes',
+    },
+    {
       sql: `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS submission_creation_key text;
         CREATE UNIQUE INDEX IF NOT EXISTS contacts_submission_creation_idx ON contacts (contractor_id, submission_creation_key)`,
       description: 'contacts submission creation identity (tenant-scoped first-delivery concurrency)',
@@ -106,6 +126,7 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
         "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
         "inbox_id" varchar NOT NULL REFERENCES "lead_capture_inboxes"("id"),
         "contractor_id" varchar NOT NULL REFERENCES "contractors"("id"),
+        "message_id" text,
         "sender_email" text NOT NULL,
         "subject" text NOT NULL,
         "body" text NOT NULL,
@@ -116,6 +137,14 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
         "recovered_lead_id" varchar
       )`,
       description: 'spam_audit_log table (audit log of emails flagged as spam)',
+    },
+    {
+      // Run after table creation for both new and existing databases. Legacy
+      // rows have no trustworthy provider ID and remain distinct NULLs.
+      sql: `ALTER TABLE spam_audit_log ADD COLUMN IF NOT EXISTS message_id text;
+        CREATE UNIQUE INDEX IF NOT EXISTS spam_audit_log_contractor_inbox_message_idx
+          ON spam_audit_log (contractor_id, inbox_id, message_id)`,
+      description: 'spam_audit_log nullable message identity and tenant-scoped unique index',
     },
     {
       sql: `CREATE INDEX IF NOT EXISTS spam_audit_log_inbox_id_idx ON spam_audit_log(inbox_id)`,

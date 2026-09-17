@@ -8,3 +8,4 @@
 - [Server ESM circular imports](server-esm-circular-imports.md) — static cycles can make the bundled server exit 13 before startup; break bidirectional service imports with lazy loading.
 - [Webhook note identity](webhook-note-identity.md) — identical payloads can be distinct inquiries; never infer retry identity or historical receipts from note text alone.
 - [Lead intake coordination](lead-intake-coordination.md) — person matches and inquiry retries are separate; shared-pool lock waiters can starve protected writes.
+- [Email review ownership](email-review-ownership.md) — retain failed inquiries across disconnects, but never silently transfer them to a replacement inbox.

@@ -10,6 +10,7 @@ import { senderRuleSchema } from "@shared/schema";
 import { parseBody } from "../utils/validate-body";
 import { logger } from "../utils/logger";
 import { ingestLead } from "../services/lead-ingestion";
+import { emailParseFailureStore } from "../storage/email-parse-failures";
 
 const log = logger('LeadCaptureRoutes');
 
@@ -128,6 +129,41 @@ export function registerLeadCaptureRoutes(app: Express): void {
     res.json({ success: true, spamConfidenceThreshold: inbox.spamConfidenceThreshold });
   }));
 
+  app.get("/api/settings/lead-capture-inbox/parse-failures", requireManagerOrAdmin, asyncHandler(async (req, res) => {
+    const entries = await emailParseFailureStore.listPending(req.user.contractorId);
+    res.json({ entries, total: entries.length });
+  }));
+
+  app.post("/api/settings/lead-capture-inbox/parse-failures/:id/retry", requireManagerOrAdmin, asyncHandler(async (req, res) => {
+    const contractorId = req.user.contractorId;
+    const entry = await emailParseFailureStore.get(req.params.id, contractorId);
+    if (!entry) {
+      res.status(404).json({ message: "Email needing review not found" });
+      return;
+    }
+    if (entry.resolvedAt) {
+      res.json({ success: true, alreadyResolved: true });
+      return;
+    }
+    const inbox = await storage.getLeadCaptureInbox(contractorId);
+    if (!inbox || inbox.id !== entry.inboxId) {
+      res.status(409).json({ message: "This email belongs to a disconnected inbox. Its contents are retained for manual review." });
+      return;
+    }
+    const stats = await syncLeadCaptureInbox(inbox, entry.email);
+    if (stats.parseFailed > 0 || stats.errors > 0) {
+      res.status(422).json({
+        ...stats,
+        status: "failed",
+        message: stats.parseFailed > 0
+          ? "AI parsing failed again. The email is still saved for review and has not been marked as spam."
+          : "The email could not be processed. It is still saved for review.",
+      });
+      return;
+    }
+    res.json({ success: true, ...stats });
+  }));
+
   app.get("/api/settings/lead-capture-inbox/spam-audit-log", requireManagerOrAdmin, asyncHandler(async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
     const offset = parseInt(req.query.offset as string) || 0;
@@ -152,6 +188,14 @@ export function registerLeadCaptureRoutes(app: Express): void {
     const { parseEmailWithAI } = await import('../services/email-ai-parser');
     const { normalizePhoneForStorage } = await import('../utils/phone-normalizer');
     const aiResult = await parseEmailWithAI(entry.subject, entry.body);
+    if (aiResult.status === 'failed') {
+      res.status(422).json({
+        status: 'failed',
+        errorCode: aiResult.errorCode,
+        message: `${aiResult.message} This email has not been recovered; it is still saved for review. Retry when parsing is available.`,
+      });
+      return;
+    }
 
     const contactEmail = aiResult.email || entry.senderEmail;
     const contactName = aiResult.name || contactEmail.split('@')[0] || 'Unknown';
@@ -165,6 +209,12 @@ export function registerLeadCaptureRoutes(app: Express): void {
       phones: normalizedPhone ? [normalizedPhone] : [],
       source: 'email_capture',
       message: serviceDescription || entry.subject,
+      // Reuse the provider identity even if an audit row is pruned/deleted and
+      // recreated. Legacy audit rows have no trustworthy provider identity.
+      submissionId: entry.messageId || `spam-audit:${entry.id}`,
+      identityPolicy: 'two-field',
+      activityExternalId: entry.messageId || `spam-audit:${entry.id}`,
+      activityNote: `**Email Subject:** ${entry.subject}\n\n${entry.body}`,
       skipDuplicateLeadWithinHours: 0,
       skipAutoAssign: false,
       ipAddress: req.ip,

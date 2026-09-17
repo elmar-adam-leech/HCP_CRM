@@ -15,6 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import { SenderRulesSection } from "./SenderRulesSection";
 import { SpamAuditLogSection } from "./SpamAuditLogSection";
 import { IntegrationCardShell } from "./IntegrationCardShell";
+import { EmailParseFailuresSection } from "./EmailParseFailuresSection";
 
 interface LeadCaptureInboxData {
   id: string;
@@ -128,11 +129,16 @@ export function LeadCaptureCard() {
       return response.json();
     },
     onSuccess: (data) => {
+      const parseFailed = typeof data.parseFailed === "number" ? data.parseFailed : 0;
+      const baseMessage = data.message || "Lead capture sync completed.";
       toast({
         title: "Sync Complete",
-        description: data.message || "Lead capture sync completed.",
+        description: parseFailed > 0
+          ? `${baseMessage} ${parseFailed} email${parseFailed === 1 ? "" : "s"} need review because AI parsing failed.`
+          : baseMessage,
       });
       queryClient.invalidateQueries({ queryKey: ['/api/settings/lead-capture-inbox'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/settings/lead-capture-inbox/parse-failures'] });
     },
     onError: (error: any) => {
       toast({
@@ -338,6 +344,7 @@ export function LeadCaptureCard() {
           <SenderRulesSection spamFilterEnabled={inbox.spamFilterEnabled} />
         </div>
       )}
+      <EmailParseFailuresSection />
     </IntegrationCardShell>
   );
 }

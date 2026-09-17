@@ -13,8 +13,10 @@ import { ingestLead } from './lead-ingestion';
 import { broadcastToContractor } from '../websocket';
 import { dispatchInboundReplyWorkflows } from '../services/inbound-reply-dispatcher';
 import { isLeadIdentityAmbiguity, notifyLeadIdentityAmbiguity } from './lead-identity-ambiguity';
+import { emailParseFailureStore } from '../storage/email-parse-failures';
 
 const log = logger('LeadCaptureSync');
+type CapturedEmail = NonNullable<Awaited<ReturnType<typeof gmailService.fetchNewEmails>>['emails']>[number];
 
 function extractEmailAddress(fromHeader: string): string {
   const match = fromHeader.match(/<([^>]+)>/);
@@ -180,14 +182,15 @@ export function extractFieldsFromMappings(body: string, mappings: FieldMapping[]
   return result;
 }
 
-export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
+export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox, retryEmail?: CapturedEmail): Promise<{
   processed: number;
   skippedSpam: number;
   skippedDuplicate: number;
   skippedBlocked: number;
   errors: number;
+  parseFailed: number;
 }> {
-  const stats = { processed: 0, skippedSpam: 0, skippedDuplicate: 0, skippedBlocked: 0, errors: 0 };
+  const stats = { processed: 0, skippedSpam: 0, skippedDuplicate: 0, skippedBlocked: 0, errors: 0, parseFailed: 0 };
   // Keep the prior checkpoint when an ambiguous message cannot safely be
   // assigned to a contact. Successful messages are recognized by their
   // activity IDs on the retry; the unresolved message remains retryable after
@@ -212,7 +215,10 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
 
   log.info(`Starting lead capture sync for contractor ${inbox.contractorId}, since ${sinceDate.toISOString()}`);
 
-  const result = await gmailService.fetchNewEmails(inbox.gmailRefreshToken, sinceDate);
+  const pending = await emailParseFailureStore.listPending(inbox.contractorId, inbox.id);
+  const result = retryEmail
+    ? { emails: [retryEmail], error: undefined, tokenExpired: false }
+    : await gmailService.fetchNewEmails(inbox.gmailRefreshToken, sinceDate);
 
   if (result.error || result.tokenExpired) {
     log.error(`Gmail fetch error for lead capture: ${result.error}`);
@@ -221,7 +227,13 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
       : result.error || 'Unknown Gmail error');
   }
 
-  const inboxEmails = (result.emails || []).filter(e => e.labelIds?.includes('INBOX'));
+  // Saved failures survive the Gmail checkpoint, archiving and provider deletion.
+  // A staff retry processes exactly one saved message without fetching Gmail.
+  const inboxEmails = retryEmail ? [retryEmail] : Array.from(new Map([
+    ...(result.emails || []).filter(e => e.labelIds?.includes('INBOX')).map(e => [e.id, e] as const),
+    ...pending.map(entry => [entry.messageId, entry.email as CapturedEmail] as const),
+  ]).values());
+  const pendingIds = new Set(pending.map(entry => entry.messageId));
 
   log.info(`Found ${inboxEmails.length} inbox emails to process`);
 
@@ -239,6 +251,8 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
   }
 
   for (const email of inboxEmails) {
+    const errorsBefore = stats.errors;
+    const parseFailuresBefore = stats.parseFailed;
     try {
       if (existingIds.has(email.id)) {
         stats.skippedDuplicate++;
@@ -441,6 +455,7 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
         await storage.createSpamAuditEntry({
           inboxId: inbox.id,
           contractorId: inbox.contractorId,
+          messageId: email.id,
           senderEmail: extractEmailAddress(email.from),
           subject: email.subject,
           body: email.body.substring(0, 50000),
@@ -501,6 +516,7 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
           await storage.createSpamAuditEntry({
             inboxId: inbox.id,
             contractorId: inbox.contractorId,
+            messageId: email.id,
             senderEmail: extractEmailAddress(email.from),
             subject: email.subject,
             body: email.body.substring(0, 50000),
@@ -515,7 +531,21 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
       const needsAI = !allFieldsMapped || (inbox.spamFilterEnabled && !skipSpamCheck);
       const aiResult = needsAI
         ? await parseEmailWithAI(email.subject, textForAI)
-        : { isSpam: false };
+        : { status: 'success' as const, isSpam: false };
+
+      if (aiResult.status === 'failed') {
+        // Persist before advancing the checkpoint. No spam decision, contact,
+        // lead, activity or workflow is produced by a failed parse.
+        await emailParseFailureStore.record({
+          contractorId: inbox.contractorId,
+          inboxId: inbox.id,
+          email,
+          errorCode: aiResult.errorCode,
+          errorMessage: aiResult.message,
+        });
+        stats.parseFailed++;
+        continue;
+      }
 
       if (inbox.spamFilterEnabled && !skipSpamCheck) {
         const confidence = aiResult.spamConfidence ?? 0;
@@ -526,6 +556,7 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
           await storage.createSpamAuditEntry({
             inboxId: inbox.id,
             contractorId: inbox.contractorId,
+            messageId: email.id,
             senderEmail: extractEmailAddress(email.from),
             subject: email.subject,
             body: email.body.substring(0, 50000),
@@ -645,15 +676,19 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
       }
       log.error(`Error processing lead capture email ${email.id}:`, error);
       stats.errors++;
+    } finally {
+      if (pendingIds.has(email.id) && stats.errors === errorsBefore && stats.parseFailed === parseFailuresBefore) {
+        await emailParseFailureStore.resolve(inbox.contractorId, inbox.id, email.id);
+      }
     }
   }
 
-  if (!hasRetryableIdentityAmbiguity) {
+  if (!retryEmail && !hasRetryableIdentityAmbiguity && stats.errors === 0) {
     await storage.updateLeadCaptureInboxSyncTime(inbox.contractorId);
-  } else {
-    log.warn('Lead capture sync did not advance its checkpoint because one or more submissions need duplicate-contact review');
+  } else if (!retryEmail) {
+    log.warn('Lead capture sync did not advance its checkpoint because one or more submissions could not be saved');
   }
 
-  log.info(`Lead capture sync complete: ${stats.processed} processed, ${stats.skippedSpam} spam, ${stats.skippedDuplicate} duplicates, ${stats.skippedBlocked} blocked, ${stats.errors} errors`);
+  log.info(`Lead capture sync complete: ${stats.processed} processed, ${stats.skippedSpam} spam, ${stats.skippedDuplicate} duplicates, ${stats.skippedBlocked} blocked, ${stats.parseFailed} need parsing review, ${stats.errors} errors`);
   return stats;
 }

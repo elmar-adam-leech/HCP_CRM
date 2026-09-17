@@ -186,10 +186,57 @@ export const insertLeadCaptureInboxSchema = createInsertSchema(leadCaptureInboxe
 export type InsertLeadCaptureInbox = z.infer<typeof insertLeadCaptureInboxSchema>;
 export type LeadCaptureInbox = typeof leadCaptureInboxes.$inferSelect;
 
+/**
+ * Parsed snapshot returned by GmailService.fetchNewEmails. Parse failures retain
+ * this complete snapshot so they can be inspected and retried without another
+ * Gmail fetch.
+ */
+export type GmailEmail = {
+  id: string;
+  threadId: string;
+  from: string;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  body: string;
+  date: Date;
+  snippet: string;
+  labelIds: string[];
+  rfc822MessageId?: string;
+  inReplyTo?: string;
+  references?: string[];
+};
+
+export const emailParseFailures = pgTable("email_parse_failures", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  contractorId: varchar("contractor_id").notNull().references(() => contractors.id),
+  // Intentionally not an FK: failures must survive inbox disconnection/deletion.
+  inboxId: varchar("inbox_id").notNull(),
+  messageId: text("message_id").notNull(),
+  email: jsonb("email").$type<GmailEmail>().notNull(),
+  errorCode: text("error_code").notNull(),
+  errorMessage: text("error_message").notNull(),
+  attempts: integer("attempts").notNull().default(1),
+  failedAt: timestamp("failed_at").notNull().defaultNow(),
+  lastAttemptAt: timestamp("last_attempt_at").notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at"),
+}, (table) => ({
+  contractorInboxMessageIdx: uniqueIndex("email_parse_failures_contractor_inbox_message_idx")
+    .on(table.contractorId, table.inboxId, table.messageId),
+  pendingIdx: index("email_parse_failures_pending_idx")
+    .on(table.contractorId, table.inboxId, table.failedAt),
+}));
+
+export type EmailParseFailure = typeof emailParseFailures.$inferSelect;
+
 export const spamAuditLog = pgTable("spam_audit_log", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   inboxId: varchar("inbox_id").notNull().references(() => leadCaptureInboxes.id, { onDelete: 'cascade' }),
   contractorId: varchar("contractor_id").notNull().references(() => contractors.id),
+  // Legacy audit rows predate durable Gmail message identity, so this must
+  // remain nullable rather than inventing identifiers for historical data.
+  messageId: text("message_id"),
   senderEmail: text("sender_email").notNull(),
   subject: text("subject").notNull(),
   body: text("body").notNull(),
@@ -201,6 +248,8 @@ export const spamAuditLog = pgTable("spam_audit_log", {
 }, (table) => ({
   inboxIdIdx: index("spam_audit_log_inbox_id_idx").on(table.inboxId),
   contractorIdIdx: index("spam_audit_log_contractor_id_idx").on(table.contractorId),
+  contractorInboxMessageIdx: uniqueIndex("spam_audit_log_contractor_inbox_message_idx")
+    .on(table.contractorId, table.inboxId, table.messageId),
 }));
 
 export const insertSpamAuditLogSchema = createInsertSchema(spamAuditLog).omit({

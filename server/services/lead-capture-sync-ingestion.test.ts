@@ -5,6 +5,13 @@ const h = vi.hoisted(() => {
   return {
     ingestLead: vi.fn(),
     parseEmailWithAI: vi.fn(),
+    runHeuristicSpamCheck: vi.fn(),
+    createSpamAuditEntry: vi.fn(),
+    failures: {
+      listPending: vi.fn(),
+      record: vi.fn(),
+      resolve: vi.fn(),
+    },
     fetchNewEmails: vi.fn(),
     fetchPageText: vi.fn(),
     extractFirstUrl: vi.fn(),
@@ -27,8 +34,9 @@ vi.mock('@shared/schema', () => ({ activities: h.activities, contacts: h.contact
 vi.mock('../gmail-service', () => ({ gmailService: { fetchNewEmails: h.fetchNewEmails } }));
 vi.mock('./email-ai-parser', () => ({
   parseEmailWithAI: h.parseEmailWithAI,
-  runHeuristicSpamCheck: vi.fn(),
+  runHeuristicSpamCheck: h.runHeuristicSpamCheck,
 }));
+vi.mock('../storage/email-parse-failures', () => ({ emailParseFailureStore: h.failures }));
 vi.mock('./link-fetcher', () => ({
   extractFirstUrl: h.extractFirstUrl,
   extractUrlByPattern: vi.fn(),
@@ -41,7 +49,7 @@ vi.mock('../storage', () => ({
   storage: {
     getContractor: h.getContractor,
     findActivitiesByRfc822MessageIds: vi.fn(),
-    createSpamAuditEntry: vi.fn(),
+    createSpamAuditEntry: h.createSpamAuditEntry,
     updateLeadCaptureInboxSyncTime: h.updateLeadCaptureInboxSyncTime,
   },
 }));
@@ -92,6 +100,11 @@ function inbox(actions: Array<'each_email_is_new_lead' | 'follow_link'>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.failures.listPending.mockResolvedValue([]);
+  h.failures.record.mockResolvedValue(undefined);
+  h.failures.resolve.mockResolvedValue(undefined);
+  h.createSpamAuditEntry.mockReset();
+  h.runHeuristicSpamCheck.mockReturnValue({ isSpam: false, confidence: 0 });
   h.getContractor.mockResolvedValue({ domain: 'example.test', autoLearnReplyAddresses: true });
   h.fetchNewEmails.mockResolvedValue({
     emails: [{
@@ -111,9 +124,150 @@ beforeEach(() => {
     isNewContact: true,
     skippedDuplicateLead: false,
   });
-  h.parseEmailWithAI.mockResolvedValue({ isSpam: false });
+  h.parseEmailWithAI.mockResolvedValue({ status: 'success', isSpam: false });
   h.updateLeadCaptureInboxSyncTime.mockResolvedValue(undefined);
   h.notifyLeadIdentityAmbiguity.mockResolvedValue(undefined);
+});
+
+describe('failed email parsing and retries', () => {
+  const failed = { status: 'failed', errorCode: 'api_error', message: 'AI parsing is unavailable.' };
+  function aiInbox() {
+    const value = inbox(['each_email_is_new_lead']);
+    value.senderRules[0].fieldMappings = [];
+    value.spamFilterEnabled = true;
+    return value;
+  }
+
+  it.each(['missing_credentials', 'api_error', 'empty_output', 'truncated_output', 'invalid_output'])(
+    'retains %s without marking spam or ingesting a lead', async (errorCode) => {
+      h.parseEmailWithAI.mockResolvedValue({ ...failed, errorCode });
+      const stats = await syncLeadCaptureInbox(aiInbox());
+      expect(stats).toMatchObject({ parseFailed: 1, processed: 0, skippedSpam: 0, errors: 0 });
+      expect(h.failures.record).toHaveBeenCalledWith(expect.objectContaining({
+        contractorId: 'tenant-1', inboxId: 'inbox-1', errorCode,
+        email: expect.objectContaining({ id: 'gmail-message-1', body: PERSON_BODY }),
+      }));
+      expect(h.ingestLead).not.toHaveBeenCalled();
+      expect(h.createSpamAuditEntry).not.toHaveBeenCalled();
+      expect(h.updateLeadCaptureInboxSyncTime).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('does not advance the checkpoint when retaining an email fails', async () => {
+    h.parseEmailWithAI.mockResolvedValue(failed);
+    h.failures.record.mockRejectedValueOnce(new Error('Database unavailable'));
+    const stats = await syncLeadCaptureInbox(aiInbox());
+    expect(stats.errors).toBe(1);
+    expect(h.updateLeadCaptureInboxSyncTime).not.toHaveBeenCalled();
+    expect(h.ingestLead).not.toHaveBeenCalled();
+  });
+
+  it('retries saved emails after they disappear from Gmail and resolves only after successful ingestion', async () => {
+    const saved = {
+      messageId: 'saved-1',
+      email: { id: 'saved-1', from: 'notifications@lead-source.test', subject: 'Saved inquiry', body: PERSON_BODY, labelIds: [] },
+    };
+    h.failures.listPending.mockResolvedValue([saved]);
+    h.fetchNewEmails.mockResolvedValue({ emails: [] });
+    await syncLeadCaptureInbox(aiInbox());
+    expect(h.ingestLead).toHaveBeenCalledWith('tenant-1', expect.objectContaining({
+      submissionId: 'saved-1', activityExternalId: 'saved-1', identityPolicy: 'two-field',
+    }));
+    expect(h.failures.resolve).toHaveBeenCalledWith('tenant-1', 'inbox-1', 'saved-1');
+    expect(h.ingestLead.mock.invocationCallOrder[0]).toBeLessThan(h.failures.resolve.mock.invocationCallOrder[0]);
+  });
+
+  it('deduplicates Gmail and saved copies, leaving a repeated failure pending', async () => {
+    const fetched = await h.fetchNewEmails();
+    h.fetchNewEmails.mockClear();
+    h.failures.listPending.mockResolvedValue([{ messageId: 'gmail-message-1', email: fetched.emails[0] }]);
+    h.parseEmailWithAI.mockResolvedValue(failed);
+    await syncLeadCaptureInbox(aiInbox());
+    expect(h.parseEmailWithAI).toHaveBeenCalledOnce();
+    expect(h.failures.record).toHaveBeenCalledOnce();
+    expect(h.failures.resolve).not.toHaveBeenCalled();
+    expect(h.ingestLead).not.toHaveBeenCalled();
+  });
+
+  it('manual retry skips Gmail and never advances the inbox checkpoint', async () => {
+    const email = (await h.fetchNewEmails()).emails[0];
+    h.fetchNewEmails.mockClear();
+    h.failures.listPending.mockResolvedValue([{ messageId: email.id, email }]);
+    await syncLeadCaptureInbox(aiInbox(), email);
+    expect(h.fetchNewEmails).not.toHaveBeenCalled();
+    expect(h.updateLeadCaptureInboxSyncTime).not.toHaveBeenCalled();
+    expect(h.failures.resolve).toHaveBeenCalledOnce();
+  });
+
+  it('retains pending emails if lead ingestion fails after parsing succeeds', async () => {
+    const email = (await h.fetchNewEmails()).emails[0];
+    h.failures.listPending.mockResolvedValue([{ messageId: email.id, email }]);
+    h.ingestLead.mockRejectedValueOnce(new Error('Storage failure'));
+    const stats = await syncLeadCaptureInbox(aiInbox(), email);
+    expect(stats.errors).toBe(1);
+    expect(h.failures.resolve).not.toHaveBeenCalled();
+  });
+
+  it('resolves a previously ingested email without parsing or dispatching ingestion again', async () => {
+    const email = (await h.fetchNewEmails()).emails[0];
+    h.failures.listPending.mockResolvedValue([{ messageId: email.id, email }]);
+    h.db.select.mockReturnValueOnce({
+      from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([{ externalId: email.id }])) })),
+    } as any);
+    const stats = await syncLeadCaptureInbox(aiInbox(), email);
+    expect(stats.skippedDuplicate).toBe(1);
+    expect(h.parseEmailWithAI).not.toHaveBeenCalled();
+    expect(h.ingestLead).not.toHaveBeenCalled();
+    expect(h.failures.resolve).toHaveBeenCalledWith('tenant-1', 'inbox-1', email.id);
+  });
+
+  it('uses the active tenant and inbox when loading and saving failures', async () => {
+    const configured = { ...aiInbox(), contractorId: 'tenant-2', id: 'inbox-2' };
+    h.parseEmailWithAI.mockResolvedValue(failed);
+    await syncLeadCaptureInbox(configured);
+    expect(h.failures.listPending).toHaveBeenCalledWith('tenant-2', 'inbox-2');
+    expect(h.failures.record).toHaveBeenCalledWith(expect.objectContaining({
+      contractorId: 'tenant-2', inboxId: 'inbox-2',
+    }));
+  });
+
+  it.each(['ai', 'heuristic', 'sender-block'])(
+    'keeps one spam disposition identity across concurrent retries and replay (%s)', async (path) => {
+      const email = (await h.fetchNewEmails()).emails[0];
+      h.failures.listPending.mockResolvedValue([{ messageId: email.id, email }]);
+      const configured = aiInbox();
+      h.parseEmailWithAI.mockResolvedValue({ status: 'success', isSpam: true, spamConfidence: 95 });
+      if (path === 'heuristic') {
+        h.runHeuristicSpamCheck.mockReturnValue({ isSpam: true, confidence: 90, reason: 'Heuristic spam' });
+      }
+      if (path === 'sender-block') configured.senderRules[0].spamOverride = 'always_block';
+
+      // Model the storage uniqueness contract; the storage suite separately
+      // verifies the actual conflict target, SQL and tenant-scoped lookup.
+      const rows = new Map<string, object>();
+      h.createSpamAuditEntry.mockImplementation(async (entry) => {
+        const key = JSON.stringify([entry.contractorId, entry.inboxId, entry.messageId]);
+        if (!rows.has(key)) rows.set(key, { ...entry, id: `audit-${rows.size + 1}` });
+        return rows.get(key);
+      });
+      const results = await Promise.all([
+        syncLeadCaptureInbox(configured, email),
+        syncLeadCaptureInbox(configured, email),
+      ]);
+      expect(results.every(result => result.skippedSpam === 1)).toBe(true);
+      // A normal fetch can replay the same message after resolution, even if
+      // the failed-email queue no longer contains it.
+      h.failures.listPending.mockResolvedValue([]);
+      await syncLeadCaptureInbox(configured);
+      expect(h.createSpamAuditEntry).toHaveBeenCalledTimes(3);
+      expect(rows.size).toBe(1);
+      expect([...rows.values()][0]).toMatchObject({
+        contractorId: 'tenant-1', inboxId: 'inbox-1', messageId: email.id,
+      });
+      expect(h.ingestLead).not.toHaveBeenCalled();
+      expect(h.failures.resolve).toHaveBeenCalledWith('tenant-1', 'inbox-1', email.id);
+    },
+  );
 });
 
 describe('lead-capture sender-rule identity handling', () => {

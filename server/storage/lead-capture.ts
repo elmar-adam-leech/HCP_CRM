@@ -114,10 +114,41 @@ async function updateSpamConfidenceThreshold(contractorId: string, threshold: nu
 }
 
 async function createSpamAuditEntry(entry: InsertSpamAuditLog): Promise<SpamAuditLog> {
+  // Rows without a provider identity are legacy-compatible append-only audit
+  // events. NULLs remain distinct in the unique index, so do not route these
+  // through replay handling.
+  if (entry.messageId == null) {
+    const result = await db.insert(spamAuditLog)
+      .values(entry)
+      .returning();
+    return result[0]!;
+  }
+
   const result = await db.insert(spamAuditLog)
     .values(entry)
+    .onConflictDoNothing({
+      target: [
+        spamAuditLog.contractorId,
+        spamAuditLog.inboxId,
+        spamAuditLog.messageId,
+      ],
+    })
     .returning();
-  return result[0]!;
+  if (result[0]) return result[0];
+
+  // A replay must return the original immutable decision. In particular, do
+  // not overwrite its body or recovered state with values from a later sync.
+  const existing = await db.select().from(spamAuditLog)
+    .where(and(
+      eq(spamAuditLog.contractorId, entry.contractorId),
+      eq(spamAuditLog.inboxId, entry.inboxId),
+      eq(spamAuditLog.messageId, entry.messageId),
+    ))
+    .limit(1);
+  if (!existing[0]) {
+    throw new Error("Spam audit replay did not return or preserve a row");
+  }
+  return existing[0];
 }
 
 async function getSpamAuditLog(contractorId: string, limit = 50, offset = 0): Promise<{ entries: SpamAuditLog[]; total: number }> {
