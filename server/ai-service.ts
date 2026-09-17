@@ -1,5 +1,6 @@
 
 import { logger } from './utils/logger';
+import { XAI_MODEL } from './utils/xai-model';
 
 const log = logger('AiService');import OpenAI from 'openai';
 
@@ -53,7 +54,7 @@ export class AIService {
 
     try {
       const completion = await this.client.chat.completions.create({
-        model: 'grok-4-fast-reasoning',
+        model: XAI_MODEL,
         messages: [
           { role: 'system', content: systemMessage },
           { role: 'user', content: prompt }
@@ -87,7 +88,7 @@ export class AIService {
     }
     const startedAt = Date.now();
     const completion = await this.client.chat.completions.create({
-      model: 'grok-4-fast-reasoning',
+      model: XAI_MODEL,
       messages: [
         { role: 'system', content: opts.systemPrompt },
         { role: 'user', content: opts.userPrompt },
@@ -139,7 +140,7 @@ export class AIService {
 
     try {
       const completion = await this.client.chat.completions.create({
-        model: 'grok-4-fast-reasoning',
+        model: XAI_MODEL,
         messages: [
           {
             role: 'system',

@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { logger } from "../utils/logger";
+import { XAI_MODEL } from "../utils/xai-model";
 
 const log = logger('AIMonitor');
 
@@ -43,7 +44,7 @@ Provide analysis in JSON format with:
 `;
 
       const response = await grok.chat.completions.create({
-        model: 'grok-code-fast-1',
+        model: XAI_MODEL,
         messages: [
           {
             role: "system",

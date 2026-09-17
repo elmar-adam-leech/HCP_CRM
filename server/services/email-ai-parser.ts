@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { logger } from '../utils/logger';
+import { XAI_MODEL } from '../utils/xai-model';
 
 const log = logger('EmailAIParser');
 
@@ -182,7 +183,7 @@ export async function parseEmailWithAI(subject: string, body: string): Promise<E
     const userMessage = `Subject: ${subject}\n\nBody:\n${body.substring(0, 3000)}`;
 
     const completion = await ai.chat.completions.create({
-      model: 'grok-4-fast-reasoning',
+      model: XAI_MODEL,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: userMessage },
