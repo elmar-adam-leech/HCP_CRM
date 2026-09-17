@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   getContractor: vi.fn(),
   updateContact: vi.fn(),
   getCredential: vi.fn(),
+  notifyLeadIdentityAmbiguity: vi.fn(),
 }));
 
 vi.mock('../../middleware/rate-limiter', () => ({
@@ -27,6 +28,10 @@ vi.mock('../../credential-service', () => ({
 }));
 vi.mock('../../utils/public-base-url', () => ({
   getPublicBaseUrl: () => '',
+}));
+vi.mock('../../services/lead-identity-ambiguity', () => ({
+  isLeadIdentityAmbiguity: (error: unknown) => (error as { code?: unknown })?.code === 'LEAD_IDENTITY_AMBIGUOUS',
+  notifyLeadIdentityAmbiguity: mocks.notifyLeadIdentityAmbiguity,
 }));
 
 import { registerLeadWebhookRoutes } from './leads';
@@ -146,6 +151,7 @@ beforeEach(() => {
     requestedTenantId === tenantId ? apiKey : null
   ));
   mocks.updateContact.mockResolvedValue(undefined);
+  mocks.notifyLeadIdentityAmbiguity.mockResolvedValue(undefined);
   mocks.ingestLead.mockResolvedValue(makeResult());
 });
 
@@ -183,6 +189,8 @@ describe('POST /api/webhooks/:contractorId/leads intake mapping', () => {
       utmTerm: 'spring',
       utmContent: 'hero',
       tags: ['VIP', 'Repeat', 'vip'],
+      identityPolicy: 'two-field',
+      activityNote: '**Webhook lead received**\n\nPlease call after 5',
     });
   });
 
@@ -225,7 +233,35 @@ describe('POST /api/webhooks/:contractorId/leads intake mapping', () => {
     expect(response.status).toBe(201);
     expect(mocks.ingestLead.mock.calls[0][1]).toMatchObject({
       submissionId: 'provider-submission-123',
+      activityExternalId: 'webhook:provider-submission-123',
+      identityPolicy: 'two-field',
     });
+  });
+
+  it('returns an actionable conflict when two-field matching is ambiguous', async () => {
+    const app = makeApp();
+    mocks.ingestLead.mockRejectedValueOnce(Object.assign(
+      new Error('Multiple contacts match'),
+      { code: 'LEAD_IDENTITY_AMBIGUOUS' },
+    ));
+
+    const response = await call(app, {
+      name: 'Ambiguous Lead',
+      email: 'ambiguous@example.com',
+      phone: '555-111-2222',
+    }, tenantId, apiKey);
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual(expect.objectContaining({
+      code: 'LEAD_IDENTITY_AMBIGUOUS',
+      message: expect.stringContaining('Multiple existing contacts'),
+    }));
+    expect(mocks.notifyLeadIdentityAmbiguity).toHaveBeenCalledWith(
+      tenantId,
+      'webhook',
+      undefined,
+      expect.objectContaining({ code: 'LEAD_IDENTITY_AMBIGUOUS' }),
+    );
   });
 
   it.each([

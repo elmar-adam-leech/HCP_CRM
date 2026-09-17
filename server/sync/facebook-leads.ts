@@ -18,6 +18,7 @@ import { facebookService } from '../services/facebook-service';
 import { ingestLead, type IngestLeadResult } from '../services/lead-ingestion';
 import { logger } from '../utils/logger';
 import { normalizePhoneForStorage } from '../utils/phone-normalizer';
+import { isLeadIdentityAmbiguity, notifyLeadIdentityAmbiguity } from '../services/lead-identity-ambiguity';
 
 const log = logger('FacebookLeadsSync');
 
@@ -183,33 +184,63 @@ export async function processFacebookLead(
 
   let message = adName ? `Facebook Lead Ad: ${adName}` : 'Facebook Lead Ad';
   if (extraFields.length > 0) message += '\n\n' + extraFields.join('\n');
-
-  const result = await ingestLead(contractorId, {
-    name,
-    emails,
-    phones,
-    address: mappedAddress || undefined,
-    street: fbStreet,
-    city: fbCity,
-    state: fbState,
-    zip: fbZip,
-    source: 'facebook',
+  const activityNote = [
+    `**Facebook Lead Ad${adName ? `: ${adName}` : ''}**`,
+    `Facebook lead ID: ${leadgenId}`,
     message,
-    rawPayload: JSON.stringify({ ...leadResource, _fb_form_name: formName || undefined }),
-    utmSource: 'facebook',
-    utmMedium: 'lead_ads',
-    utmCampaign: adName || undefined,
-    tags: formTags.length > 0 ? formTags : undefined,
-    skipDuplicateLeadWithinHours: opts.skipDuplicateLeadWithinHours ?? 24,
-    skipAutoAssign: false,
-    ipAddress: opts.ipAddress,
-    consentMetadata: {
-      formId: leadResource.form_id,
-      adId: leadResource.ad_id,
-      adName: leadResource.ad_name,
-      leadgenId,
-    },
-  });
+  ].join('\n\n');
+
+  let result: IngestLeadResult;
+  try {
+    result = await ingestLead(contractorId, {
+      name,
+      emails,
+      phones,
+      address: mappedAddress || undefined,
+      street: fbStreet,
+      city: fbCity,
+      state: fbState,
+      zip: fbZip,
+      source: 'facebook',
+      message,
+      rawPayload: JSON.stringify({ ...leadResource, _fb_form_name: formName || undefined }),
+      utmSource: 'facebook',
+      utmMedium: 'lead_ads',
+      utmCampaign: adName || undefined,
+      tags: formTags.length > 0 ? formTags : undefined,
+      // Facebook's leadgen ID is stable across webhook, polling, and manual
+      // imports. The provider key handles retries while the two-field policy
+      // handles a different provider delivering the same person.
+      submissionId: leadgenId,
+      activityNote,
+      activityExternalId: `facebook:${leadgenId}`,
+      identityPolicy: 'two-field',
+      skipDuplicateLeadWithinHours: opts.skipDuplicateLeadWithinHours ?? 24,
+      skipAutoAssign: false,
+      ipAddress: opts.ipAddress,
+      consentMetadata: {
+        formId: leadResource.form_id,
+        adId: leadResource.ad_id,
+        adName: leadResource.ad_name,
+        leadgenId,
+      },
+    });
+  } catch (error) {
+    if (isLeadIdentityAmbiguity(error)) {
+      try {
+        await notifyLeadIdentityAmbiguity(
+          contractorId,
+          'Facebook',
+          leadgenId,
+          error,
+          'Resolve the duplicate contacts, then use Sync Leads in Settings > Integrations to retry this lead.',
+        );
+      } catch (notificationError) {
+        log.error(`Failed to notify admins about ambiguous Facebook lead ${leadgenId}:`, notificationError);
+      }
+    }
+    throw error;
+  }
 
   if (!result.skippedDuplicateLead) {
     void facebookService.sendConversionEvent(contractorId, result.lead, result.contact, 'Lead');
@@ -346,6 +377,15 @@ export async function syncFacebookLeads(tenantId: string): Promise<void> {
           if (result.skippedDuplicateLead) skipped++;
           else processed++;
         } catch (err: any) {
+          if (isLeadIdentityAmbiguity(err)) {
+            // The ambiguity itself is durably surfaced to administrators by
+            // processFacebookLead. Do not let one historical bad match pin the
+            // polling cursor forever: an admin can resolve the contacts and
+            // use the manual Sync Leads action to retry this provider lead.
+            skipped++;
+            log.warn(`[poll] contractor=${tenantId} deferred ambiguous Facebook lead ${leadData.id} for duplicate-contact review`);
+            continue;
+          }
           errors++;
           log.error(`[poll] contractor=${tenantId} failed to process lead ${leadData.id}:`, err?.message || err);
         }

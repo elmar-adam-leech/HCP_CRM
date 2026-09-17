@@ -31,7 +31,7 @@ function normalizeRule(rule: SenderRule): SenderRule {
 
 const ACTION_LABELS: Record<SenderRuleAction, string> = {
   block: "Block",
-  each_email_is_new_lead: "Each email is a new lead",
+  each_email_is_new_lead: "Treat each email as a new inquiry",
   follow_link: "Follow link",
   default: "Default",
 };
@@ -347,7 +347,7 @@ export function SenderRulesSection({ spamFilterEnabled = false }: { spamFilterEn
       <div>
         <p className="text-sm font-medium">Sender Rules</p>
         <p className="text-xs text-muted-foreground mt-1">
-          Control how emails from specific sender addresses are handled during lead capture. You can combine multiple actions for one sender.
+          Control how emails from specific sender addresses are handled during lead capture. You can combine multiple actions for one sender. “Treat each email as a new inquiry” and “Follow link” never use the notification sender or source label as a contact; when the extracted person has two matching identity fields, we reuse that contact and avoid another lead card within 24 hours.
         </p>
       </div>
 

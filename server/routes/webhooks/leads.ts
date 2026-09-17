@@ -9,6 +9,7 @@ import { parse, parseISO, isValid } from "date-fns";
 import { ingestLead } from '../../services/lead-ingestion';
 import { storage } from "../../storage";
 import { getPublicBaseUrl } from "../../utils/public-base-url";
+import { isLeadIdentityAmbiguity, notifyLeadIdentityAmbiguity } from '../../services/lead-identity-ambiguity';
 
 const log = logger('WebhookLeads');
 
@@ -65,6 +66,7 @@ function normalizeTags(value: unknown): string[] | undefined {
 
 export function registerLeadWebhookRoutes(app: Express): void {
   app.post("/api/webhooks/:contractorId/leads", webhookRateLimiter, asyncHandler(async (req: Request, res: Response) => {
+    let providerSubmissionId: string | undefined;
     try {
       const { contractorId } = req.params;
 
@@ -302,6 +304,7 @@ export function registerLeadWebhookRoutes(app: Express): void {
         if (normalized) phonesArray = [normalized];
       }
       
+      providerSubmissionId = trimOptionalString(requestData.submissionId);
       const result = await ingestLead(contractorId, {
         name: String(name).trim(),
         emails: emailsArray,
@@ -316,7 +319,10 @@ export function registerLeadWebhookRoutes(app: Express): void {
         tags: normalizeTags(tags),
         message: notes ? String(notes).trim() : undefined,
         rawPayload: JSON.stringify(requestData),
-        submissionId: trimOptionalString(requestData.submissionId),
+        // A provider submission ID makes retries idempotent. It is separate
+        // from identity matching, which deliberately uses two real contact
+        // fields to converge cross-channel arrivals.
+        submissionId: providerSubmissionId,
         utmSource: trimOptionalString(utmSource),
         utmMedium: trimOptionalString(utmMedium),
         utmCampaign: trimOptionalString(utmCampaign),
@@ -325,6 +331,11 @@ export function registerLeadWebhookRoutes(app: Express): void {
         pageUrl: trimOptionalString(pageUrl) ?? trimOptionalString(pageURL),
         ipAddress: req.ip,
         followUpDate: parsedFollowUpDate,
+        identityPolicy: 'two-field',
+        activityNote: notes
+          ? `**Webhook lead received**\n\n${String(notes).trim()}`
+          : '**Webhook lead received**',
+        ...(providerSubmissionId && { activityExternalId: `webhook:${providerSubmissionId}` }),
         skipDuplicateLeadWithinHours: 24,
         skipAutoAssign: false,
         skipHcpSync: false,
@@ -388,6 +399,23 @@ export function registerLeadWebhookRoutes(app: Express): void {
       }
       
     } catch (error) {
+      if (isLeadIdentityAmbiguity(error)) {
+        try {
+          await notifyLeadIdentityAmbiguity(
+            req.params.contractorId,
+            'webhook',
+            providerSubmissionId,
+            error,
+          );
+        } catch (notificationError) {
+          log.error('Failed to notify admins about ambiguous webhook lead:', notificationError);
+        }
+        res.status(409).json({
+          message: 'Multiple existing contacts match this lead identity. Resolve the duplicate contacts, then retry this submission.',
+          code: 'LEAD_IDENTITY_AMBIGUOUS',
+        });
+        return;
+      }
       log.error('Processing error:', error);
       res.status(500).json({
         message: "Failed to process lead webhook",

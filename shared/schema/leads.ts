@@ -37,6 +37,10 @@ export const leads = pgTable("leads", {
   utmContent: text("utm_content"),
   pageUrl: text("page_url"), // Page where this lead was submitted
   rawPayload: text("raw_payload"), // Store the raw webhook payload for debugging
+  // Provider submission receipts. A retained lead can represent duplicate
+  // arrivals from more than one channel/provider ID, so this is an array
+  // rather than a single uniqueness key.
+  submissionCreationKeys: text("submission_creation_keys").array().notNull().default(sql`'{}'`),
   archived: boolean("archived").notNull().default(false), // Archived leads are hidden from main view but not deleted
   aged: boolean("aged").notNull().default(false), // Aged leads are older leads moved to a monitoring area but remain interactive
   followUpDate: timestamp("follow_up_date"), // Follow-up date for this specific lead

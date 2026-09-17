@@ -39,6 +39,13 @@ function getBaseUrl(req: Request): string {
   return `${proto}://${host}`;
 }
 
+function isLeadIdentityAmbiguity(error: unknown): boolean {
+  return !!error
+    && typeof error === 'object'
+    && 'code' in error
+    && (error as { code?: unknown }).code === 'LEAD_IDENTITY_AMBIGUOUS';
+}
+
 async function registerAppWebhook(baseUrl: string): Promise<void> {
   const appId = process.env.FACEBOOK_APP_ID;
   const appSecret = process.env.FACEBOOK_APP_SECRET;
@@ -831,7 +838,10 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
               formName: form.name,
               fieldMappings: mappings,
               formTagRules,
-              skipDuplicateLeadWithinHours: 0,
+              // Manual imports use the same recent-lead protection as polling
+              // and webhook deliveries so cross-channel arrivals do not
+              // create a second card.
+              skipDuplicateLeadWithinHours: 24,
               ipAddress: req.ip,
             });
 
@@ -852,6 +862,13 @@ export function registerFacebookIntegrationRoutes(app: Express): void {
 
       res.json({ imported, skipped, total });
     } catch (err: any) {
+      if (isLeadIdentityAmbiguity(err)) {
+        res.status(409).json({
+          message: 'Multiple existing contacts match an imported Facebook lead. Resolve the duplicate contacts, then sync again.',
+          code: 'LEAD_IDENTITY_AMBIGUOUS',
+        });
+        return;
+      }
       const fbErr = err?.response?.data?.error;
       log.error('Failed to sync Facebook leads:', fbErr ?? err?.message ?? err);
       res.status(500).json({

@@ -25,6 +25,7 @@ const h = vi.hoisted(() => {
     activities: table(),
     contacts: table(),
     contactReceiptResults: [] as any[][],
+    identitySelectResults: [] as any[][],
     activitySelectResults: [] as any[][],
     selectResults: [] as any[][],
     updateResults: [] as any[][],
@@ -34,6 +35,7 @@ const h = vi.hoisted(() => {
     contact: undefined as any,
     reset() {
       this.contactReceiptResults = [];
+      this.identitySelectResults = [];
       this.activitySelectResults = [];
       this.selectResults = [];
       this.updateResults = [];
@@ -46,22 +48,38 @@ const h = vi.hoisted(() => {
       // Receipt lookup was added before the existing lead queries. Keep its
       // responses separate so a contact lookup cannot consume a queued lead
       // duplicate result (and vice versa).
-      select: vi.fn(() => {
+       select: vi.fn((projection?: Record<string, unknown>) => {
         let selectedTable: unknown;
         return {
           from: vi.fn((table: unknown) => {
             selectedTable = table;
             return {
-              where: vi.fn(() => ({
-                limit: vi.fn(() => {
+               where: vi.fn(() => {
+                 const result = {
+                   limit: vi.fn(() => {
                   const results = selectedTable === h.contacts
-                    ? h.contactReceiptResults
+                     ? projection && 'name' in projection
+                       ? h.identitySelectResults
+                       : h.contactReceiptResults
                     : selectedTable === h.activities
                       ? h.activitySelectResults
                       : h.selectResults;
                   return Promise.resolve(results.shift() ?? []);
                 }),
-              })),
+                   then: (resolve: (value: unknown[]) => unknown) => {
+                     const results = selectedTable === h.contacts
+                       ? projection && 'name' in projection
+                         ? h.identitySelectResults
+                         : h.contactReceiptResults
+                       : selectedTable === h.activities
+                         ? h.activitySelectResults
+                         : h.selectResults;
+                     return Promise.resolve(results.shift() ?? []).then(resolve);
+                   },
+                   orderBy: vi.fn(() => result),
+                 };
+                 return result;
+               }),
             };
           }),
         };
@@ -85,17 +103,25 @@ const h = vi.hoisted(() => {
     },
     eq: vi.fn((column: unknown, value: unknown) => ({ kind: 'eq', column, value })),
     and: vi.fn((...conditions: unknown[]) => ({ kind: 'and', conditions })),
+     or: vi.fn((...conditions: unknown[]) => ({ kind: 'or', conditions })),
+    desc: vi.fn((column: unknown) => ({ kind: 'desc', column })),
     gte: vi.fn((column: unknown, value: unknown) => ({ kind: 'gte', column, value })),
     sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
     logConsent: vi.fn(() => Promise.resolve()),
     cacheInvalidation: {
       invalidateContact: vi.fn(),
     },
+     pool: {
+       connect: vi.fn().mockResolvedValue({
+         query: vi.fn().mockResolvedValue(undefined),
+         release: vi.fn(),
+       }),
+     },
   };
 });
 
 vi.mock('../storage', () => ({ storage: h.storage }));
-vi.mock('../db', () => ({ db: h.db }));
+vi.mock('../db', () => ({ db: h.db, pool: h.pool }));
 vi.mock('@shared/schema', () => ({
   leads: h.leads,
   activities: h.activities,
@@ -104,12 +130,19 @@ vi.mock('@shared/schema', () => ({
 vi.mock('drizzle-orm', () => ({
   eq: h.eq,
   and: h.and,
+  or: h.or,
+  desc: h.desc,
   gte: h.gte,
   sql: h.sql,
 }));
 vi.mock('../utils/phone-normalizer', () => ({
   normalizePhoneForStorage: (phone: string) => phone,
   normalizePhoneForHcp: vi.fn(),
+  normalizePhoneNumber: (phone: string) => {
+    const digits = phone.replace(/\D/g, '');
+    return `+${digits.length === 10 ? `1${digits}` : digits}`;
+  },
+  isValidPhoneNumber: (phone: string) => phone.replace(/\D/g, '').length >= 10,
   maskPhone: (phone: string) => phone,
 }));
 vi.mock('../workflow-engine', () => ({
@@ -231,6 +264,119 @@ beforeEach(() => {
 });
 
 describe('ingestLead tracking and contact mapping', () => {
+  it.each([
+    ['name + email', { name: '  ADA   EXAMPLE ', emails: [' ADA@EXAMPLE.TEST '] }],
+    ['name + phone', { name: ' Ada Example ', emails: undefined, phones: ['+1 (415) 555-1212'] }],
+    ['email + phone', { name: 'Unknown Lead', emails: [' ADA@EXAMPLE.TEST '], phones: ['4155551212'] }],
+  ])('reuses a contact only when the two-field %s identity matches', async (_pair, incoming) => {
+    h.contact = makeContact({
+      name: 'Ada Example',
+      emails: ['ada@example.test', 'secondary@example.test'],
+      phones: ['(415) 555-1212', '(415) 555-0000'],
+    });
+    h.storage.getContact.mockResolvedValue(h.contact);
+    h.identitySelectResults = [[h.contact]];
+    // No recent lead: matching must reuse the contact and create this inquiry.
+    h.selectResults = [[]];
+
+    const result = await ingestLead(TENANT, input({
+      ...incoming,
+      identityPolicy: 'two-field',
+      pageUrl: undefined,
+      utmSource: undefined,
+      utmMedium: undefined,
+      utmCampaign: undefined,
+      utmTerm: undefined,
+      utmContent: undefined,
+    }));
+
+    expect(result.contact.id).toBe('contact-1');
+    expect(result.isNewContact).toBe(false);
+    expect(h.storage.createContact).not.toHaveBeenCalled();
+    expect(h.storage.findMatchingContact).not.toHaveBeenCalled();
+  });
+
+  it('does not turn a single identifier into a lead identity match', async () => {
+    h.contact = makeContact();
+    h.identitySelectResults = [[]];
+
+    const result = await ingestLead(TENANT, input({
+      name: 'Unknown Lead',
+      emails: ['ada@example.test'],
+      identityPolicy: 'two-field',
+      pageUrl: undefined,
+      utmSource: undefined,
+      utmMedium: undefined,
+      utmCampaign: undefined,
+      utmTerm: undefined,
+      utmContent: undefined,
+    }));
+
+    expect(result.isNewContact).toBe(true);
+    expect(h.storage.findMatchingContact).not.toHaveBeenCalled();
+  });
+
+  it('rejects ambiguous two-field candidates instead of choosing one arbitrarily', async () => {
+    h.identitySelectResults = [[
+      makeContact({ id: 'contact-a', phones: ['(415) 555-1212'] }),
+      makeContact({ id: 'contact-b', phones: ['(415) 555-1212'] }),
+    ]];
+
+    await expect(ingestLead(TENANT, input({
+      phones: ['4155551212'],
+      identityPolicy: 'two-field',
+    }))).rejects.toMatchObject({ code: 'LEAD_IDENTITY_AMBIGUOUS' });
+
+    expect(h.storage.createContact).not.toHaveBeenCalled();
+    expect(h.storage.createLead).not.toHaveBeenCalled();
+  });
+
+  it('rejects split identity ownership and does not let the policy bypass matching', async () => {
+    h.identitySelectResults = [[
+      makeContact({ id: 'name-email-owner', phones: [] }),
+      makeContact({
+        id: 'phone-owner',
+        name: 'Different Person',
+        emails: [],
+        phones: ['(415) 555-1212'],
+      }),
+    ]];
+
+    await expect(ingestLead(TENANT, input({
+      phones: ['4155551212'],
+      identityPolicy: 'two-field',
+      skipContactMatching: true,
+    }))).rejects.toMatchObject({ code: 'LEAD_IDENTITY_AMBIGUOUS' });
+
+    expect(h.storage.findMatchingContact).not.toHaveBeenCalled();
+    expect(h.storage.createContact).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a name-only bystander as an ambiguity', async () => {
+    h.contact = makeContact({
+      id: 'strong-match',
+      phones: ['(415) 555-1212'],
+    });
+    h.storage.getContact.mockResolvedValue(h.contact);
+    h.identitySelectResults = [[
+      h.contact,
+      makeContact({
+        id: 'same-name-only',
+        emails: [],
+        phones: [],
+      }),
+    ]];
+    h.selectResults = [[]];
+
+    const result = await ingestLead(TENANT, input({
+      phones: ['4155551212'],
+      identityPolicy: 'two-field',
+    }));
+
+    expect(result.contact.id).toBe('strong-match');
+    expect(h.storage.createContact).not.toHaveBeenCalled();
+  });
+
   it('maps page URL and all UTM fields onto a new contact and lead', async () => {
     const result = await ingestLead(TENANT, input());
 

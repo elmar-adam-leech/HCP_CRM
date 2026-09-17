@@ -10,13 +10,18 @@ import { logger } from '../utils/logger';
 import { resolveHcpLeadSource } from '../utils/hcp-helpers';
 import { db } from '../db';
 import { leads, activities, contacts } from '@shared/schema';
-import { eq, and, gte, sql } from 'drizzle-orm';
+import { eq, and, or, gte, desc, sql } from 'drizzle-orm';
 import { logConsent, hashIp } from '../utils/consent-log';
 import { normalizeAddress } from '../utils/normalize-address';
 import { buildContactEnrichment, noteSubmissionKey } from '../utils/contact-enrichment';
 import { buildFormattedAddress, parseAddressString } from '../utils/address';
 import { syncHcpCustomerAddress } from '../scheduling/hcp-customer';
 import { submissionIdentityKey, isSubmissionCreationConflict } from '../utils/submission-identity';
+import {
+  acquireLeadIdentityLock,
+  findTwoFieldLeadIdentityContact,
+  normalizeLeadIdentity,
+} from './lead-identity';
 
 const log = logger('LeadIngestion');
 
@@ -61,6 +66,12 @@ export interface IngestLeadInput {
   activityExternalId?: string;
   /** Stable provider submission ID; coordinates initial creation and note retries. */
   submissionId?: string;
+  /**
+   * Lead-capture-only identity resolution. When enabled, a contact is reused
+   * only if two independent identity fields agree; it deliberately does not
+   * alter the single-identifier matching used by messaging, HCP or booking.
+   */
+  identityPolicy?: 'two-field';
 
   ipAddress?: string;
   consentMetadata?: Record<string, unknown>;
@@ -116,6 +127,62 @@ async function fillMissingLeadTracking(
   return result[0];
 }
 
+/**
+ * Persist every provider ID that was deliberately collapsed onto a lead. This
+ * is separate from contact-level receipts because an idempotent provider retry
+ * must return the exact retained lead even after the normal 24-hour window.
+ */
+async function recordLeadSubmissionReceipt(
+  leadId: string,
+  contractorId: string,
+  creationKey: string,
+): Promise<Lead | undefined> {
+  const result = await db.update(leads).set({
+    submissionCreationKeys: sql`CASE
+      WHEN ${creationKey} = ANY(COALESCE(${leads.submissionCreationKeys}, '{}'::text[]))
+        THEN ${leads.submissionCreationKeys}
+      ELSE array_append(COALESCE(${leads.submissionCreationKeys}, '{}'::text[]), ${creationKey})
+    END`,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(leads.id, leadId),
+    eq(leads.contractorId, contractorId),
+  )).returning();
+  return result[0];
+}
+
+async function recordLeadCaptureActivity(
+  contractorId: string,
+  contactId: string,
+  leadId: string,
+  input: IngestLeadInput,
+): Promise<void> {
+  if (!input.activityNote) return;
+
+  if (input.activityExternalId) {
+    const existing = await db.select({ id: activities.id })
+      .from(activities)
+      .where(and(
+        eq(activities.externalId, input.activityExternalId),
+        eq(activities.externalSource, 'lead_capture'),
+        eq(activities.contractorId, contractorId),
+      ))
+      .limit(1);
+    if (existing.length > 0) return;
+  }
+
+  await storage.createActivity({
+    type: 'note',
+    title: `Lead captured: ${input.source}`,
+    content: input.activityNote,
+    contactId,
+    leadId,
+    userId: null,
+    externalId: input.activityExternalId,
+    externalSource: 'lead_capture',
+  }, contractorId);
+}
+
 export async function ingestLead(
   contractorId: string,
   input: IngestLeadInput
@@ -164,22 +231,93 @@ async function ingestLeadAttempt(
 
   const emails = input.emails || [];
   const noteKey = noteSubmissionKey(contractorId, input);
+  const twoFieldIdentity = input.identityPolicy === 'two-field'
+    ? normalizeLeadIdentity({ name: input.name, emails, phones: normalizedPhones })
+    : null;
+  // A session advisory lock covers only the DB persistence portion below.
+  // The existing HCP, workflow and assignment effects remain asynchronously
+  // scheduled after it is released.
+  let identityLock = twoFieldIdentity
+    ? await acquireLeadIdentityLock(contractorId, twoFieldIdentity)
+    : null;
   // Keyed notes are appended atomically below, not by the snapshot-based
   // enrichment builder. Unidentified/manual inquiries retain append behavior.
   const enrichmentInput = noteKey ? { ...input, notes: undefined } : input;
 
-  const [submissionContact] = creationKey
+  try {
+    // A provider retry is stronger than time-window deduplication: once an ID
+    // has been attached to a retained lead, always return that exact lead.
+    // Scope this durable behavior to the opt-in policy so legacy callers keep
+    // their historical submission-retry behavior.
+    const [submissionLead] = creationKey && twoFieldIdentity
+      ? await db.select().from(leads).where(and(
+          eq(leads.contractorId, contractorId),
+          sql`${creationKey} = ANY(COALESCE(${leads.submissionCreationKeys}, '{}'::text[]))`,
+        )).limit(1)
+      : [];
+    const receiptContact = submissionLead
+      ? await storage.getContact(submissionLead.contactId, contractorId)
+      : undefined;
+    if (submissionLead && receiptContact) {
+      // The previous attempt may have committed the contact and lead but
+      // failed before the capture activity (or a later enrichment/note update).
+      // Complete only those idempotent receipt-owned writes; do not re-trigger
+      // workflows, assignment or HCP effects for a provider retry.
+      let finalizedContact = receiptContact;
+      if (noteKey) {
+        const seen = sql`${noteKey} = ANY(COALESCE(${contacts.noteSubmissionKeys}, '{}'::text[]))`;
+        const [saved] = await db.update(contacts).set({
+          notes: sql`CASE WHEN ${seen} THEN ${contacts.notes}
+            WHEN NULLIF(BTRIM(${contacts.notes}), '') IS NULL THEN ${input.notes}
+            ELSE ${contacts.notes} || E'\\n' || ${input.notes} END`,
+          noteSubmissionKeys: sql`CASE WHEN ${seen} THEN ${contacts.noteSubmissionKeys}
+            ELSE array_append(COALESCE(${contacts.noteSubmissionKeys}, '{}'::text[]), ${noteKey}) END`,
+          updatedAt: sql`CASE WHEN ${seen} THEN ${contacts.updatedAt} ELSE NOW() END`,
+        }).where(and(
+          eq(contacts.id, finalizedContact.id),
+          eq(contacts.contractorId, contractorId),
+        )).returning();
+        if (!saved) throw new Error('Contact disappeared while finalizing submission receipt');
+        cacheInvalidation.invalidateContact(finalizedContact.id, contractorId);
+        finalizedContact = saved;
+      }
+      const enrichment = buildContactEnrichment(finalizedContact, enrichmentInput, normalizedPhones);
+      if (enrichment) {
+        const updated = await storage.updateContact(finalizedContact.id, enrichment, contractorId);
+        if (updated) finalizedContact = updated;
+      }
+      await recordLeadCaptureActivity(contractorId, finalizedContact.id, submissionLead.id, input);
+      return {
+        contact: finalizedContact,
+        lead: submissionLead,
+        isNewContact: false,
+        skippedDuplicateLead: true,
+      };
+    }
+
+    const [submissionContact] = creationKey
     ? await db.select({ id: contacts.id }).from(contacts)
-      .where(and(eq(contacts.contractorId, contractorId), eq(contacts.submissionCreationKey, creationKey)))
+      .where(and(
+        eq(contacts.contractorId, contractorId),
+        or(
+          eq(contacts.submissionCreationKey, creationKey),
+          sql`${creationKey} = ANY(COALESCE(${contacts.noteSubmissionKeys}, '{}'::text[]))`,
+        ),
+      ))
       .limit(1)
     : [];
-  const existingContactId = submissionContact?.id ?? (input.skipContactMatching
-    ? null
-    : await storage.findMatchingContact(
-        contractorId,
-        emails.length > 0 ? emails : undefined,
-        normalizedPhones.length > 0 ? normalizedPhones : undefined
-      ));
+    // A two-field lead policy is intentionally non-bypassable. Callers may
+    // exclude a notification sender before reaching ingestion, but cannot
+    // accidentally turn off matching for the extracted person's identity.
+    const existingContactId = submissionContact?.id ?? (input.skipContactMatching && !twoFieldIdentity
+      ? null
+      : twoFieldIdentity
+        ? await findTwoFieldLeadIdentityContact(contractorId, twoFieldIdentity)
+        : await storage.findMatchingContact(
+            contractorId,
+            emails.length > 0 ? emails : undefined,
+            normalizedPhones.length > 0 ? normalizedPhones : undefined
+          ));
 
   let contact: Contact | undefined;
   let isNewContact = false;
@@ -201,6 +339,33 @@ async function ingestLeadAttempt(
         updatedAt: sql`CASE WHEN ${seen} THEN ${contacts.updatedAt} ELSE NOW() END`,
       }).where(and(eq(contacts.id, contact.id), eq(contacts.contractorId, contractorId))).returning();
       if (!saved) throw new Error('Contact disappeared while recording submission notes');
+      cacheInvalidation.invalidateContact(contact.id, contractorId);
+      contact = saved;
+    }
+
+    // A new provider submission ID that resolved through two-field identity
+    // must be remembered as well. A contact has one legacy
+    // submissionCreationKey column, so additional creation receipts share the
+    // existing idempotency-key array. This lets a later retry with changed
+    // enrichment still find the retained contact before identity matching.
+    if (
+      contact
+      && creationKey
+      && twoFieldIdentity
+      && contact.submissionCreationKey !== creationKey
+    ) {
+      const [saved] = await db.update(contacts).set({
+        noteSubmissionKeys: sql`CASE
+          WHEN ${creationKey} = ANY(COALESCE(${contacts.noteSubmissionKeys}, '{}'::text[]))
+            THEN ${contacts.noteSubmissionKeys}
+          ELSE array_append(COALESCE(${contacts.noteSubmissionKeys}, '{}'::text[]), ${creationKey})
+        END`,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(contacts.id, contact.id),
+        eq(contacts.contractorId, contractorId),
+      )).returning();
+      if (!saved) throw new Error('Contact disappeared while recording submission identity');
       cacheInvalidation.invalidateContact(contact.id, contractorId);
       contact = saved;
     }
@@ -229,6 +394,7 @@ async function ingestLeadAttempt(
           eq(leads.archived, false),
           gte(leads.createdAt, since)
         ))
+        .orderBy(desc(leads.createdAt), desc(leads.id))
         .limit(1);
 
       if (recentLeads.length > 0) {
@@ -245,9 +411,13 @@ async function ingestLeadAttempt(
         }
 
         const savedLead = await fillMissingLeadTracking(recentLeads[0].id, contractorId, input);
+        const receiptLead = creationKey && twoFieldIdentity
+          ? await recordLeadSubmissionReceipt(recentLeads[0].id, contractorId, creationKey)
+          : undefined;
+        await recordLeadCaptureActivity(contractorId, contact.id, recentLeads[0].id, input);
         return {
           contact,
-          lead: savedLead || existingLead[0],
+          lead: receiptLead || savedLead || existingLead[0],
           isNewContact: false,
           skippedDuplicateLead: true,
         };
@@ -343,33 +513,15 @@ async function ingestLeadAttempt(
     utmContent: input.utmContent,
     pageUrl: input.pageUrl,
     followUpDate: input.followUpDate,
+    ...(creationKey && twoFieldIdentity && { submissionCreationKeys: [creationKey] }),
   }, contractorId);
 
-  if (input.activityNote) {
-    let skipNote = false;
-    if (input.activityExternalId) {
-      const existing = await db.select({ id: activities.id })
-        .from(activities)
-        .where(and(
-          eq(activities.externalId, input.activityExternalId),
-          eq(activities.externalSource, 'lead_capture'),
-          eq(activities.contractorId, contractorId)
-        ))
-        .limit(1);
-      skipNote = existing.length > 0;
-    }
-    if (!skipNote) {
-      await storage.createActivity({
-        type: 'note',
-        title: `Lead captured: ${input.source}`,
-        content: input.activityNote,
-        contactId: contact.id,
-        userId: null,
-        externalId: input.activityExternalId,
-        externalSource: 'lead_capture',
-      }, contractorId);
-    }
-  }
+  await recordLeadCaptureActivity(contractorId, contact.id, lead.id, input);
+
+  // The lock is not needed after the contact/lead/activity writes are durable.
+  // Release it before starting any integration or workflow work.
+  await identityLock?.release();
+  identityLock = null;
 
   if (!input.skipWorkflows) {
     if (isNewContact) {
@@ -631,4 +783,7 @@ async function ingestLeadAttempt(
 
   log.info(`Ingested lead ${lead.id} for contact ${contact.id} (source=${input.source}, new=${isNewContact})`);
   return { contact, lead, isNewContact, skippedDuplicateLead: false };
+  } finally {
+    await identityLock?.release();
+  }
 }

@@ -12,12 +12,39 @@ import { maskEmail } from '../utils/pii-redactor';
 import { ingestLead } from './lead-ingestion';
 import { broadcastToContractor } from '../websocket';
 import { dispatchInboundReplyWorkflows } from '../services/inbound-reply-dispatcher';
+import { isLeadIdentityAmbiguity, notifyLeadIdentityAmbiguity } from './lead-identity-ambiguity';
 
 const log = logger('LeadCaptureSync');
 
 function extractEmailAddress(fromHeader: string): string {
   const match = fromHeader.match(/<([^>]+)>/);
   return (match ? match[1] : fromHeader).trim().toLowerCase();
+}
+
+function isSameEmail(left: string, right: string): boolean {
+  return extractEmailAddress(left) === extractEmailAddress(right);
+}
+
+function isSharedNotificationName(value: string, fromHeader: string, mappedSource?: string): boolean {
+  const normalize = (label: string) => label.toLocaleLowerCase().replace(/[^a-z0-9]/g, '');
+  const candidate = normalize(value);
+  if (!candidate) return true;
+
+  const sender = extractEmailAddress(fromHeader);
+  const [localPart = '', domain = ''] = sender.split('@');
+  const sourceLabels = [
+    localPart,
+    domain.split('.')[0] || '',
+    mappedSource || '',
+    'lead',
+    'new lead',
+    'notification',
+    'notifications',
+    'noreply',
+    'no reply',
+  ].map(normalize);
+
+  return sourceLabels.includes(candidate);
 }
 
 function findSenderRule(rules: SenderRule[], fromAddress: string): SenderRule | undefined {
@@ -161,6 +188,11 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
   errors: number;
 }> {
   const stats = { processed: 0, skippedSpam: 0, skippedDuplicate: 0, skippedBlocked: 0, errors: 0 };
+  // Keep the prior checkpoint when an ambiguous message cannot safely be
+  // assigned to a contact. Successful messages are recognized by their
+  // activity IDs on the retry; the unresolved message remains retryable after
+  // an admin resolves the duplicate contacts.
+  let hasRetryableIdentityAmbiguity = false;
   const rawRules = (inbox.senderRules as any[]) || [];
   const senderRules: SenderRule[] = rawRules.map((r: any) => {
     const actions = r.actions && r.actions.length > 0
@@ -505,9 +537,21 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
         }
       }
 
-      const skipSenderMatching = ruleActions.includes('each_email_is_new_lead') || ruleActions.includes('follow_link');
+      // These rule actions describe where to find a person's details; they do
+      // not make the notification sender (or a shared source name) a person.
+      // Keep the sender out of the fallback fields, but retain any identity
+      // extracted from the body/page. A valid two-field extracted identity is
+      // still allowed to converge with an existing contact.
+      const suppressNotificationSenderFallback = ruleActions.includes('each_email_is_new_lead') || ruleActions.includes('follow_link');
 
-      const contactEmail = mappedFields.email || (mappedFieldNames.has('email') ? undefined : aiResult.email) || (skipSenderMatching ? undefined : email.from);
+      const extractedEmail = mappedFields.email || (mappedFieldNames.has('email') ? undefined : aiResult.email);
+      // A parser can repeat the notification envelope address as though it
+      // were a form field. It is still sender metadata, not the customer's
+      // email, so never allow it to become a second matching identity field.
+      const contactEmail = extractedEmail
+        && !(suppressNotificationSenderFallback && isSameEmail(extractedEmail, email.from))
+          ? extractedEmail
+          : (suppressNotificationSenderFallback ? undefined : email.from);
       // Auto-detect a combined "First + Last" name from the body when the user
       // hasn't mapped a name field — covers Elementor / WPForms / Contact Form 7
       // style emails that send "First Name:" and "Last Name:" on separate lines.
@@ -516,10 +560,16 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
       const autoDetectedName = mappedFieldNames.has('name')
         ? undefined
         : detectFullNameFromBody(textForAI);
-      const contactName = mappedFields.name
+      const extractedName = mappedFields.name
         || autoDetectedName
-        || (mappedFieldNames.has('name') ? undefined : aiResult.name)
-        || (contactEmail ? contactEmail.split('@')[0] : 'Unknown');
+        || (mappedFieldNames.has('name') ? undefined : aiResult.name);
+      const contactName = extractedName
+        && !(suppressNotificationSenderFallback && isSharedNotificationName(extractedName, email.from, mappedFields.source))
+          ? extractedName
+          // Do not manufacture a name from a sender/local-part. Besides being
+          // inaccurate for shared inboxes, the lead-only matcher would otherwise
+          // mistake it for a real second identity field.
+          : 'Unknown';
       const rawPhone = mappedFields.phone || (mappedFieldNames.has('phone') ? undefined : aiResult.phone);
       const normalizedPhone = rawPhone ? normalizePhoneForStorage(rawPhone) : '';
       const serviceDescription = mappedFields.message || (mappedFieldNames.has('message') ? undefined : aiResult.serviceDescription);
@@ -562,8 +612,12 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
         pageUrl,
         activityNote: noteContent,
         activityExternalId: email.id,
-        skipDuplicateLeadWithinHours: skipSenderMatching ? 0 : 24,
-        skipContactMatching: skipSenderMatching,
+        // Lead capture is explicitly opted into the conservative lead-only
+        // policy. Sender rules must never turn off matching for identities
+        // successfully extracted from a notification or linked form.
+        identityPolicy: 'two-field',
+        submissionId: email.id,
+        skipDuplicateLeadWithinHours: 24,
         skipAutoAssign: false,
       });
 
@@ -575,12 +629,30 @@ export async function syncLeadCaptureInbox(inbox: LeadCaptureInbox): Promise<{
       stats.processed++;
       log.info(`Created lead ${result.lead.id} from email: ${email.subject}`);
     } catch (error) {
+      if (isLeadIdentityAmbiguity(error)) {
+        hasRetryableIdentityAmbiguity = true;
+        try {
+          await notifyLeadIdentityAmbiguity(
+            inbox.contractorId,
+            'email-capture',
+            email.id,
+            error,
+            'It will be retried automatically after the duplicate contacts are resolved.',
+          );
+        } catch (notificationError) {
+          log.error(`Failed to notify admins about ambiguous lead-capture email ${email.id}:`, notificationError);
+        }
+      }
       log.error(`Error processing lead capture email ${email.id}:`, error);
       stats.errors++;
     }
   }
 
-  await storage.updateLeadCaptureInboxSyncTime(inbox.contractorId);
+  if (!hasRetryableIdentityAmbiguity) {
+    await storage.updateLeadCaptureInboxSyncTime(inbox.contractorId);
+  } else {
+    log.warn('Lead capture sync did not advance its checkpoint because one or more submissions need duplicate-contact review');
+  }
 
   log.info(`Lead capture sync complete: ${stats.processed} processed, ${stats.skippedSpam} spam, ${stats.skippedDuplicate} duplicates, ${stats.skippedBlocked} blocked, ${stats.errors} errors`);
   return stats;

@@ -44,6 +44,10 @@ export const columnMigrations: Array<{ sql: string; description: string }> = [
       description: 'contacts.note_submission_keys (retry-aware ingestion note receipts)',
     },
     {
+      sql: `ALTER TABLE leads ADD COLUMN IF NOT EXISTS submission_creation_keys text[] NOT NULL DEFAULT '{}'`,
+      description: 'leads.submission_creation_keys (durable provider receipts for deduplicated lead submissions)',
+    },
+    {
       sql: `ALTER TABLE user_contractors ADD COLUMN IF NOT EXISTS allowed_integrations text[]`,
       description: 'user_contractors.allowed_integrations (per-user integration permissions)',
     },
