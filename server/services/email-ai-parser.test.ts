@@ -54,7 +54,7 @@ describe("parseEmailWithAI", () => {
     });
     const request = createCompletion.mock.calls[0][0];
     expect(request).toMatchObject({
-      model: "grok-4.6",
+      model: "grok-4.7",
       temperature: 0.1,
       max_tokens: 500,
     });

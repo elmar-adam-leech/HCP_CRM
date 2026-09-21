@@ -58,7 +58,7 @@ describe("AIMonitorService", () => {
       apiKey: "unit-test-xai-key",
     });
     expect(createCompletion).toHaveBeenCalledWith({
-      model: "grok-4.6",
+      model: "grok-4.7",
       messages: [
         {
           role: "system",

@@ -70,7 +70,7 @@ describe("AIService", () => {
       service.generateContent("Write it", { customer: "Ada", count: 2 }),
     ).resolves.toBe("Generated answer");
     expect(createCompletion).toHaveBeenCalledWith({
-      model: "grok-4.6",
+      model: "grok-4.7",
       messages: [
         {
           role: "system",
@@ -95,7 +95,7 @@ describe("AIService", () => {
     });
 
     expect(createCompletion).toHaveBeenCalledWith({
-      model: "grok-4.6",
+      model: "grok-4.7",
       messages: [
         { role: "system", content: "Return JSON" },
         { role: "user", content: "Analyze this" },
@@ -149,7 +149,7 @@ describe("AIService", () => {
       details: { reason: "clear" },
     });
     expect(createCompletion).toHaveBeenCalledWith({
-      model: "grok-4.6",
+      model: "grok-4.7",
       messages: [
         {
           role: "system",
